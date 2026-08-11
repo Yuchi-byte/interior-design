@@ -133,6 +133,9 @@ def decode_latent(
 ) -> Float[Tensor, "batch 3 height width"]:
     """Decode a latent to an image in ``[0, 1]``, keeping it on the autograd graph."""
     decoded: Tensor = vae.decode(latent / vae.config.scaling_factor).sample
+    # The clamp is the ``[0, 1]`` convention, and passes the gradient wherever
+    # the decode is in range; a decode pinned at the rails would zero the
+    # guidance instead, which is what the loop's gradient tests are watching for.
     return ((decoded + 1.0) / 2.0).clamp(0.0, 1.0)
 
 
