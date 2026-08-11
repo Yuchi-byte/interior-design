@@ -8,6 +8,7 @@ from jaxtyping import Bool, Float
 from torch import Tensor
 
 from roomgen_geometry.depth.base import DepthEstimator
+from roomgen_geometry.masking import architectural_mask
 from roomgen_geometry.segmentation.base import Segmenter
 
 
@@ -51,4 +52,7 @@ class GeometricReference:
             erosion_radius: passed to
                 :func:`roomgen_geometry.masking.architectural_mask`.
         """
-        raise NotImplementedError
+        mask = architectural_mask(segmenter(photo), erosion_radius=erosion_radius)
+        # The depth backend is differentiable by design, so its output is on the
+        # graph whenever the photo is; the reference is a target and must not be.
+        return cls(disparity=depth_estimator(photo).detach(), mask=mask)

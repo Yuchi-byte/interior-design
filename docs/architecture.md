@@ -34,13 +34,16 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   per-pixel ADE20K class ids.
 - `segmentation/eomt.py`: the EoMT backend
   (`tue-mps/ade20k_semantic_eomt_large_512`, MIT-licensed DINOv2 weights), run
-  once per photo under `no_grad` — segmentation is never on the gradient path.
+  once per photo under `no_grad` — segmentation is never on the gradient path —
+  with a tensor-op resize/normalise and ids decoded back onto the input frame
+  from the mask-query logits.
 - `segmentation/ade20k.py`: the 150-class label table and the
   `SHELL`/`CONTENTS` partition (wall, floor, ceiling, window, door, column,
   stairs, ... vs. furniture, furnishings, decor) — the domain-knowledge file.
 - `masking.py`: `architectural_mask`, the boolean shell mask, plus the boundary
   erosion that drops the few pixels either side of a segment edge where
-  monocular depth is unreliable.
+  monocular depth is unreliable — a max-pool over the inverted mask (Chebyshev
+  radius in pixels); the image border is not treated as a segment edge.
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels.
 - `reward.py`: `masked_depth_error`, the scale-and-shift-invariant masked

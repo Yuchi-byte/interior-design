@@ -10,6 +10,7 @@ dependencies = [
     "torch>=2.4",
     "torchvision",
     "transformers>=4.54",  # first release shipping EomtForUniversalSegmentation
+    "scipy",  # transformers' EoMT hard-requires it even at pure inference
     "numpy>=2",
     "pillow",
     "jaxtyping>=0.3",

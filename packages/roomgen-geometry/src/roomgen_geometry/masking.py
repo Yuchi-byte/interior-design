@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import torch
 from jaxtyping import Bool, Int
 from torch import Tensor
+from torch.nn.functional import max_pool2d
+
+from roomgen_geometry.segmentation.ade20k import ARCHITECTURAL_CLASSES
 
 
 def architectural_mask(
@@ -21,7 +25,12 @@ def architectural_mask(
     False on everything a renovation may change. The result is a constant: it is
     derived from a segmentation that never carries gradient.
     """
-    raise NotImplementedError
+    shell = torch.tensor(
+        sorted(ARCHITECTURAL_CLASSES),
+        dtype=segmentation.dtype,
+        device=segmentation.device,
+    )
+    return erode_boundaries(torch.isin(segmentation, shell), radius=erosion_radius)
 
 
 def erode_boundaries(
@@ -33,4 +42,18 @@ def erode_boundaries(
     where a single pixel straddles two surfaces at different distances, so those
     pixels are excluded rather than trusted.
     """
-    raise NotImplementedError
+    if radius < 0:
+        raise ValueError(f"erosion radius must not be negative, got {radius}")
+    if radius == 0:
+        return mask
+    # Binary erosion as a max-pool over the inverted mask: a pixel survives only
+    # if no False pixel falls in its (2*radius+1)² neighbourhood. The pool pads
+    # with -inf rather than zeros, so the frame edge erodes against real
+    # neighbours only and a mask touching the border keeps its border.
+    neighbourhood_has_false = max_pool2d(
+        (~mask).to(torch.float32).unsqueeze(1),
+        kernel_size=2 * radius + 1,
+        stride=1,
+        padding=radius,
+    )
+    return neighbourhood_has_false.squeeze(1) == 0.0
