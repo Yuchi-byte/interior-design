@@ -20,7 +20,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MANIFEST_PATH = Path(__file__).resolve().parent / "photos.json"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "outputs" / "benchmark_photos"
-USER_AGENT = "roomgen-benchmark-fetch/1.0 (research use; see experiments/assets/photos.json)"
+USER_AGENT = (
+    "roomgen-benchmark-fetch/1.0 (mark.haoxiang@gmail.com; research use; "
+    "see experiments/assets/photos.json)"
+)
 MAX_RETRIES = 5
 INITIAL_BACKOFF_SECONDS = 5.0
 
