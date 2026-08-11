@@ -72,8 +72,10 @@ The guided sampler and the experiment harness shared with `experiments/`.
   VAE and scheduler itself because a diffusers `__call__` runs under `no_grad`
   and would strand the guidance gradient.
 - `renovate.py`: `renovate`, the end-to-end img2img entry point (photo + prompt
-  -> reference -> guided sample -> outputs), over Stable Diffusion 1.5
-  (`stable-diffusion-v1-5/stable-diffusion-v1-5`, the canonical Hub mirror).
+  -> reference -> guided sample -> image), and `load_pipeline`, which brings up
+  the Stable Diffusion 1.5 it runs on
+  (`stable-diffusion-v1-5/stable-diffusion-v1-5`, the canonical Hub mirror)
+  without the safety checker the seeded cache leaves out.
 - `config.py`: `Config`, the pydantic v2 `extra="forbid"` base every typed
   experiment config extends, with OmegaConf-backed YAML + dotlist loading.
 - `experiment.py`: `ExperimentConfig`, the run config a framework builds from

@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Final
 
 import torch
+from diffusers import StableDiffusionImg2ImgPipeline
 from jaxtyping import Float
 from torch import Tensor
 
 from roomgen_geometry.depth.base import DepthEstimator
+from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.segmentation.base import Segmenter
+from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.guidance.schedule import GuidanceSchedule
+from roomgen_guide.sampling.guided import sample_guided
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
 
 # The canonical Stable Diffusion 1.5 mirror: the original `runwayml` repo no
@@ -43,4 +48,56 @@ def renovate(
     against it — the same `depth_estimator` on both sides, since the reference
     is only meaningful to the backend that produced it.
     """
-    raise NotImplementedError
+    reference = GeometricReference.from_photo(
+        photo,
+        depth_estimator=depth_estimator,
+        segmenter=segmenter,
+        erosion_radius=erosion_radius,
+    )
+    return sample_guided(
+        pipeline,
+        photo,
+        prompt,
+        guidance=GeometricGuidance(
+            depth_estimator=depth_estimator, reference=reference
+        ),
+        schedule=schedule,
+        steps=steps,
+        noise_strength=noise_strength,
+        text_guidance_scale=text_guidance_scale,
+        generator=generator,
+    )
+
+
+def load_pipeline(
+    checkpoint: str = DEFAULT_CHECKPOINT,
+    *,
+    device: torch.device,
+    dtype: torch.dtype = torch.float32,
+    cache_dir: Path | None = None,
+) -> Img2ImgPipeline:
+    """Stable Diffusion img2img from the Hub, ready for `renovate` to drive.
+
+    Args:
+        checkpoint: Hugging Face Hub id; weights are fetched on demand, never
+            vendored.
+        device: where the weights live and where inputs are expected.
+        dtype: parameter dtype.
+        cache_dir: Hub snapshot cache the weights are read from and downloaded
+            into (`RoomgenSettings.hub_cache`); `None` follows the Hub client's
+            own environment.
+    """
+    # The safety checker is refused rather than merely skipped: its weights are
+    # excluded from the seeded cache, so a pipeline that still wants them turns
+    # an offline load into a download.
+    #
+    # diffusers ships `py.typed` but leaves `from_pretrained`'s `**kwargs`
+    # unannotated, which makes the loader itself an untyped call.
+    pipeline: Img2ImgPipeline = StableDiffusionImg2ImgPipeline.from_pretrained(  # type: ignore[no-untyped-call]
+        checkpoint,
+        torch_dtype=dtype,
+        cache_dir=cache_dir,
+        safety_checker=None,
+        requires_safety_checker=False,
+    ).to(device)
+    return pipeline

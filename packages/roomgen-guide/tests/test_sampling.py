@@ -2,14 +2,13 @@ from dataclasses import dataclass, field
 
 import pytest
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from torch import Generator, Tensor
 
 from roomgen_fakes import assert_gradient_is_finite_and_nonzero
 from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.guidance.schedule import ConstantStrength
-from roomgen_guide.renovate import renovate
 from roomgen_guide.sampling.guided import (
     decode_latent,
     guidance_gradient,
@@ -26,20 +25,6 @@ class MeanBrightnessEnergy:
         self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, ""]:
         return predicted_image.mean()
-
-
-class SyntheticDepth:
-    def __call__(
-        self, images: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, "batch height width"]:
-        return images.mean(dim=1)
-
-
-class SyntheticSegmenter:
-    def __call__(
-        self, images: Float[Tensor, "batch 3 height width"]
-    ) -> Int[Tensor, "batch height width"]:
-        return torch.zeros(images.shape[0], *images.shape[2:], dtype=torch.long)
 
 
 @dataclass
@@ -238,23 +223,4 @@ def test_a_noise_strength_outside_the_unit_interval_is_rejected(
             geometric_guidance,
             strength=1.0,
             noise_strength=noise_strength,
-        )
-
-
-def test_the_renovation_entry_point_accepts_fake_backends(
-    fake_pipeline: FakePipeline, room_photo: Tensor
-) -> None:
-    with pytest.raises(NotImplementedError):
-        renovate(
-            room_photo,
-            _PROMPT,
-            pipeline=fake_pipeline,
-            depth_estimator=SyntheticDepth(),
-            segmenter=SyntheticSegmenter(),
-            schedule=ConstantStrength(strength=1.0),
-            erosion_radius=2,
-            steps=4,
-            noise_strength=0.6,
-            text_guidance_scale=7.5,
-            generator=torch.Generator().manual_seed(0),
         )
