@@ -13,7 +13,10 @@ from pydantic import BaseModel, ConfigDict
 class Config(BaseModel):
     """Base for every typed experiment config; an unknown key raises instead of a silent no-op."""
 
-    model_config = ConfigDict(extra="forbid")
+    # Frozen because a config is the record of the run it configured: the
+    # snapshot written next to a run's artifacts has to be the values that run
+    # actually used, which mutation after validation would silently break.
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     @classmethod
     def from_raw(cls, cfg: DictConfig) -> Self:
