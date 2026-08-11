@@ -1,0 +1,88 @@
+# The claim: geometric guidance keeps the room while restyling it.
+#
+# Eight real photographs, three renovation prompts, two seeds, guided against an
+# unguided control at the identical seed. Needs a GPU and the three prefetched
+# checkpoints (plus CLIP, see `adherence` below).
+name: 0002_geometric_guidance
+
+# Listed, not drawn, and the gate must hold on every one of them.
+seeds: [0, 1]
+
+# Provisional: 0001_unguided_baseline has not been run, so these are not yet the
+# calibrated constants its report is supposed to deliver. The margin is the
+# smallest depth-error reduction that is clearly not noise; the floor is the
+# adherence loss that would still be called "renovated". Re-derive both from
+# 0001's numbers before this framework's verdict is quoted as a finding.
+gate:
+  depth_error_margin: 0.2
+  prompt_adherence_floor: 0.9
+
+# 512 is SD1.5's training resolution and a multiple of 64; photos are
+# centre-cropped square first, so no room is anamorphically squashed.
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  # float32 throughout on purpose. The depth backend returns its prediction in
+  # the *input image's* dtype, so a float16 sampler drags the reward, the affine
+  # alignment residual and the guidance gradient into float16 with it; there is
+  # no knob that keeps the energy in float32 above a half-precision VAE. If VRAM
+  # forces it, set dtype=float16 and treat the energy scale as re-calibrated.
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+
+sampler:
+  steps: 30
+  # SDEdit strength: high enough that the furniture is genuinely restyled, low
+  # enough that an unguided run still resembles the room it started from.
+  noise_strength: 0.6
+  text_guidance_scale: 7.5
+
+guidance:
+  # Anchored on the magnitude the guided loop is tested at — `test_sampling.py`
+  # and `test_renovate.py` both use ConstantStrength(500.0) — then corrected for
+  # the energy scale of the real stack, which is not the fakes'. Measured on
+  # these photos with Depth Anything V2 at 512 (see report.md, Setup): the fake
+  # stack's masked depth error runs ~5e-3, while the real one is ~2e-4 for a
+  # purely photometric change and ~8e-1 for a 32px wall shift, with
+  # |dE/dimage| ~1e-3 where the fakes give ~1e-5. Real gradients are therefore
+  # one to two orders larger, and 500 would over-steer.
+  #
+  # This is a starting point, not a calibrated constant. Sweep it first:
+  #   --set guidance.strength=50 / 150 / 500 / 1500
+  # and pin whichever value clears both sides of the gate on every scene.
+  strength: 150.0
+  # `constant` is the only option: DecayingStrength is a NotImplementedError
+  # upstream, and a schedule the framework cannot evaluate is not a default.
+  schedule: constant
+  erosion_radius: 2
+
+adherence:
+  # The real gate-(b) metric. Its checkpoint is a fourth download that
+  # `roomgen-prefetch` does not seed, so the first run on a fresh pod fetches
+  # ~600MB into ROOMGEN_HF_HOME.
+  kind: clip
+  checkpoint: openai/clip-vit-base-patch32
+
+# Three prompts over eight photos, grouped by room type so the renovation asked
+# for is plausible for the shell it has to keep.
+scenes:
+  - photo: hotel_suite_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: scandi_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: lakehouse_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: bedroom_warm_ensuite
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: bedroom_twin_blue
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: ny_loft_bedroom
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: hostel_kitchen
+    prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+  - photo: blue_white_kitchen
+    prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

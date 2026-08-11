@@ -1,0 +1,45 @@
+# One scene, one seed, ten steps on the real stack: does this pod run the guided
+# loop at all, and what does a sample cost? Everything else matches
+# `benchmark.yaml`, so a pilot that renders and scores has validated the whole
+# real path — checkpoints, dtypes, CUDA generator, CLIP download, artifacts.
+#
+# A FAILED verdict here is not a broken pod. The gate is the benchmark's, and
+# the strength has not been swept yet; read the numbers, not the exit code.
+#
+#   ROOMGEN_HF_HOME=/workspace/hf-cache uv run --no-sync \
+#     python experiments/0002_geometric_guidance/run.py --config pilot
+name: 0002_geometric_guidance_pilot
+
+seeds: [0]
+
+gate:
+  depth_error_margin: 0.2
+  prompt_adherence_floor: 0.9
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+
+sampler:
+  steps: 10
+  noise_strength: 0.6
+  text_guidance_scale: 7.5
+
+guidance:
+  strength: 150.0
+  schedule: constant
+  erosion_radius: 2
+
+adherence:
+  kind: clip
+  checkpoint: openai/clip-vit-base-patch32
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
