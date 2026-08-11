@@ -30,6 +30,7 @@ class Verdict:
 
 
 def score_run(
+    *,
     guided_depth_error: float,
     control_depth_error: float,
     guided_prompt_adherence: float,
@@ -50,4 +51,16 @@ def score_run(
     Both sides of `gate` are fractions of the control's scores, never absolute
     values: neither quantity has a scale that carries from one scene to the next.
     """
-    raise NotImplementedError
+    return Verdict(
+        guided_depth_error=guided_depth_error,
+        control_depth_error=control_depth_error,
+        guided_prompt_adherence=guided_prompt_adherence,
+        control_prompt_adherence=control_prompt_adherence,
+        geometry_improved=(
+            guided_depth_error <= (1.0 - gate.depth_error_margin) * control_depth_error
+        ),
+        adherence_held=(
+            guided_prompt_adherence
+            >= gate.prompt_adherence_floor * control_prompt_adherence
+        ),
+    )

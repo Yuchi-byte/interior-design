@@ -1,8 +1,8 @@
 # The claim: geometric guidance keeps the room while restyling it.
 #
 # Eight real photographs, three renovation prompts, two seeds, guided against an
-# unguided control at the identical seed. Needs a GPU and the three prefetched
-# checkpoints (plus CLIP, see `adherence` below).
+# unguided control at the identical seed. Needs a GPU and the four checkpoints
+# `roomgen-prefetch` seeds.
 name: 0002_geometric_guidance
 
 # Listed, not drawn, and the gate must hold on every one of them.
@@ -61,9 +61,8 @@ guidance:
   erosion_radius: 2
 
 adherence:
-  # The real gate-(b) metric. Its checkpoint is a fourth download that
-  # `roomgen-prefetch` does not seed, so the first run on a fresh pod fetches
-  # ~600MB into ROOMGEN_HF_HOME.
+  # The real gate-(b) metric, on the fourth checkpoint `roomgen-prefetch` seeds
+  # (~600MB in ROOMGEN_HF_HOME).
   kind: clip
   checkpoint: openai/clip-vit-base-patch32
 

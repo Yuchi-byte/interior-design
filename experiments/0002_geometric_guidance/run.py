@@ -1,7 +1,7 @@
 """Entry point of 0002_geometric_guidance: pick a `conf/` variant, run it, assert the gate.
 
-Glue only — the machinery is in `framework/` (and belongs in `roomgen_guide`;
-see `report.md`). Exits non-zero when any (scene, seed) fails either side of the
+Glue only — the sampler, eval and gate are `roomgen_guide`'s, the run loop is
+`framework/`'s. Exits non-zero when any (scene, seed) fails either side of the
 two-sided gate.
 
     uv run --no-sync python experiments/0002_geometric_guidance/run.py --config smoke

@@ -163,18 +163,6 @@ module = [
 ]
 ignore_missing_imports = true
 
-# The Logger protocol's log_config carries an arbitrary experiment config, so
-# `dict[str, Any]` is the contract itself, not a type-gap in our code.
-[[tool.mypy.overrides]]
-module = ["roomgen_guide.logging", "roomgen_guide.logging.*"]
-disallow_any_explicit = false
-
-# The wandb logger wraps an untyped client: strict untyped-call/unreachable
-# checks there flag wandb's own type gaps, not our bugs.
-[[tool.mypy.overrides]]
-module = ["roomgen_guide.logging.wandb"]
-disallow_untyped_calls = false
-warn_unreachable = false
 
 [tool.pytest.ini_options]
 testpaths = ["packages/roomgen-geometry/tests", "packages/roomgen-guide/tests"]

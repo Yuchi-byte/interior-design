@@ -1,4 +1,4 @@
-"""Guided diffusion sampling and the experiment harness (config/settings/logging/verdict)."""
+"""Guided diffusion sampling and the experiment harness (config/settings/verdict/eval)."""
 
 __version__ = "0.1.0"
 

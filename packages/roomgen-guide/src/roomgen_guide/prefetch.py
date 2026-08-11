@@ -1,4 +1,4 @@
-"""Seeds the Hub cache with the three pretrained checkpoints, once, offline after."""
+"""Seeds the Hub cache with the four pretrained checkpoints, once, offline after."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from roomgen_geometry.depth.depth_anything import (
 from roomgen_geometry.segmentation.eomt import (
     DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
 )
+from roomgen_guide.eval.clip import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 from roomgen_guide.settings import RoomgenSettings
 
@@ -42,6 +43,7 @@ CHECKPOINTS: tuple[_Checkpoint, ...] = (
     _Checkpoint(DEPTH_CHECKPOINT),
     _Checkpoint(SEGMENTATION_CHECKPOINT),
     _Checkpoint(DIFFUSION_CHECKPOINT, _SD15_IGNORE_PATTERNS),
+    _Checkpoint(ADHERENCE_CHECKPOINT),
 )
 
 

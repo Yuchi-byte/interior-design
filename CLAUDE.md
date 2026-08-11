@@ -31,7 +31,7 @@ only on user-facing API or genuine *why*.
   `packages/roomgen-geometry` is the geometric grounding stack (depth,
   segmentation, masking, alignment, reward); `packages/roomgen-guide` is guided
   sampling plus the experiment harness
-  (`config`/`experiment`/`settings`/`verdict`/logging).
+  (`config`/`experiment`/`settings`/`verdict`/`eval`).
   The geometry package never imports the guide package.
 - All config objects are pydantic v2 (`extra="forbid"`) via the `Config` base
   in `packages/roomgen-guide/src/roomgen_guide/config.py` — a typo'd field is a

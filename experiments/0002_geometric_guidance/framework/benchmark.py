@@ -14,16 +14,16 @@ from torchvision.io import write_png
 
 from framework.backends import Backends, build_backends
 from framework.config import BenchmarkConfig, SceneConfig
-from framework.metrics import PromptAdherence, build_adherence, depth_error
+from framework.metrics import build_adherence
 from framework.photos import ensure_photos, load_photo
-from framework.scoring import score_run
 from roomgen_geometry.reference import GeometricReference
+from roomgen_guide.eval import PromptAdherence, depth_error
 from roomgen_guide.guidance.schedule import ConstantStrength, GuidanceSchedule
 from roomgen_guide.renovate import renovate
 from roomgen_guide.sampling.guided import decode_latent
 from roomgen_guide.sampling.pipeline import LatentAutoencoder
 from roomgen_guide.settings import RoomgenSettings
-from roomgen_guide.verdict import Verdict
+from roomgen_guide.verdict import Verdict, score_run
 
 PHOTO_SUBDIRECTORY = "benchmark_photos"
 
@@ -151,9 +151,9 @@ def _run_scene(
         device=backends.device,
         dtype=backends.dtype,
     )
-    # The same reference `renovate` builds internally, rebuilt here because the
-    # entry point neither takes one nor returns the one it made — the eval needs
-    # the identical (masked depth, mask) pair the guidance was steered by.
+    # Frozen once and handed to both samples and the eval, so guidance is
+    # steered by the identical (masked depth, mask) pair the score is read
+    # against, and the scene pays one segmentation and one depth pass.
     reference = GeometricReference.from_photo(
         photo,
         depth_estimator=backends.depth_estimator,
@@ -183,6 +183,7 @@ def _run_scene(
             scene.prompt,
             backends=backends,
             config=config,
+            reference=reference,
             schedule=ConstantStrength(strength=config.guidance.strength),
             seed=seed,
         )
@@ -194,6 +195,7 @@ def _run_scene(
             scene.prompt,
             backends=backends,
             config=config,
+            reference=reference,
             schedule=ConstantStrength(strength=0.0),
             seed=seed,
         )
@@ -238,6 +240,7 @@ def _sample(
     *,
     backends: Backends,
     config: BenchmarkConfig,
+    reference: GeometricReference,
     schedule: GuidanceSchedule,
     seed: int,
 ) -> tuple[Float[Tensor, "1 3 height width"], float]:
@@ -258,6 +261,7 @@ def _sample(
         noise_strength=config.sampler.noise_strength,
         text_guidance_scale=config.sampler.text_guidance_scale,
         generator=generator,
+        reference=reference,
     )
     return image, time.perf_counter() - started
 

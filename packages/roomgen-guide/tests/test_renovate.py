@@ -29,6 +29,7 @@ def _renovate(
     *,
     strength: float,
     seed: int = 0,
+    reference: GeometricReference | None = None,
 ) -> Tensor:
     return renovate(
         photo,
@@ -42,6 +43,7 @@ def _renovate(
         noise_strength=_NOISE_STRENGTH,
         text_guidance_scale=_TEXT_GUIDANCE_SCALE,
         generator=torch.Generator().manual_seed(seed),
+        reference=reference,
     )
 
 
@@ -116,6 +118,38 @@ def test_the_renovation_is_steered_by_the_photos_own_frozen_geometry(
     )
 
     assert torch.equal(renovated, sampled)
+
+
+def test_a_prebuilt_reference_renovates_exactly_as_one_built_in_the_call(
+    fake_pipeline: FakePipeline,
+    room_photo: Tensor,
+    fake_depth_estimator: FakeDepthEstimator,
+    fake_segmenter: FakeSegmenter,
+) -> None:
+    reference = GeometricReference.from_photo(
+        room_photo,
+        depth_estimator=fake_depth_estimator,
+        segmenter=fake_segmenter,
+        erosion_radius=_EROSION_RADIUS,
+    )
+
+    handed = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        fake_segmenter,
+        strength=_STRENGTH,
+        reference=reference,
+    )
+    built = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        fake_segmenter,
+        strength=_STRENGTH,
+    )
+
+    assert torch.equal(handed, built)
 
 
 def test_renovating_lowers_the_masked_depth_error_against_the_photo(

@@ -36,24 +36,30 @@ def renovate(
     noise_strength: float,
     text_guidance_scale: float,
     generator: torch.Generator,
+    reference: GeometricReference | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Restyle the room in `photo` under `prompt` while holding its geometry.
 
     Args:
         photo: NCHW, floating point, values in ``[0, 1]``; the image returned
             follows the same convention.
+        reference: the photo's already-frozen geometry, which the caller must
+            have built with this same `depth_estimator` and `segmenter` — a
+            reference is only meaningful to the backends that produced it — and
+            which leaves `erosion_radius` unused. `None` freezes the photo here,
+            at the cost of a depth and a segmentation pass per call.
 
-    Freezes the photo's geometry into a
-    :class:`~roomgen_geometry.reference.GeometricReference`, then samples
-    against it — the same `depth_estimator` on both sides, since the reference
-    is only meaningful to the backend that produced it.
+    Samples against the photo's frozen
+    :class:`~roomgen_geometry.reference.GeometricReference` with the same
+    `depth_estimator` on both sides.
     """
-    reference = GeometricReference.from_photo(
-        photo,
-        depth_estimator=depth_estimator,
-        segmenter=segmenter,
-        erosion_radius=erosion_radius,
-    )
+    if reference is None:
+        reference = GeometricReference.from_photo(
+            photo,
+            depth_estimator=depth_estimator,
+            segmenter=segmenter,
+            erosion_radius=erosion_radius,
+        )
     return sample_guided(
         pipeline,
         photo,

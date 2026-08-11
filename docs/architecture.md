@@ -13,7 +13,7 @@ py3.12 venv, fully declared in the package `pyproject.toml`s (`uv sync`).
   reward; torch + transformers only, no diffusers.
 - `packages/roomgen-guide`: guided sampling over a `diffusers` img2img pipeline
   plus the experiment harness (config base, `ROOMGEN_*` settings, verdict
-  scoring, logging, eval).
+  scoring, eval).
 - `experiments/`: numbered frameworks (not single runs) that orchestrate the
   packages and assert pass/fail verdicts in code.
 
@@ -72,7 +72,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
   VAE and scheduler itself because a diffusers `__call__` runs under `no_grad`
   and would strand the guidance gradient.
 - `renovate.py`: `renovate`, the end-to-end img2img entry point (photo + prompt
-  -> reference -> guided sample -> image), and `load_pipeline`, which brings up
+  -> reference -> guided sample -> image; a caller scoring against the same
+  geometry hands its own reference in), and `load_pipeline`, which brings up
   the Stable Diffusion 1.5 it runs on
   (`stable-diffusion-v1-5/stable-diffusion-v1-5`, the canonical Hub mirror)
   without the safety checker the seeded cache leaves out.
@@ -83,16 +84,16 @@ The guided sampler and the experiment harness shared with `experiments/`.
 - `settings.py`: `RoomgenSettings`, the one `ROOMGEN_*` env-var contract in the
   repo (`ROOMGEN_WDIR`, `ROOMGEN_WANDB_MODE`, `ROOMGEN_HF_HOME`).
 - `prefetch.py`: `roomgen-prefetch`, the CLI that seeds (or `--check`-verifies)
-  the Hub cache with the three pretrained checkpoints so later loads are
+  the Hub cache with the four pretrained checkpoints so later loads are
   instant and offline.
 - `verdict.py`: `score_run` and the `Verdict` it returns — one guided run's
   depth error and prompt adherence judged against its unguided control's, both
   sides at once, on the `VerdictGateConfig` its framework declares.
-- `logging/`: `Logger` protocol plus its `console`/`null`/`wandb`
-  implementations, so sampler code never imports wandb directly.
-- `eval/`: masked depth error against the reference, plus a prompt-adherence /
-  perceptual metric that catches the degenerate win where guidance succeeds by
-  simply not changing the image.
+- `eval/`: the two sides of that gate, measured on a finished render and
+  therefore under `no_grad`: `depth.py`'s masked depth error against the
+  reference, and the `adherence.py` `PromptAdherence` boundary whose
+  `clip.py` implementation scores the render against the prompt — the metric
+  that catches the degenerate win where guidance succeeds by not renovating.
 
 ## Test doubles
 

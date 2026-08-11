@@ -3,8 +3,14 @@ from typing import Any
 
 import pytest
 
+from roomgen_geometry.depth.depth_anything import DEFAULT_CHECKPOINT as DEPTH_CHECKPOINT
+from roomgen_geometry.segmentation.eomt import (
+    DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
+)
 from roomgen_guide import prefetch
+from roomgen_guide.eval.clip import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.prefetch import CHECKPOINTS
+from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 
 
 @pytest.fixture
@@ -17,6 +23,15 @@ def recorded_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     monkeypatch.setattr(prefetch, "snapshot_download", _fake_snapshot_download)
     return calls
+
+
+def test_every_checkpoint_a_benchmark_run_loads_is_registered() -> None:
+    assert {checkpoint.repo_id for checkpoint in CHECKPOINTS} == {
+        DEPTH_CHECKPOINT,
+        SEGMENTATION_CHECKPOINT,
+        DIFFUSION_CHECKPOINT,
+        ADHERENCE_CHECKPOINT,
+    }
 
 
 def test_prefetch_requests_every_registered_checkpoint(
@@ -41,7 +56,7 @@ def test_prefetch_filters_the_stable_diffusion_checkpoint(
     assert "safety_checker/*" in call["ignore_patterns"]
 
 
-def test_prefetch_downloads_the_other_two_checkpoints_unfiltered(
+def test_prefetch_downloads_the_other_three_checkpoints_unfiltered(
     tmp_path: Path, recorded_calls: list[dict[str, Any]]
 ) -> None:
     prefetch.prefetch(tmp_path)
@@ -49,7 +64,7 @@ def test_prefetch_downloads_the_other_two_checkpoints_unfiltered(
     unfiltered = [
         checkpoint for checkpoint in CHECKPOINTS if not checkpoint.ignore_patterns
     ]
-    assert len(unfiltered) == 2
+    assert len(unfiltered) == 3
     for checkpoint in unfiltered:
         call = next(
             call for call in recorded_calls if call["repo_id"] == checkpoint.repo_id

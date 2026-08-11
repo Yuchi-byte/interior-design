@@ -12,6 +12,7 @@ from roomgen_geometry.segmentation.eomt import (
     DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
 )
 from roomgen_guide.config import Config
+from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.experiment import ExperimentConfig
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 
@@ -120,8 +121,7 @@ class AdherenceConfig(Config):
 
     Args:
         kind: `clip` is the CLIP prompt score — the metric gate (b) is meant to
-            be — and needs a fourth checkpoint that `roomgen-prefetch` does not
-            seed. `contents_change` is checkpoint-free: it measures how far the
+            be. `contents_change` is checkpoint-free: it measures how far the
             render moved from the photo *outside* the shell mask, which is
             weaker (it cannot read the prompt) but still fails the degenerate
             run that renovates nothing, and is what the smoke variant uses.
@@ -129,7 +129,7 @@ class AdherenceConfig(Config):
     """
 
     kind: Literal["clip", "contents_change"]
-    checkpoint: Annotated[str, Field(min_length=1)] = "openai/clip-vit-base-patch32"
+    checkpoint: Annotated[str, Field(min_length=1)] = ADHERENCE_CHECKPOINT
 
 
 class BenchmarkConfig(ExperimentConfig):

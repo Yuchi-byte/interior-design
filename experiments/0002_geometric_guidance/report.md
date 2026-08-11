@@ -59,9 +59,11 @@ selected variant, ensures the photos, builds the stack, and drives
   `ConstantStrength` rather than `DecayingStrength` because the latter is a
   `NotImplementedError` upstream — a decayed schedule belongs to the variant
   that can evaluate it, not to a default.
-- **Metrics.** Gate (a) is `masked_depth_error` against the reference. Gate (b)
-  is CLIP prompt score (`openai/clip-vit-base-patch32`); the smoke variant
-  substitutes a checkpoint-free contents-change metric so it can run offline.
+- **Metrics.** `roomgen_guide.eval`: gate (a) is `depth_error` against the
+  reference, gate (b) the CLIP prompt score
+  (`openai/clip-vit-base-patch32`); the smoke variant substitutes
+  `framework/metrics.py`'s checkpoint-free contents-change metric so it can run
+  offline.
   Each scene also records a **reconstruction floor**: the same depth error on
   the photo passed through the VAE alone, which is what a *perfect*
   geometry-preserving renovation still pays.
@@ -95,8 +97,8 @@ as the **starting point**, with the sweep
 
 ### Verdict gate
 
-Asserted in code (`framework/scoring.py`, over `roomgen_guide`'s own `Verdict`),
-on every (scene, seed), both sides at once:
+Asserted in code (`roomgen_guide.verdict.score_run`), on every (scene, seed),
+both sides at once:
 
 - **(a)** `guided_depth_error <= (1 - depth_error_margin) * control_depth_error`
 - **(b)** `guided_prompt_adherence >= prompt_adherence_floor * control_prompt_adherence`
@@ -179,41 +181,23 @@ control and guided images are bit-identical before reaching for more strength.
 
 ## Gaps in `roomgen_guide` this framework had to work around
 
-Everything under `framework/` is a candidate for promotion into the package; it
-lives beside the experiment only because these are missing today. None of it
-modifies `packages/`.
+What is left under `framework/` is this benchmark's own glue plus the
+checkpoint-free smoke metric; the shared machinery is in `roomgen_guide`.
 
-1. **`roomgen_guide.eval` does not exist**, though `docs/architecture.md` and
-   `experiments/README.md` both cite it. `framework/metrics.py` holds the masked
-   depth error wrapper, the CLIP prompt score, and the checkpoint-free
-   contents-change metric that should live there.
-2. **`roomgen_guide.verdict.score_run` is a `NotImplementedError`.**
-   `framework/scoring.py` implements it against the package's own `Verdict` and
-   `VerdictGateConfig`, so promoting it is a move, not a rewrite. Its test
-   currently asserts the `NotImplementedError`.
-3. **`roomgen_guide.logging` does not exist**, so there is no `Logger` to pass
+1. **`roomgen_guide.logging` does not exist**, so there is no `Logger` to pass
    the verdict through and no wandb tracking: this framework prints and writes
    `results.json`. `ROOMGEN_WANDB_MODE` is therefore not honoured by 0002 yet,
    which `experiments/README.md` documents as the tracking contract.
-4. **`renovate` neither accepts nor returns a `GeometricReference`.** It builds
-   one internally per call, so a (guided, control) pair pays three segmentation
-   and three depth passes per scene where one would do, and the eval has to
-   rebuild the reference to score against the same thing the guidance was
-   steered by. An optional `reference=` parameter would fix both.
-5. **The reward's dtype is the input image's.** `DepthAnythingV2` casts its
+2. **The reward's dtype is the input image's.** `DepthAnythingV2` casts its
    prediction back to `images.dtype`, so a float16 sampler drags the energy, the
    alignment residual and the guidance gradient into float16 with it. The
    backend's own `dtype` is configurable (and surfaced as `backends.depth_dtype`
    here), but there is no knob to keep the *energy* in float32 above a
    half-precision VAE without a cast inside `packages/`. `conf/benchmark.yaml`
    therefore runs float32 throughout.
-6. **`guidance/schedule.DecayingStrength.__call__` is a
+3. **`guidance/schedule.DecayingStrength.__call__` is a
    `NotImplementedError`**, so the strong-early/decayed-late schedule the
    research note recommends cannot be selected. `constant` is the only value
    `guidance.schedule` accepts.
-7. **`reward.gradient_matching_error` is a `NotImplementedError`** — expected,
+4. **`reward.gradient_matching_error` is a `NotImplementedError`** — expected,
    that is v2's business, noted so the sequencing stays explicit.
-8. **The CLIP checkpoint is not seeded by `roomgen-prefetch`**, which knows
-   about three checkpoints. Gate (b)'s default metric needs a fourth
-   (`openai/clip-vit-base-patch32`, ~600MB), downloaded on first use into
-   `ROOMGEN_HF_HOME`.
