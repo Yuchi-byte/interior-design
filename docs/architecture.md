@@ -60,7 +60,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
 - `guidance/schedule.py`: guidance-strength schedules over the timestep — strong
   early while layout is still being decided, decayed late so texture detail is
   not fought.
-- `sampling/guided.py`: the guided denoising loop over a diffusers pipeline.
+- `sampling/guided.py`: the guided denoising loop, driving a diffusers img2img
+  pipeline through the `Img2ImgPipeline` Protocol so a fake can stand in for it.
 - `renovate.py`: `renovate`, the end-to-end img2img entry point (photo + prompt
   -> reference -> guided sample -> outputs).
 - `config.py`: `Config`, the pydantic v2 `extra="forbid"` base every typed
