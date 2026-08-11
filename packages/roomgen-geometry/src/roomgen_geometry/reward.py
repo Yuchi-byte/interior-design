@@ -3,6 +3,8 @@
 from jaxtyping import Bool, Float
 from torch import Tensor
 
+from roomgen_geometry.alignment import align_scale_shift, apply_scale_shift
+
 
 def masked_depth_error(
     prediction: Float[Tensor, "batch height width"],
@@ -22,7 +24,15 @@ def masked_depth_error(
     mean squared residual of that fit, and is therefore unchanged by any affine
     rescaling of `prediction`.
     """
-    raise NotImplementedError
+    aligned = apply_scale_shift(prediction, align_scale_shift(prediction, target, mask))
+    weight = mask.to(aligned.dtype)
+    squared_residual = (weight * (aligned - target) ** 2).flatten(1).sum(-1)
+    # An empty mask has nothing to score, and dividing its zero residual by its
+    # own zero weight would propagate a NaN into every pixel's gradient; the
+    # clamped denominator scores it zero instead, which is the same
+    # nothing-to-say answer as the identity fit `align_scale_shift` falls back
+    # to on that input.
+    return squared_residual / weight.flatten(1).sum(-1).clamp(min=1.0)
 
 
 def gradient_matching_error(
