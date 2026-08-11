@@ -76,6 +76,9 @@ The guided sampler and the experiment harness shared with `experiments/`.
   its `conf/` (name, explicit seeds, and the two-sided gate's thresholds).
 - `settings.py`: `RoomgenSettings`, the one `ROOMGEN_*` env-var contract in the
   repo (`ROOMGEN_WDIR`, `ROOMGEN_WANDB_MODE`, `ROOMGEN_HF_HOME`).
+- `prefetch.py`: `roomgen-prefetch`, the CLI that seeds (or `--check`-verifies)
+  the Hub cache with the three pretrained checkpoints so later loads are
+  instant and offline.
 - `verdict.py`: `score_run` and the `Verdict` it returns — one guided run's
   depth error and prompt adherence judged against its unguided control's, both
   sides at once, on the `VerdictGateConfig` its framework declares.

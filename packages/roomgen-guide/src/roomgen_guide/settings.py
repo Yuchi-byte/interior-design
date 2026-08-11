@@ -49,3 +49,8 @@ class RoomgenSettings(BaseSettings):
     hf_home: Path = Field(
         default_factory=lambda: _repo_root() / ".cache" / "huggingface"
     )
+
+    @property
+    def hub_cache(self) -> Path:
+        """The Hub snapshot cache under `hf_home`, matching `HF_HOME`'s layout."""
+        return self.hf_home / "hub"

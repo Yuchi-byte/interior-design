@@ -11,11 +11,15 @@ dependencies = [
     "diffusers>=0.31",
     "accelerate",
     "transformers",
+    "huggingface-hub",
     "omegaconf>=2.3",
     "pydantic>=2",
     "pydantic-settings>=2",
     "wandb>=0.20",
 ]
+
+[project.scripts]
+roomgen-prefetch = "roomgen_guide.prefetch:main"
 
 [build-system]
 requires = ["hatchling"]

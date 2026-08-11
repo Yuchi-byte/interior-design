@@ -26,6 +26,7 @@ def test_defaults_sit_at_the_enclosing_repo_root_not_the_working_directory(
 
     assert settings.wdir == root / "outputs"
     assert settings.hf_home == root / ".cache" / "huggingface"
+    assert settings.hub_cache == root / ".cache" / "huggingface" / "hub"
 
 
 def test_roomgen_variables_override_every_default(
