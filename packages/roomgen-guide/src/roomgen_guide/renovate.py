@@ -11,7 +11,7 @@ from torch import Tensor
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.guidance.schedule import GuidanceSchedule
-from roomgen_guide.sampling.guided import Img2ImgPipeline
+from roomgen_guide.sampling.pipeline import Img2ImgPipeline
 
 # The canonical Stable Diffusion 1.5 mirror: the original `runwayml` repo no
 # longer exists on the Hub (CreativeML OpenRAIL-M).

@@ -9,6 +9,7 @@ from torch import Tensor
 
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.reference import GeometricReference
+from roomgen_geometry.reward import masked_depth_error
 
 
 @dataclass(frozen=True)
@@ -26,4 +27,8 @@ class GeometricGuidance:
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, ""]:
-        raise NotImplementedError
+        disparity = self.depth_estimator(predicted_image)
+        error = masked_depth_error(
+            disparity, self.reference.disparity, self.reference.mask
+        )
+        return error.mean()
