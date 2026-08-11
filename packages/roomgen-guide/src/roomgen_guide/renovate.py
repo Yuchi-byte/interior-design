@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 import torch
 from jaxtyping import Float
 from torch import Tensor
@@ -10,6 +12,10 @@ from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.guidance.schedule import GuidanceSchedule
 from roomgen_guide.sampling.guided import Img2ImgPipeline
+
+# The canonical Stable Diffusion 1.5 mirror: the original `runwayml` repo no
+# longer exists on the Hub (CreativeML OpenRAIL-M).
+DEFAULT_CHECKPOINT: Final = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 
 
 def renovate(
