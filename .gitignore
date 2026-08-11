@@ -4,6 +4,15 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.hypothesis/
+# pytest-cov output; coverage is read in the terminal, not committed.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+# hatchling build products of the two workspace members.
+build/
+dist/
 # Single output area: all run artifacts (renovated renders, guidance traces,
 # depth/mask debug dumps, experiment results) default here via ROOMGEN_WDIR.
 /outputs/
@@ -15,3 +24,13 @@ __pycache__/
 /.cache/huggingface/
 wandb/
 *.egg-info/
+# Checkpoints are never committed, wherever they land: a weight file that
+# escapes the caches above is caught here rather than in review.
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+# Editor and OS droppings.
+.idea/
+.vscode/
+.DS_Store
