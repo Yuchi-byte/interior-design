@@ -1,0 +1,60 @@
+{
+  "photos": [
+    {
+      "id": "hotel_suite_living_room",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/0/07/Hotel-suite-living-room.jpg",
+      "license": "Public Domain",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Hotel-suite-living-room.jpg",
+      "sha256": "a54b3e435150fc643632bd775b6dd868cd58d78dd9731d0ec258c4c70c744d14"
+    },
+    {
+      "id": "scandi_living_room",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ea/Living_room_%28Unsplash%29.jpg",
+      "license": "CC0 1.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Living_room_(Unsplash).jpg",
+      "sha256": "98e196f52a67abb96e04c6a33694d1710ea885797e01ae2d52b7bba9f747893b"
+    },
+    {
+      "id": "lakehouse_living_room",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d0/Simon_Rae_2017-05-09_%28Unsplash%29.jpg",
+      "license": "CC0 1.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Simon_Rae_2017-05-09_(Unsplash).jpg",
+      "sha256": "9a5b3b67f8996f9b137e2bccd9ef28c0050179e65a4b215eeb30e86355ad5948"
+    },
+    {
+      "id": "bedroom_warm_ensuite",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f7/Gfp-bedroom-2.jpg",
+      "license": "Public Domain",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Gfp-bedroom-2.jpg",
+      "sha256": "fd5136b3bdf93252a91ff8dfefdf8182b09ba0187d9b7f597bb2f4d3e349997c"
+    },
+    {
+      "id": "bedroom_twin_blue",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/9/9a/Gfp-bedroom1.jpg",
+      "license": "Public Domain",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Gfp-bedroom1.jpg",
+      "sha256": "720368961f384dff8f2519a6a5354b4d5a957acc8c3ab16cc2c3bf9d38c78dea"
+    },
+    {
+      "id": "ny_loft_bedroom",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/29/NY_loft_bedroom_%28Unsplash%29.jpg",
+      "license": "CC0 1.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:NY_loft_bedroom_(Unsplash).jpg",
+      "sha256": "5cee2e1fd0c50385f2adb733cb2702ceb447ace883642c44f415c540b49cd3a5"
+    },
+    {
+      "id": "hostel_kitchen",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/26/Hostel-garant-kitchen.jpg",
+      "license": "CC0 1.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Hostel-garant-kitchen.jpg",
+      "sha256": "fe25b6a928cd28130fb2361838ee7f06d0f46b49666371f20a411a9bce140b3c"
+    },
+    {
+      "id": "blue_white_kitchen",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/26/Blue_white_kitchen_interior_%28Unsplash%29.jpg",
+      "license": "CC0 1.0",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Blue_white_kitchen_interior_(Unsplash).jpg",
+      "sha256": "1030543c6e3b65863e9ee11c4a4f9da6dfa78bc93c7d20b93782fb16ffcd2fb0"
+    }
+  ]
+}
