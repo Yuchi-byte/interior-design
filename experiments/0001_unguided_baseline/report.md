@@ -38,12 +38,12 @@ says so.
 `conf/` when this framework's `run.py` lands; the intended shape:
 
 - **Scenes.** A small fixed set of interior photographs spanning room types and
-  camera fields of view, each with a Mask2Former ADE20K segmentation whose
+  camera fields of view, each with an EoMT ADE20K segmentation whose
   shell mask covers a substantial fraction of the frame.
 - **Reference.** `GeometricReference` per scene: Depth Anything V2 inverse
   depth, masked to the eroded architectural shell, computed once and frozen.
-- **Sampler.** Stable Diffusion / SDXL img2img via `diffusers`, no guidance
-  term, fixed step count, denoising strength swept over a small grid.
+- **Sampler.** Stable Diffusion 1.5 img2img via `diffusers`, no guidance term,
+  fixed step count, denoising strength swept over a small grid.
 - **Prompts.** One fixed renovation prompt per scene ("same room, <style>
   furniture"), held identical across every variant and every later framework.
 - **Seeds.** Several explicit seeds per (scene, prompt, strength), threaded as a

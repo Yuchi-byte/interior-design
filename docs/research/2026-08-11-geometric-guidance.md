@@ -1,9 +1,9 @@
 # Depth-Guided Sampling for Geometry-Preserving Room Renovation
 
 **Date:** 2026-08-11 · **Scope:** how to hold a photographed room's architectural
-shell fixed while a diffusion model restyles its contents — training-free
-guidance vs. conditioning alternatives, and the affine-invariance problem that
-any depth-space objective must solve first. Decision-oriented.
+shell fixed while a diffusion model restyles its contents — the training-free
+guidance approach, the model stack it runs on, and the affine-invariance problem
+that any depth-space objective must solve first.
 
 **TL;DR.** Build the **unguided baseline and the eval harness first**, then climb
 a 4-rung ladder: **v0** unguided img2img → **v1** depth guidance on the
@@ -16,31 +16,33 @@ it needs no trained adapter, applies to any pipeline, and — the point of this
 project — can be **restricted to a mask**, conditioning on the shell while
 leaving the furniture unconstrained, which a whole-image ControlNet hint does
 not naturally do. Its real disadvantages are per-step cost, VRAM through the VAE
-decode, and a strength schedule that must be tuned per scene family. **The
-single non-negotiable technical detail is the affine alignment**: Depth Anything
-V2 is affine-invariant, so a raw depth MSE is meaningless and the recommended
-handling is a per-step closed-form weighted least-squares alignment over the
-masked pixels (MiDaS's SSI loss, arXiv:1907.01341), differentiated through.
+decode, and a strength schedule that must be tuned per scene family. The model
+stack is fixed (§3): **Stable Diffusion 1.5** as the base sampler, **Depth
+Anything V2 Small** for depth, **EoMT** for the ADE20K segmentation the shell
+mask is cut from. **The single non-negotiable
+technical detail is the affine alignment**: Depth Anything V2 is
+affine-invariant, so a raw depth MSE is meaningless and every comparison goes
+through a per-step closed-form weighted least-squares alignment over the masked
+pixels (MiDaS's SSI loss, arXiv:1907.01341), differentiated through.
 
 ---
 
-## 1. Landscape
+## 1. The approach and its baseline
 
 Training-free guidance means steering a *frozen* pretrained sampler with the
-gradient of a differentiable objective on the sample; the alternatives are
-conditioning models that must be trained. Cost is given per denoising step
-relative to one unguided step.
+gradient of a differentiable objective on the sample; the alternative is a
+conditioning model that must be trained. roomgen takes the first, in the
+FreeDoM line (classifier guidance arXiv:2105.05233 → DPS arXiv:2209.14687 →
+FreeDoM arXiv:2303.09833 / Universal Guidance arXiv:2302.07121), and measures
+itself against the second. Cost is per denoising step, relative to one unguided
+step.
 
-| Approach | Core idea | Cost | Needs training | Implementation weight |
-|---|---|---|---|---|
-| **Classifier guidance** (arXiv:2105.05233) | Shift the score by ∇ log p(y\|x_t) from a classifier trained on **noisy** x_t. The original recipe; the noisy-input requirement is what everything below removes. | ~1.2-2x (one classifier fwd+bwd) | Yes — a noise-aware classifier | Light *if* such a classifier exists; here it does not |
-| **DPS** (arXiv:2209.14687) | Approximate the posterior for a known forward operator A by taking ∇_{x_t} ‖y − A(x̂₀(x_t))‖² through Tweedie's x̂₀. Turns any differentiable measurement into guidance, no noisy-input model needed. Principled, well-studied for linear inverse problems. | ~2-3x (backprop through the denoiser) | No | Medium — needs x̂₀ exposed and a clean A |
-| **FreeDoM** (arXiv:2303.09833) | The same x̂₀ trick with an **arbitrary off-the-shelf energy** (a CLIP score, a face-ID net, a depth net), plus a time-travel/resampling step and a time-dependent strength. Closest published match to what roomgen does. | ~2-4x (energy net fwd+bwd; more with time-travel) | No | Medium — energy is a black box, schedule needs tuning |
-| **Universal Guidance** (arXiv:2302.07121) | Forward guidance on x̂₀ + a **backward** correction that solves a small inner optimisation to make x̂₀ satisfy the constraint, then per-step recurrence. Stronger constraint satisfaction than plain forward guidance, at real extra cost. | ~3-8x (inner loop) | No | Medium-heavy |
-| **ΠGDM / manifold-constrained variants** (e.g. manifold constraints, arXiv:2206.00941) | Correct the guidance direction using the denoiser's Jacobian or a manifold projection so the step stays on the data manifold. Mainly matters for hard linear inverse problems. | ~2-4x | No | Heavy; unclear payoff for a soft geometric prior |
-| **ControlNet-depth** (arXiv:2302.05543) | *Not guidance.* A trained side network injects a depth hint into the UNet, so geometry is respected by construction at **no per-step gradient cost**. The strong baseline this project must beat or justify itself against. | ~1.2-1.4x (extra branch fwd only) | **Yes** — but checkpoints are public for SD1.5/SDXL | Light to use, zero to train (use published weights) |
+| Approach | Core idea | Cost | Needs training |
+|---|---|---|---|
+| **FreeDoM** (arXiv:2303.09833) — what roomgen does | Take ∇ of an **arbitrary off-the-shelf energy** (here a depth net) through Tweedie's x̂₀, on a time-dependent strength schedule. | ~2-4x (energy net fwd+bwd) | No |
+| **ControlNet-depth** (arXiv:2302.05543) — the v3 baseline | *Not guidance.* A trained side network injects a depth hint into the UNet, so geometry is respected by construction at **no per-step gradient cost**. | ~1.2-1.4x (extra branch fwd only) | **Yes** — but SD1.5 checkpoints are public |
 
-Two cross-cutting notes for the decision. First, **the mask is the differentiator.**
+Two cross-cutting notes. First, **the mask is the differentiator.**
 ControlNet-depth conditions on a whole-image depth hint, which also pins the
 furniture — precisely what renovation must be free to change. Getting
 shell-only behaviour out of ControlNet means synthesising a hint with the
@@ -67,7 +69,7 @@ Reasons to prefer depth space:
 - **No metric calibration required.** Explicit 3D from a single photo needs
   intrinsics and an absolute scale, neither of which a user's photograph
   carries. The depth-space objective sidesteps this by being *defined* up to the
-  affine ambiguity (§3) rather than needing it resolved.
+  affine ambiguity (§4) rather than needing it resolved.
 - **The prior is already trained.** The central bet is that Depth Anything V2
   (arXiv:2406.09414), a DPT head on a DINOv2 backbone trained on very large
   mixed data, has already internalised planarity, room layout, and relative
@@ -84,11 +86,35 @@ requirement — but it means the approach does **not** extend for free to
 novel-view renovation, and the note should not imply it does. The other
 counterargument is that monocular depth is smooth and can be tolerant of exactly
 the small wall shifts we care about; that is what the gradient-matching term
-(§4, v2) exists to test.
+(§5, v2) exists to test.
 
 ---
 
-## 3. The affine-invariance problem
+## 3. The model stack
+
+| Role | Checkpoint | Licence |
+|---|---|---|
+| Depth | Depth Anything V2 Small, `depth-anything/Depth-Anything-V2-Small-hf` (arXiv:2406.09414) | Apache-2.0 — the larger tiers are CC-BY-NC |
+| Segmentation | EoMT, `tue-mps/ade20k_semantic_eomt_large_512` (arXiv:2503.19108) | MIT — the DINOv3-backed variants are not |
+| Base sampler | Stable Diffusion 1.5 img2img, `stable-diffusion-v1-5/stable-diffusion-v1-5` | CreativeML OpenRAIL-M |
+
+Licences are load-bearing: this stack is chosen so nothing caps the project at
+non-commercial use. The SD1.5 id is the canonical mirror — the original
+`runwayml` repo is gone from the Hub.
+
+EoMT decodes mask queries inside a plain ViT encoder rather than through a
+separate pixel decoder, so it emits the same ADE20K-150 label space the shell
+mask is cut from at a fraction of the per-image cost — and it is run once per
+photo, off the gradient path, so its cost barely matters.
+
+Future work, once the method is validated: migrate the sampler to a
+flow-matching model (SDXL, FLUX), where x̂₀ is recovered from the velocity
+field rather than the noise prediction and the guidance schedule must be
+re-tuned.
+
+---
+
+## 4. The affine-invariance problem
 
 Depth Anything V2, like MiDaS before it, predicts **affine-invariant inverse
 depth**: its output is determined only up to an unknown scale `s` and shift `t`,
@@ -99,15 +125,12 @@ affine mismatch, not the geometry: it can be huge for identical geometry and
 small for genuinely drifted geometry. Any depth-space objective must remove this
 degree of freedom before it measures anything.
 
-| Option | What it does | Cost | Verdict |
-|---|---|---|---|
-| **Per-step closed-form alignment** (recommended) | Solve `min_{s,t} Σ w (s·d + t − r)²` over the masked pixels in closed form (a 2x2 system), then take the masked MSE of the aligned prediction. MiDaS's scale-and-shift-invariant loss (arXiv:1907.01341), used as a reward. | Negligible — five weighted sums and a 2x2 solve, fully differentiable | **Take this.** Exact, cheap, differentiable, and invariant by construction. |
-| **Metric-depth model** | Swap in a metric predictor (ZoeDepth, arXiv:2302.12288; Depth Anything V2's metric fine-tunes; Metric3D-family models — *ID not verified*) so outputs are directly comparable. | Same forward cost | Fallback. Removes the ambiguity in principle, but metric heads are less accurate relatively, are indoor/outdoor-domain-sensitive, and their absolute scale on a *generated* image is not trustworthy. Do not build on it first. |
-| **Rank / ordinal loss** | Score only the depth *ordering* of sampled pixel pairs (the DIW-style objective, arXiv:1604.03901), which is invariant to any monotone transform, not just affine. | Higher (pair sampling), noisier gradient | Interesting as a robustness check, weak as a primary signal: ordering is preserved under exactly the smooth deformations that constitute layout drift. |
-| **Normalise by median/MAD** | Standardise both maps by robust statistics before comparison. | Negligible | A crude approximation of alignment. Strictly dominated by the closed form, which costs the same and is optimal. |
-
-**Recommendation: per-step closed-form alignment, weights = the eroded shell
-mask, differentiated through** (the alignment coefficients depend on the
+**The handling: per-step closed-form alignment, weights = the eroded shell
+mask, differentiated through.** Solve `min_{s,t} Σ w (s·d + t − r)²` over the
+masked pixels as a 2x2 system, then take the masked MSE of the aligned
+prediction — MiDaS's scale-and-shift-invariant loss (arXiv:1907.01341) used as a
+reward. It costs five weighted sums and a 2x2 solve, and it is invariant by
+construction rather than approximately (the alignment coefficients depend on the
 prediction, so `s` and `t` carry gradient — do not stop-gradient them without
 measuring the effect; treating them as constants is a defensible ablation, not
 an obvious simplification). Two practical guards: the 2x2 determinant
@@ -118,7 +141,7 @@ the residual.
 
 ---
 
-## 4. Recommended staged path
+## 5. Staged path
 
 Every promotion is gated on the two-sided verdict of `experiments/README.md`:
 masked depth error down by a margin **and** prompt adherence not below a floor.
@@ -138,7 +161,7 @@ determinism check. Report the Pareto over both metrics, never gate (a) alone.
 
 ---
 
-## 5. Open questions
+## 6. Open questions
 
 - **Does the depth prior actually see wall shifts?** Monocular depth is smooth,
   and a wall translated by a modest amount may cost less error than a plausible
@@ -146,8 +169,8 @@ determinism check. Report the Pareto over both metrics, never gate (a) alone.
   sampling: synthetically perturb a room's geometry and plot aligned masked
   error vs. perturbation magnitude. **This experiment should probably run before
   v1 — it can invalidate the premise cheaply.**
-- **Is the mask reliable enough?** Mask2Former (arXiv:2112.01527) mislabels
-  built-in cabinetry, mirrors, and large wall art. A mirror is the worst case:
+- **Is the mask reliable enough?** ADE20K segmentation mislabels built-in
+  cabinetry, mirrors, and large wall art. A mirror is the worst case:
   segmented as wall, but its depth is the reflected scene's. How much does gate
   (a) move if the mask is wrong on 5% of pixels?
 - **Does guidance through the VAE decode fight the decoder?** The gradient
@@ -161,34 +184,25 @@ determinism check. Report the Pareto over both metrics, never gate (a) alone.
   (arXiv:2103.00020) and a perceptual-distance metric (LPIPS, arXiv:1801.03924)
   measure different things, and gate (b) is only as trustworthy as this choice.
   A metric that a frozen image can pass would silently void the whole gate.
-- **SD1.5 vs. SDXL.** SDXL's stronger prior may drift less to begin with,
-  shrinking the headroom v1 has to close; the baseline must be measured on
-  whichever pipeline ships.
+- **How much headroom does SD1.5 leave?** A stronger prior would drift less to
+  begin with, so the margin v1 has to close is a property of the base sampler
+  and must be re-measured after any migration.
 
 ---
 
-## 6. References (arXiv)
+## 7. References (arXiv)
 
 - **Depth Anything V2** — arXiv:2406.09414. *(the depth backbone; affine-invariant inverse depth)*
-- **MiDaS** — Towards Robust Monocular Depth Estimation. arXiv:1907.01341. *(the scale-and-shift-invariant loss, §3 — the crux)*
-- **Mask2Former** — Masked-attention Mask Transformer for Universal Image Segmentation. arXiv:2112.01527.
+- **MiDaS** — Towards Robust Monocular Depth Estimation. arXiv:1907.01341. *(the scale-and-shift-invariant loss, §4 — the crux)*
+- **EoMT** — Your ViT is Secretly an Image Segmentation Model. arXiv:2503.19108. *(the segmentation backend)*
 - **DPS** — Diffusion Posterior Sampling for General Noisy Inverse Problems. arXiv:2209.14687.
 - **FreeDoM** — Training-Free Energy-Guided Conditional Diffusion Model. arXiv:2303.09833. *(closest published match to v1)*
 - **Universal Guidance** — Universal Guidance for Diffusion Models. arXiv:2302.07121.
 - **ControlNet** — Adding Conditional Control to Text-to-Image Diffusion Models. arXiv:2302.05543. *(the v3 baseline)*
 - **Classifier guidance** — Diffusion Models Beat GANs on Image Synthesis. arXiv:2105.05233.
 - **Classifier-free guidance** — arXiv:2207.12598.
-- **Latent Diffusion / Stable Diffusion** — arXiv:2112.10752.
+- **Latent Diffusion / Stable Diffusion** — arXiv:2112.10752. *(the base sampler)*
 - **SDEdit** — guided image synthesis and editing with SDE. arXiv:2108.01073. *(the img2img recipe v0 uses)*
-- **Manifold constraints for diffusion inverse problems** — arXiv:2206.00941. *(the ΠGDM-adjacent row of §1; ΠGDM itself is ICLR 2023 and I do not have a confident arXiv ID for it — verify before citing)*
-- **DINOv2** — arXiv:2304.07193. *(the depth backbone's features)*
+- **DINOv2** — arXiv:2304.07193. *(the features both backbones are built on)*
 - **Depth Anything V1** — arXiv:2401.10891.
-- **ZoeDepth** — metric depth. arXiv:2302.12288. *(the metric-depth fallback of §3)*
-- **Marigold** — diffusion-based monocular depth. arXiv:2312.02145. *(alternative depth backend; ID believed correct but not re-verified)*
-- **Depth in the Wild (ordinal depth)** — arXiv:1604.03901. *(the rank-loss option of §3)*
 - **CLIP** — arXiv:2103.00020. **LPIPS** — arXiv:1801.03924. *(candidate gate-(b) metrics)*
-
-Uncertainty note: the IDs for ΠGDM and for the Metric3D family are **not
-verified** and are flagged inline above; every other ID here is one I am
-confident in, but any citation load-bearing for a decision should be checked
-against the abstract before it is repeated in a paper or a report.

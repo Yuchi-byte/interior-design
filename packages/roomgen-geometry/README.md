@@ -39,14 +39,18 @@ Segmentation is the exception and runs under `no_grad` — the mask is a constan
 Both are pulled from the Hugging Face Hub on first use and cached under
 `ROOMGEN_HF_HOME`. Weights are never committed.
 
-| Role | Checkpoint | Approx. download |
-|---|---|---|
-| Depth | `depth-anything/Depth-Anything-V2-Large-hf` (DPT head on DINOv2-L) | ~1.3 GB |
-| Segmentation | `facebook/mask2former-swin-large-ade-semantic` (150 ADE20K classes) | ~0.9 GB |
+| Role | Checkpoint | Licence | Approx. download |
+|---|---|---|---|
+| Depth | `depth-anything/Depth-Anything-V2-Small-hf` (DPT head on DINOv2-S) | Apache-2.0 | ~0.1 GB |
+| Segmentation | `tue-mps/ade20k_semantic_eomt_large_512` (150 ADE20K classes) | MIT | ~1.3 GB |
 
-Both sit behind protocols, so either is swappable by config — a metric-depth
-model or a lighter Small/Base depth checkpoint drops in without touching
-`masking.py`, `alignment.py`, or `reward.py`.
+The licence column is load-bearing: the larger Depth Anything V2 tiers are
+CC-BY-NC, and the DINOv3-backed EoMT checkpoints carry their own restrictive
+terms, so neither is a free swap.
+
+Both sit behind protocols, so a backend swap — a metric-depth model, a
+different segmentation head — is a config change that touches neither
+`masking.py`, `alignment.py`, nor `reward.py`.
 
 ## Testing
 

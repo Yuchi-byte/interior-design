@@ -42,8 +42,8 @@ This is a torch project and guidance is expensive. The gradient backpropagates
 through the depth network **and** the VAE decoder, whose activations at sample
 resolution must be retained for the backward pass at every guided step, so a
 guided run costs several times the VRAM of the same pipeline sampled unguided.
-Budget accordingly at 512px, and expect 1024px SDXL guidance to need the levers
-below.
+Budget accordingly at SD1.5's native 512px; the levers below are what buy
+headroom above it.
 
 - Gradient-checkpoint the VAE decoder.
 - Evaluate the energy at a reduced depth-input resolution.

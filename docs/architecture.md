@@ -26,13 +26,14 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
 - `depth/base.py`: `DepthEstimator`, the `Protocol` mapping an image tensor to
   affine-invariant inverse depth.
 - `depth/depth_anything.py`: the Depth Anything V2 backend
-  (`depth-anything/Depth-Anything-V2-Large-hf`, DPT head on a DINOv2 backbone),
-  kept differentiable end to end including preprocessing.
+  (`depth-anything/Depth-Anything-V2-Small-hf`, DPT head on a DINOv2 backbone;
+  the Small tier is the only Apache-2.0 one), kept differentiable end to end
+  including preprocessing.
 - `segmentation/base.py`: `Segmenter`, the `Protocol` mapping an image to
   per-pixel ADE20K class ids.
-- `segmentation/mask2former.py`: the Mask2Former backend
-  (`facebook/mask2former-swin-large-ade-semantic`), run once per photo under
-  `no_grad` — segmentation is never on the gradient path.
+- `segmentation/eomt.py`: the EoMT backend
+  (`tue-mps/ade20k_semantic_eomt_large_512`, MIT-licensed DINOv2 weights), run
+  once per photo under `no_grad` — segmentation is never on the gradient path.
 - `segmentation/ade20k.py`: the 150-class label table and the
   `SHELL`/`CONTENTS` partition (wall, floor, ceiling, window, door, column,
   stairs, ... vs. furniture, furnishings, decor) — the domain-knowledge file.
@@ -63,7 +64,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
 - `sampling/guided.py`: the guided denoising loop, driving a diffusers img2img
   pipeline through the `Img2ImgPipeline` Protocol so a fake can stand in for it.
 - `renovate.py`: `renovate`, the end-to-end img2img entry point (photo + prompt
-  -> reference -> guided sample -> outputs).
+  -> reference -> guided sample -> outputs), over Stable Diffusion 1.5
+  (`stable-diffusion-v1-5/stable-diffusion-v1-5`, the canonical Hub mirror).
 - `config.py`: `Config`, the pydantic v2 `extra="forbid"` base every typed
   experiment config extends, with OmegaConf-backed YAML + dotlist loading.
 - `settings.py`: `RoomgenSettings`, the one `ROOMGEN_*` env-var contract in the

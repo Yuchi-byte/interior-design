@@ -13,7 +13,7 @@ packages/
   roomgen-geometry/       # the geometric grounding stack
     src/roomgen_geometry/
       depth/                #   DepthEstimator protocol + Depth Anything V2 backend
-      segmentation/         #   Segmenter protocol + Mask2Former, ADE20K shell/contents split
+      segmentation/         #   Segmenter protocol + EoMT, ADE20K shell/contents split
       masking.py            #   architectural_mask + boundary erosion
       alignment.py          #   align_scale_shift (closed-form weighted least squares)
       reward.py             #   masked_depth_error, the scale/shift-invariant objective
@@ -22,7 +22,7 @@ packages/
     src/roomgen_guide/
       guidance/             #   Guidance protocol, geometric energy, strength schedules
       sampling/guided.py    #   the guided denoising loop over a diffusers pipeline
-      renovate.py           #   end-to-end img2img renovation entry point
+      renovate.py           #   end-to-end img2img renovation entry point (SD1.5)
       settings.py           #   RoomgenSettings (ROOMGEN_* env vars)
       verdict.py            #   per-run score frameworks gate on
 experiments/              # numbered experiment frameworks (see experiments/README.md)
