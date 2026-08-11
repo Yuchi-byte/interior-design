@@ -57,7 +57,9 @@ def align_scale_shift(
     # `where` rather than a Python `if` because the test is per batch element,
     # and branching on a tensor value would both break batching and drop the
     # gradient.
-    safe_determinant = torch.where(degenerate, torch.ones_like(determinant), determinant)
+    safe_determinant = torch.where(
+        degenerate, torch.ones_like(determinant), determinant
+    )
     identity_scale = torch.ones_like(determinant)
     identity_shift = torch.zeros_like(determinant)
 
