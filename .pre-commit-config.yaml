@@ -1,4 +1,39 @@
+# Every hook here runs offline once installed: nothing resolves a model id,
+# touches the Hugging Face Hub, or reaches the network at commit time.
+default_install_hook_types: [pre-commit]
+default_language_version:
+  python: python3.12
+
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown's two-space hard line break is meaningful; docs/ is prose.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      # A stray `breakpoint()` in the guidance loop hangs a sampling run with
+      # no output; ruff's T20 catches prints, this catches the debugger.
+      - id: debug-statements
+      # Model weights are never committed. 512kB is well above any config,
+      # fixture or test asset and far below the smallest real checkpoint, so
+      # this fires on exactly the mistake it is here to stop.
+      - id: check-added-large-files
+        args: [--maxkb=512]
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.1
+    hooks:
+      # uv.lock is committed and CI syncs `--locked`, so a dependency edit that
+      # forgets to relock fails there. Catch it at the commit that caused it.
+      - id: uv-lock
+
   - repo: local
     hooks:
       - id: ruff-check

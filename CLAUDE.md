@@ -58,7 +58,8 @@ uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
 uv run pytest -q                    # CI runs `-m "not models"`; locally run it unfiltered
 ```
 
-`uv run pre-commit install` wires all four into a pre-commit hook; CI
+`make check` runs exactly those four (see the `Makefile` for the rest of the
+wrappers). `uv run pre-commit install` wires all four into a pre-commit hook; CI
 (`.github/workflows/ci.yml`) runs the same gate with the `models` tests
 deselected.
 
