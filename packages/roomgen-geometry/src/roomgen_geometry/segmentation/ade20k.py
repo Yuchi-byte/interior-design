@@ -11,7 +11,7 @@ from typing import Final
 # agree entry for entry (upstream ships id 7 as "bed " with a trailing space;
 # only that whitespace is normalised here):
 #   https://huggingface.co/datasets/huggingface/label-files/raw/main/ade20k-id2label.json
-#   https://huggingface.co/facebook/mask2former-swin-large-ade-semantic/raw/main/config.json
+#   https://huggingface.co/tue-mps/ade20k_semantic_eomt_large_512/raw/main/config.json
 # Note the indexing: a model's `id2label` is 0-based with 0 == "wall", while the
 # raw scene_parse_150 annotation PNGs are 1-based with 0 reserved for
 # "unlabelled". Every id here is a *model output* id, which is what `Segmenter`

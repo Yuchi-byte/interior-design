@@ -1435,7 +1435,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6" },
     { name = "torch", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "transformers", specifier = ">=4.44" },
+    { name = "transformers", specifier = ">=4.54" },
 ]
 
 [[package]]

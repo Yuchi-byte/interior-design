@@ -5,6 +5,7 @@ from torch import Tensor
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.depth.depth_anything import DepthAnythingV2
 from roomgen_geometry.segmentation.base import Segmenter
+from roomgen_geometry.segmentation.eomt import EoMT
 
 
 class SyntheticDepth:
@@ -35,5 +36,6 @@ def test_fakes_stand_in_for_the_model_backends() -> None:
     assert segmentation(images).shape == (2, 8, 8)
 
 
-def test_depth_anything_backend_is_swappable_for_a_fake() -> None:
+def test_real_backends_are_swappable_for_the_fakes() -> None:
     assert issubclass(DepthAnythingV2, DepthEstimator)
+    assert issubclass(EoMT, Segmenter)
