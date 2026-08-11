@@ -1,0 +1,28 @@
+[project]
+name = "roomgen-guide"
+version = "0.1.0"
+description = "Guided diffusion sampling and the experiment harness (config/settings/logging/verdict)."
+authors = [
+    { name = "Yuchi-byte", email = "lyra.love.guo@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "roomgen-geometry",
+    "diffusers>=0.31",
+    "accelerate",
+    "transformers",
+    "omegaconf>=2.3",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "wandb>=0.20",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/roomgen_guide"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

@@ -1,0 +1,31 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff-check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        files: ^packages/(roomgen-geometry|roomgen-guide)/(src|tests)/
+      - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        files: ^packages/(roomgen-geometry|roomgen-guide)/(src|tests)/
+      - id: mypy
+        name: mypy
+        # Whole-package check, not per-file: mypy needs both src trees on the
+        # path at once to resolve roomgen_guide -> roomgen_geometry.
+        entry: uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: pytest
+        name: pytest
+        # Unfiltered locally (unlike CI): a dev machine has the Hub cache and a
+        # GPU, so the `models` tests are worth paying for before a commit lands.
+        entry: uv run pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false

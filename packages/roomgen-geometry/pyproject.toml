@@ -1,0 +1,22 @@
+[project]
+name = "roomgen-geometry"
+version = "0.1.0"
+description = "The geometric grounding stack: monocular depth, semantic segmentation, architectural masking, and the scale-invariant depth reward."
+authors = [
+    { name = "Yuchi-byte", email = "lyra.love.guo@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.4",
+    "torchvision",
+    "transformers>=4.44",
+    "numpy>=2",
+    "pillow",
+    "jaxtyping>=0.3",
+    "pydantic>=2",
+    "pyyaml>=6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
