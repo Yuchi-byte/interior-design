@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Self
 
 from jaxtyping import Bool, Float
 from torch import Tensor
@@ -44,7 +43,7 @@ class GeometricReference:
         depth_estimator: DepthEstimator,
         segmenter: Segmenter,
         erosion_radius: int,
-    ) -> Self:
+    ) -> GeometricReference:
         """Run both backends on the input photo and freeze the result.
 
         Args:

@@ -79,6 +79,18 @@ The guided sampler and the experiment harness shared with `experiments/`.
   perceptual metric that catches the degenerate win where guidance succeeds by
   simply not changing the image.
 
+## Test doubles
+
+- `packages/roomgen-geometry/tests/roomgen_fakes/`: weightless `DepthEstimator`
+  and `Segmenter` implementations (a floor-shaped disparity ramp coupled to
+  pixel content; a ceiling/wall/floor room with a window and a sofa), the
+  shared gradient assertion, and the fixtures exposing them. Both suites import
+  it via the root pytest `pythonpath`, so the default suite needs no network,
+  no GPU and no Hub cache.
+- The root `conftest.py` installs jaxtyping's runtime type-check hook over
+  `roomgen_geometry`, so every shape annotation in that package is enforced for
+  the duration of the suite.
+
 ## The reward
 
 Depth Anything V2 predicts **affine-invariant inverse depth**: the output is
