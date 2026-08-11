@@ -8,7 +8,8 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-DEFAULT_CHECKPOINT: Final = "depth-anything/Depth-Anything-V2-Large-hf"
+# Small is the only Apache-2.0 checkpoint tier; Base/Large/Giant are CC-BY-NC.
+DEFAULT_CHECKPOINT: Final = "depth-anything/Depth-Anything-V2-Small-hf"
 
 
 class DepthAnythingV2:
