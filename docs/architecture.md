@@ -27,8 +27,9 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   affine-invariant inverse depth.
 - `depth/depth_anything.py`: the Depth Anything V2 backend
   (`depth-anything/Depth-Anything-V2-Small-hf`, DPT head on a DINOv2 backbone;
-  the Small tier is the only Apache-2.0 one), kept differentiable end to end
-  including preprocessing.
+  the Small tier is the only Apache-2.0 one), frozen and in eval but never
+  under `no_grad` — preprocessing is tensor ops, so the gradient reaches the
+  input image.
 - `segmentation/base.py`: `Segmenter`, the `Protocol` mapping an image to
   per-pixel ADE20K class ids.
 - `segmentation/eomt.py`: the EoMT backend
