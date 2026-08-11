@@ -100,7 +100,14 @@ warn_unreachable = false
 
 [tool.pytest.ini_options]
 testpaths = ["packages/roomgen-geometry/tests", "packages/roomgen-guide/tests"]
-addopts = "-q"
+# `--strict-markers` turns a misspelled marker into a collection error rather
+# than a test CI silently keeps running: `-m "not models"` only protects the
+# runner if the marker on a weights-hungry test is the one CI deselects.
+addopts = "-q --strict-markers --strict-config"
+# The weightless `DepthEstimator`/`Segmenter` doubles live with the package
+# whose Protocols they satisfy and are imported as `roomgen_fakes` by both
+# suites; the root conftest registers their fixtures.
+pythonpath = ["packages/roomgen-geometry/tests"]
 markers = [
     "slow: long-running (many diffusion steps, full-resolution renders); excluded from quick local runs on request only, not from CI by default",
     "models: requires downloading pretrained model weights from the Hugging Face Hub; excluded from CI, which has no network or GPU",
