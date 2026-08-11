@@ -68,11 +68,13 @@ The guided sampler and the experiment harness shared with `experiments/`.
   (`stable-diffusion-v1-5/stable-diffusion-v1-5`, the canonical Hub mirror).
 - `config.py`: `Config`, the pydantic v2 `extra="forbid"` base every typed
   experiment config extends, with OmegaConf-backed YAML + dotlist loading.
+- `experiment.py`: `ExperimentConfig`, the run config a framework builds from
+  its `conf/` (name, explicit seeds, and the two-sided gate's thresholds).
 - `settings.py`: `RoomgenSettings`, the one `ROOMGEN_*` env-var contract in the
   repo (`ROOMGEN_WDIR`, `ROOMGEN_WANDB_MODE`, `ROOMGEN_HF_HOME`).
-- `verdict.py`: the per-run score frameworks gate on — the depth-error margin
-  against an unguided control and the prompt-adherence floor, as one two-sided
-  verdict.
+- `verdict.py`: `score_run` and the `Verdict` it returns — one guided run's
+  depth error and prompt adherence judged against its unguided control's, both
+  sides at once, on the `VerdictGateConfig` its framework declares.
 - `logging/`: `Logger` protocol plus its `console`/`null`/`wandb`
   implementations, so sampler code never imports wandb directly.
 - `eval/`: masked depth error against the reference, plus a prompt-adherence /

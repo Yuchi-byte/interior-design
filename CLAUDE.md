@@ -30,7 +30,8 @@ only on user-facing API or genuine *why*.
   `pytorch-cpu` index so a bare `uv sync` never pulls CUDA wheels.
   `packages/roomgen-geometry` is the geometric grounding stack (depth,
   segmentation, masking, alignment, reward); `packages/roomgen-guide` is guided
-  sampling plus the experiment harness (`config`/`settings`/`verdict`/logging).
+  sampling plus the experiment harness
+  (`config`/`experiment`/`settings`/`verdict`/logging).
   The geometry package never imports the guide package.
 - All config objects are pydantic v2 (`extra="forbid"`) via the `Config` base
   in `packages/roomgen-guide/src/roomgen_guide/config.py` — a typo'd field is a
@@ -52,8 +53,8 @@ uv pip install --torch-backend=auto torch torchvision # layer CUDA wheels on top
 ## Checks
 
 ```bash
-uv run ruff check packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
-uv run ruff format --check packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
+uv run ruff check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
+uv run ruff format --check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
 uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
 uv run pytest -q                    # CI runs `-m "not models"`; locally run it unfiltered
 ```
@@ -133,9 +134,10 @@ Never hardcode a working directory, output path, checkpoint cache, or wandb
 setting. Use `RoomgenSettings`
 (`packages/roomgen-guide/src/roomgen_guide/settings.py`), overridable via
 `ROOMGEN_*` environment variables — `ROOMGEN_WDIR` (default `outputs/` at the
-repo root, gitignored), `ROOMGEN_WANDB_MODE`, `ROOMGEN_HF_HOME`. That is the
-whole env-var contract; plain `WANDB_MODE` and `HF_HOME` are not read by our
-code.
+repo root, gitignored), `ROOMGEN_WANDB_MODE` (default `disabled`),
+`ROOMGEN_HF_HOME` (default `.cache/huggingface/` at the repo root, also
+gitignored). That is the whole env-var contract; plain `WANDB_MODE` and
+`HF_HOME` are not read by our code.
 
 ## Parallel sessions
 

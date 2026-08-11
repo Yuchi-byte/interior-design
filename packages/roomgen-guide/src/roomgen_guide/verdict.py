@@ -4,20 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from roomgen_guide.config import Config
-
-
-class VerdictThresholds(Config):
-    """The bar a guided run has to clear, stated per framework rather than assumed.
-
-    Args:
-        depth_error_margin: how much lower the guided run's masked depth error
-            must be than the unguided control's at the same seed and prompt.
-        prompt_adherence_floor: the adherence a guided run may not fall below.
-    """
-
-    depth_error_margin: float
-    prompt_adherence_floor: float
+from roomgen_guide.experiment import VerdictGateConfig
 
 
 @dataclass(frozen=True)
@@ -26,12 +13,14 @@ class Verdict:
 
     Depth error alone cannot decide anything: the way to win it outright is to
     return the input photo unchanged, which is the failure the adherence side
-    exists to catch.
+    exists to catch. Both raw scores of both runs are kept, so a report can say
+    by how much a run passed rather than only that it did.
     """
 
     guided_depth_error: float
     control_depth_error: float
-    prompt_adherence: float
+    guided_prompt_adherence: float
+    control_prompt_adherence: float
     geometry_improved: bool
     adherence_held: bool
 
@@ -43,12 +32,22 @@ class Verdict:
 def score_run(
     guided_depth_error: float,
     control_depth_error: float,
-    prompt_adherence: float,
-    thresholds: VerdictThresholds,
+    guided_prompt_adherence: float,
+    control_prompt_adherence: float,
+    gate: VerdictGateConfig,
 ) -> Verdict:
-    """Judge one guided run against its unguided control.
+    """Judge one guided run against its unguided control at the same seed and prompt.
 
-    Whether `depth_error_margin` is read as an absolute or a relative reduction
-    is fixed by the first framework that measures both errors on real scenes.
+    Args:
+        guided_depth_error: masked depth error of the guided run, in the
+            arbitrary disparity units the reward returns.
+        control_depth_error: the same measurement on the control, which is what
+            makes the guided figure mean anything.
+        guided_prompt_adherence: higher is better, on whatever scale the
+            adherence metric uses.
+        control_prompt_adherence: the same metric on the control.
+
+    Both sides of `gate` are fractions of the control's scores, never absolute
+    values: neither quantity has a scale that carries from one scene to the next.
     """
     raise NotImplementedError

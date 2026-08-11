@@ -1,14 +1,15 @@
 import pytest
-from pydantic import ValidationError
 
-from roomgen_guide.verdict import Verdict, VerdictThresholds
+from roomgen_guide.experiment import VerdictGateConfig
+from roomgen_guide.verdict import Verdict, score_run
 
 
 def make_verdict(*, geometry_improved: bool, adherence_held: bool) -> Verdict:
     return Verdict(
         guided_depth_error=0.01,
         control_depth_error=0.05,
-        prompt_adherence=0.3,
+        guided_prompt_adherence=0.3,
+        control_prompt_adherence=0.32,
         geometry_improved=geometry_improved,
         adherence_held=adherence_held,
     )
@@ -28,12 +29,12 @@ def test_a_run_passes_only_on_both_sides_of_the_gate(
     assert verdict.passed is expected
 
 
-def test_thresholds_reject_an_unknown_key() -> None:
-    with pytest.raises(ValidationError):
-        VerdictThresholds.model_validate(
-            {
-                "depth_error_margin": 0.1,
-                "prompt_adherence_floor": 0.25,
-                "depth_error_margin_typo": 0.1,
-            }
+def test_scoring_a_run_takes_both_runs_measurements_and_the_framework_gate() -> None:
+    with pytest.raises(NotImplementedError):
+        score_run(
+            guided_depth_error=0.01,
+            control_depth_error=0.05,
+            guided_prompt_adherence=0.3,
+            control_prompt_adherence=0.32,
+            gate=VerdictGateConfig(depth_error_margin=0.2, prompt_adherence_floor=0.9),
         )

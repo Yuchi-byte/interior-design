@@ -16,6 +16,13 @@ def test_a_typoed_field_raises_instead_of_being_silently_dropped() -> None:
         _SamplerConfig(steps=20, prompt="a bright room", stpes=50)  # type: ignore[call-arg]
 
 
+def test_a_validated_config_cannot_be_mutated_afterwards() -> None:
+    config = _SamplerConfig(steps=20, prompt="a bright room")
+
+    with pytest.raises(ValidationError, match="frozen"):
+        config.steps = 50
+
+
 def test_a_typoed_key_in_a_yaml_file_raises(tmp_path: Path) -> None:
     path = tmp_path / "sampler.yaml"
     path.write_text("steps: 20\nprompt: a bright room\nstpes: 50\n")

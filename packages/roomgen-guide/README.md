@@ -32,7 +32,7 @@ is why `verdict.py`'s gate is two-sided (see `experiments/README.md`).
 |---|---|---|
 | `ROOMGEN_WDIR` | `outputs/` at the repo root (gitignored) | where every local artifact lands |
 | `ROOMGEN_WANDB_MODE` | `disabled` | `disabled` / `offline` / `online` |
-| `ROOMGEN_HF_HOME` | the platform Hub cache | where model weights are cached |
+| `ROOMGEN_HF_HOME` | `.cache/huggingface/` at the repo root (gitignored) | where model weights are cached |
 
 Never hardcode any of these in a script — set them per machine.
 

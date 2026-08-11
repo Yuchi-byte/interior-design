@@ -5,7 +5,7 @@
 
 SOURCES := packages/roomgen-geometry/src packages/roomgen-guide/src
 TESTS := packages/roomgen-geometry/tests packages/roomgen-guide/tests
-LINT_PATHS := $(SOURCES) $(TESTS)
+LINT_PATHS := conftest.py $(SOURCES) $(TESTS)
 
 .PHONY: help sync lint format-check format typecheck test check hooks
 
