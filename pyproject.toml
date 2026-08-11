@@ -91,7 +91,12 @@ ignore = [
 # invoked from, including a per-file run under pre-commit where `src` inference
 # has no directory context — `roomgen_fakes` lives under a tests directory, so
 # nothing else would ever infer it.
-known-first-party = ["roomgen_fakes", "roomgen_geometry", "roomgen_guide"]
+known-first-party = [
+    "roomgen_fakes",
+    "roomgen_geometry",
+    "roomgen_guide",
+    "roomgen_guide_fakes",
+]
 
 [tool.ruff.lint.flake8-tidy-imports]
 # `from ..depth import base` hides the package boundary that the geometry/guide
@@ -177,10 +182,13 @@ testpaths = ["packages/roomgen-geometry/tests", "packages/roomgen-guide/tests"]
 # than a test CI silently keeps running: `-m "not models"` only protects the
 # runner if the marker on a weights-hungry test is the one CI deselects.
 addopts = "-q --strict-markers --strict-config"
-# The weightless `DepthEstimator`/`Segmenter` doubles live with the package
-# whose Protocols they satisfy and are imported as `roomgen_fakes` by both
-# suites; the root conftest registers their fixtures.
-pythonpath = ["packages/roomgen-geometry/tests"]
+# The weightless doubles live with the package whose Protocols they satisfy —
+# `roomgen_fakes` for the depth/segmentation backends, `roomgen_guide_fakes` for
+# the diffusers pipeline — and the root conftest registers both sets of
+# fixtures. The geometry doubles are imported by both suites; the pipeline ones
+# only by the guide suite, since the geometry package knows nothing about
+# diffusion.
+pythonpath = ["packages/roomgen-geometry/tests", "packages/roomgen-guide/tests"]
 markers = [
     "slow: long-running (many diffusion steps, full-resolution renders); excluded from quick local runs on request only, not from CI by default",
     "models: requires downloading pretrained model weights from the Hugging Face Hub; excluded from CI, which has no network or GPU",

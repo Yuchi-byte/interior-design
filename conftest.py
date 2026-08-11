@@ -1,8 +1,8 @@
 """Turns the geometry package's shape annotations into runtime checks, and registers the fakes.
 
 `pytest_plugins` is only honoured in the rootdir conftest, which is why this
-file exists at all; `roomgen_fakes` itself is importable via the `pythonpath`
-entry in the root pyproject.
+file exists at all; the fake packages themselves are importable via the
+`pythonpath` entries in the root pyproject.
 """
 
 from jaxtyping import install_import_hook
@@ -18,4 +18,4 @@ from jaxtyping import install_import_hook
 # outside a class it decorates itself.
 install_import_hook("roomgen_geometry", "beartype.beartype")
 
-pytest_plugins = ["roomgen_fakes.fixtures"]
+pytest_plugins = ["roomgen_fakes.fixtures", "roomgen_guide_fakes.fixtures"]
