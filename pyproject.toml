@@ -33,21 +33,84 @@ dev = [
 
 [tool.ruff]
 src = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
+# This root has no `[project]` table to infer a Python floor from, so the 3.12
+# both packages require is stated outright: UP rewrites and the parser follow it.
+target-version = "py312"
+# Two columns over the 88 default: the naming rule (`sum_prediction_squared`,
+# `architectural_mask` — never `d`, `seg`) buys its readability in line width,
+# and the widest expression on disk lands at 89. Kept this close to the default
+# on purpose — at 100 the formatter starts *joining* deliberately split
+# multi-term tensor expressions back onto one line.
+line-length = 90
 
 [tool.ruff.lint]
-extend-select = ["I", "B", "UP", "C4", "SIM", "RUF"]
+select = [
+    "F",   # pyflakes
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "I",   # import sorting
+    "N",   # pep8-naming: the guidelines' naming rules, mechanised
+    "UP",  # pyupgrade: keep the codebase in 3.12 idiom
+    "B",   # bugbear: mutable defaults, silent-failure loops, zip(strict=)
+    "A",   # shadowed builtins
+    "C4",  # comprehensions
+    "T20", # no print: library code reports through the Logger protocol
+    "PT",  # pytest style
+    "RET", # returns
+    "SIM", # simplify
+    "PTH", # pathlib over os.path — paths come from RoomgenSettings, never strings
+    "NPY", # numpy correctness, including the 2.x removals
+    "TID", # tidy imports
+    "PLC", # pylint conventions
+    "PLE", # pylint errors
+    "PLW", # pylint warnings
+    "RUF", # ruff-specific, incl. RUF100 (a noqa that no longer suppresses anything)
+]
+# PLR is deliberately absent: PLR2004 (magic value) fires on every tolerance,
+# pixel count and channel index in numeric code, which is noise, not a finding.
+ignore = [
+    # Line length is the formatter's business. E501 only ever adds a second
+    # opinion about the things the formatter cannot split anyway: docstrings,
+    # URLs in comments, long f-string error messages.
+    "E501",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # jaxtyping shape strings in annotations ("batch 3 h w", "*shape") trip ruff's
 # forward-ref parser: F821 (undefined name) and F722 (syntax in forward
 # annotation). They are not real errors.
-"packages/roomgen-geometry/src/**" = ["F722", "F821"]
-"packages/roomgen-guide/src/**" = ["F722", "F821"]
+"packages/*/src/**" = ["F722", "F821"]
+# Tests build fakes with the same jaxtyping annotations, and a print in a test
+# is a debugging aid whose output pytest captures anyway.
+"packages/*/tests/**" = ["F722", "F821", "T20"]
+# Experiment entry points are scripts: printing a verdict to the terminal is
+# their job.
+"experiments/**" = ["F722", "F821", "T20"]
 
+[tool.ruff.lint.isort]
+# Both packages are first-party wherever ruff is invoked from, including a
+# per-file run under pre-commit where `src` inference has no directory context.
+known-first-party = ["roomgen_geometry", "roomgen_guide"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# `from ..depth import base` hides the package boundary that the geometry/guide
+# split depends on; within-package siblings stay legal.
+ban-relative-imports = "parents"
+
+# "Strict typing IS the documentation" (docs/coding-guidelines.md), so the
+# checker is what holds that claim up: every relaxation below is per-module and
+# says which third-party gap forces it.
 [tool.mypy]
+# Both source trees on the path at once — roomgen_guide resolves
+# roomgen_geometry through it — and named as `files` so a bare `uv run mypy`
+# checks exactly what the gate checks.
 mypy_path = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
+files = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
+python_version = "3.12"
 plugins = ["pydantic.mypy"]
 strict = true
+# Beyond strict: an unparameterised `Tensor`-adjacent generic or a bare `Any`
+# is precisely the documentation gap the guidelines forbid.
 disallow_any_generics = true
 disallow_any_explicit = true
 warn_unreachable = true
@@ -62,6 +125,15 @@ enable_error_code = [
     "unused-awaitable",
     "explicit-override",
     "mutable-override",
+    # transformers/diffusers deprecate and move API constantly; a deprecated
+    # call is a future breakage, so surface it at check time.
+    "deprecated",
+    # A `match` over a Literal or a discriminated union that misses a case is
+    # a silent fallthrough; the guidelines push both types, so close the loop.
+    "exhaustive-match",
+    "narrowed-type-not-subtype",
+    # A `reveal_type` left in the tree is debugging residue.
+    "unimported-reveal",
 ]
 
 [tool.pydantic-mypy]
