@@ -61,8 +61,12 @@ The guided sampler and the experiment harness shared with `experiments/`.
 - `guidance/schedule.py`: guidance-strength schedules over the timestep — strong
   early while layout is still being decided, decayed late so texture detail is
   not fought.
-- `sampling/guided.py`: the guided denoising loop, driving a diffusers img2img
-  pipeline through the `Img2ImgPipeline` Protocol so a fake can stand in for it.
+- `sampling/pipeline.py`: `Img2ImgPipeline` and the component Protocols under
+  it — the structural view of a diffusers img2img pipeline, so a weightless fake
+  can stand in for one.
+- `sampling/guided.py`: the guided denoising loop, stepping the pipeline's UNet,
+  VAE and scheduler itself because a diffusers `__call__` runs under `no_grad`
+  and would strand the guidance gradient.
 - `renovate.py`: `renovate`, the end-to-end img2img entry point (photo + prompt
   -> reference -> guided sample -> outputs), over Stable Diffusion 1.5
   (`stable-diffusion-v1-5/stable-diffusion-v1-5`, the canonical Hub mirror).
@@ -89,6 +93,10 @@ The guided sampler and the experiment harness shared with `experiments/`.
   shared gradient assertion, and the fixtures exposing them. Both suites import
   it via the root pytest `pythonpath`, so the default suite needs no network,
   no GPU and no Hub cache.
+- `packages/roomgen-guide/tests/roomgen_guide_fakes/`: the matching doubles for
+  the diffusion side — a UNet, VAE and DDIM scheduler satisfying
+  `Img2ImgPipeline` on the SD1.5 latent geometry — kept here rather than beside
+  the geometry doubles, which know nothing about diffusion.
 - The root `conftest.py` installs jaxtyping's runtime type-check hook over
   `roomgen_geometry`, so every shape annotation in that package is enforced for
   the duration of the suite.
@@ -143,7 +151,8 @@ takes its step, scaled by `guidance/schedule.py`. No weights are updated — thi
 is training-free guidance in the universal-guidance / FreeDoM family.
 
 The gradient therefore backpropagates through the depth network *and* the VAE
-decoder. The VAE decode dominates memory: its decoder activations at full sample
+decoder — but not the UNet, whose noise prediction enters x̂₀'s closed form as a
+constant. The VAE decode dominates memory: its decoder activations at full sample
 resolution must be retained for the backward pass, and this cost is paid once
 per guided step. Gradient checkpointing on the decoder, computing the energy at a
 reduced depth-input resolution, and guiding on a subset of steps are the three
