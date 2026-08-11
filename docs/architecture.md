@@ -65,6 +65,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
   -> reference -> guided sample -> outputs).
 - `config.py`: `Config`, the pydantic v2 `extra="forbid"` base every typed
   experiment config extends, with OmegaConf-backed YAML + dotlist loading.
+- `experiment.py`: `ExperimentConfig`, the run config a framework builds from
+  its `conf/` (name, explicit seeds, and the two-sided gate's thresholds).
 - `settings.py`: `RoomgenSettings`, the one `ROOMGEN_*` env-var contract in the
   repo (`ROOMGEN_WDIR`, `ROOMGEN_WANDB_MODE`, `ROOMGEN_HF_HOME`).
 - `verdict.py`: the per-run score frameworks gate on — the depth-error margin
