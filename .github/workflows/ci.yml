@@ -5,17 +5,45 @@ on:
     branches: [main]
   pull_request:
 
+# A push to a PR branch makes the run already in flight for that branch
+# worthless: cancel it rather than queue behind it. `main` is keyed per-run so
+# pushes there never cancel each other.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # The runner has no Hub cache and no GPU, and weights are never
+      # downloaded here. Offline mode turns a test that reaches for a real
+      # checkpoint into an immediate error instead of a multi-GB download that
+      # times out the job: such a test is missing its `models` marker.
+      HF_HUB_OFFLINE: "1"
+      # wandb reads its own environment; our code only ever sets
+      # ROOMGEN_WANDB_MODE, so pin the client itself away from the network.
+      WANDB_MODE: offline
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
+          # Same uv as local development, so a resolution difference is never
+          # the reason CI and a dev machine disagree.
+          version: "0.12.1"
           enable-cache: true
+          # The resolution is a function of the lockfile and the manifests;
+          # anything else changing must not invalidate ~200MB of torch wheels.
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+            packages/*/pyproject.toml
 
       - name: Install Python 3.12
         run: uv python install 3.12
@@ -24,16 +52,24 @@ jobs:
       # (roomgen-geometry + roomgen-guide) and their declared closures. torch and
       # torchvision are pinned to the pytorch-cpu index in the root pyproject, so
       # this never pulls the multi-GB CUDA wheels onto a GPU-less runner.
+      # `--locked` additionally fails if uv.lock no longer matches the
+      # manifests, so a dependency edit cannot land half-committed.
       - name: Sync workspace
-        run: uv sync
+        run: uv sync --locked
 
+      # The four checks below are the local gate from CLAUDE.md, verbatim. Each
+      # runs even after an earlier one fails, so a single push reports every
+      # problem rather than one per round trip; the job still fails overall.
       - name: Ruff check
+        if: ${{ !cancelled() }}
         run: uv run ruff check packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
 
       - name: Ruff format check
+        if: ${{ !cancelled() }}
         run: uv run ruff format --check packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
 
       - name: Mypy (geometry + guide src)
+        if: ${{ !cancelled() }}
         run: uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
 
       # Anything marked `models` downloads pretrained depth/segmentation/diffusion
@@ -41,4 +77,5 @@ jobs:
       # time. The runner has neither, so those tests are deselected here and are
       # expected to be run locally before merge.
       - name: Pytest
+        if: ${{ !cancelled() }}
         run: uv run pytest -q -m "not models"
