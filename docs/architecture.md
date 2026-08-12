@@ -39,8 +39,9 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   from the mask-query logits.
 - `segmentation/ade20k.py`: the 150-class label table and the
   `ARCHITECTURAL_CLASSES`/`CONTENTS_CLASSES` partition (wall, floor, ceiling,
-  window, door, column, stairs, ... vs. furniture, furnishings, decor) — the
-  domain-knowledge file.
+  door, column, stairs, ... vs. furniture, furnishings, decor; the glazing
+  itself is in neither, since depth behind glass reads the view, not the room)
+  — the domain-knowledge file.
 - `masking.py`: `scorable_mask`, the one place a segmentation is turned into the
   pixels a reward may score, under either `MaskMode` polarity —
   `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts
@@ -108,7 +109,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
   allocation.
 - `eval/`: what a finished render is measured on, therefore under `no_grad`:
   `depth.py`'s masked depth error against the reference and the signed
-  per-pixel residual map behind it — both take an evaluation mask, the
+  per-pixel residual map behind it, both computed in float32 so the map still
+  squares to the score — both take an evaluation mask, the
   reference shell narrowed by a segmentation of a finished render, and a
   framework comparing two arms narrows by *both* so the pair is scored on one
   pixel set, with `shell_coverage` reporting how much of the shell that left to

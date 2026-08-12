@@ -17,6 +17,9 @@ from roomgen_geometry.depth.depth_anything import DEFAULT_CHECKPOINT, DepthAnyth
 _INPUT_SIZE = 518
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
+# Big enough for the synthetic room's perspective cues to survive the
+# checkpoint's own resize.
+_ROOM_SIZE = 256
 
 
 @dataclass(frozen=True)
@@ -167,3 +170,38 @@ def test_the_real_checkpoint_repeats_itself_on_one_image(
     images = torch.rand((1, 3, 64, 64), generator=generator)
 
     assert torch.equal(depth_anything_v2(images), depth_anything_v2(images))
+
+
+def _perspective_room() -> Tensor:
+    """A one-point perspective room: floor, ceiling and side walls at a central horizon."""
+    rows = torch.linspace(-0.5, 0.5, _ROOM_SIZE)
+    columns = torch.linspace(-1.0, 1.0, _ROOM_SIZE)
+    height, width = torch.meshgrid(rows, columns, indexing="ij")
+    faces_the_camera = height.abs() > width.abs()
+    is_floor = (height > 0.0) & faces_the_camera
+    image = torch.full((1, 3, _ROOM_SIZE, _ROOM_SIZE), 0.55)
+    image[0, :, is_floor] = 0.30
+    image[0, :, (height < 0.0) & faces_the_camera] = 0.80
+    # Floorboards crowding towards the horizon, the cue that makes the floor
+    # recede rather than merely be darker.
+    receding = (0.5 / height.clamp(min=1e-3)).frac()
+    image[0, :, is_floor & (receding < 0.08)] = 0.15
+    return image
+
+
+@pytest.mark.models
+def test_the_real_checkpoint_reads_the_floor_as_nearer_than_the_ceiling(
+    depth_anything_v2: DepthAnythingV2,
+) -> None:
+    # The backend returns *inverse* depth: near is large. Every sign downstream
+    # rests on that — `signed_depth_residual_map` calls a positive residual "the
+    # surface reads closer than it was" — and a backend swap returning depth
+    # instead would negate all of it while every other test still passed. On a
+    # room whose floor recedes to a central horizon the convention is visible in
+    # the frame itself: the near floor across the bottom must read larger than
+    # the far ceiling across the top (measured margin ~0.9, on an upper third of
+    # ~2.5).
+    disparity = depth_anything_v2(_perspective_room())
+
+    third = _ROOM_SIZE // 3
+    assert float(disparity[:, -third:].mean()) > float(disparity[:, :third].mean())

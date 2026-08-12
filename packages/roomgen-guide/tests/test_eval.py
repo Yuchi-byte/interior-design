@@ -104,22 +104,31 @@ def test_the_photos_residual_against_its_own_geometry_is_zero_everywhere(
     assert torch.allclose(residual, torch.zeros_like(residual), atol=1e-12)
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_the_residual_map_squares_over_the_shell_to_the_depth_error(
     room_photo: Float[Tensor, "1 3 64 64"],
     reference: GeometricReference,
     fake_depth_estimator: FakeDepthEstimator,
     generator: Generator,
+    dtype: torch.dtype,
 ) -> None:
-    render = torch.rand(room_photo.shape, generator=generator)
-
-    residual = signed_depth_residual_map(
-        render, reference=reference, depth_estimator=fake_depth_estimator
+    # Both halves of the identity are computed in float32 whatever the backend
+    # hands back, so a half-precision run's map still squares to its own score
+    # rather than to a separately rounded one.
+    render = torch.rand(room_photo.shape, generator=generator).to(dtype)
+    scored = GeometricReference(
+        disparity=reference.disparity.to(dtype), mask=reference.mask
     )
 
-    assert not residual[~reference.mask].any()
-    masked_mean = (residual**2).flatten(1).sum(-1) / reference.mask.flatten(1).sum(-1)
+    residual = signed_depth_residual_map(
+        render, reference=scored, depth_estimator=fake_depth_estimator
+    )
+
+    assert residual.dtype == torch.float32
+    assert not residual[~scored.mask].any()
+    masked_mean = (residual**2).flatten(1).sum(-1) / scored.mask.flatten(1).sum(-1)
     assert float(masked_mean.mean()) == pytest.approx(
-        depth_error(render, reference=reference, depth_estimator=fake_depth_estimator)
+        depth_error(render, reference=scored, depth_estimator=fake_depth_estimator)
     )
 
 
