@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +73,11 @@ def _real_backends(
         # the deterministic closed form over the same epsilon parameterisation
         # that the guided loop's x̂₀ correction is derived from.
         pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+    elif "generator" not in inspect.signature(pipeline.scheduler.step).parameters:
+        raise ValueError(
+            f"backends.scheduler='pipeline' keeps {type(pipeline.scheduler).__name__},"
+            " whose step() cannot take the loop's generator; use 'ddim'"
+        )
     return Backends(
         pipeline=pipeline,
         depth_estimator=DepthAnythingV2(

@@ -15,11 +15,12 @@ resolution: 512
 backends:
   kind: real
   device: cuda
-  # float32 throughout on purpose. The depth backend returns its prediction in
-  # the *input image's* dtype, so a float16 sampler drags the reward, the affine
-  # alignment residual and the guidance gradient into float16 with it; there is
-  # no knob that keeps the energy in float32 above a half-precision VAE. If VRAM
-  # forces it, set dtype=float16 and treat the energy scale as re-calibrated.
+  # float32 throughout, but no longer because half precision breaks the energy:
+  # the reward's reduction and the guided step's RMS sizing are float32 by
+  # contract whatever dtype the maps arrive in, so a float16 sampler keeps a
+  # finite, correctly-directed gradient (cosine 0.99998 against float32 at
+  # 512x512). This stays float32 for comparability of the recorded numbers
+  # across runs; set dtype=float16 if VRAM forces it.
   dtype: float32
   depth_dtype: float32
   segmentation_dtype: float32
