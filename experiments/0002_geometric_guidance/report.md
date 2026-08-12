@@ -55,10 +55,9 @@ selected variant, ensures the photos, builds the stack, and drives
   `text_guidance_scale=7.5`, DDIM (the checkpoint's PNDM is replaced: DDIM's
   update is the deterministic closed form the guided loop's x̂₀ correction
   assumes).
-- **Guidance.** `ConstantStrength`, default 150.0 (derivation below).
-  `ConstantStrength` rather than `DecayingStrength` because the latter is a
-  `NotImplementedError` upstream — a decayed schedule belongs to the variant
-  that can evaluate it, not to a default.
+- **Guidance.** `ConstantStrength` 10.0 (pinned by the sweep below).
+  `DecayingStrength` (cosine, `strength` → `final_strength`) is selectable via
+  `guidance.schedule=decaying` and is the next variant to measure.
 - **Metrics.** `roomgen_guide.eval`: gate (a) is `depth_error` against the
   reference, gate (b) the CLIP prompt score
   (`openai/clip-vit-base-patch32`); the smoke variant substitutes
@@ -203,9 +202,5 @@ checkpoint-free smoke metric; the shared machinery is in `roomgen_guide`.
    here), but there is no knob to keep the *energy* in float32 above a
    half-precision VAE without a cast inside `packages/`. `conf/benchmark.yaml`
    therefore runs float32 throughout.
-3. **`guidance/schedule.DecayingStrength.__call__` is a
-   `NotImplementedError`**, so the strong-early/decayed-late schedule the
-   research note recommends cannot be selected. `constant` is the only value
-   `guidance.schedule` accepts.
-4. **`reward.gradient_matching_error` is a `NotImplementedError`** — expected,
+3. **`reward.gradient_matching_error` is a `NotImplementedError`** — expected,
    that is v2's business, noted so the sequencing stays explicit.

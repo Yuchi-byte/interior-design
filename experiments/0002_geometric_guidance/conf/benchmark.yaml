@@ -46,8 +46,9 @@ guidance:
   # (-64% vs control, adherence intact), degrades past 50, and 150 destroys
   # both sides of the gate.
   strength: 10.0
-  # `constant` is the only option: DecayingStrength is a NotImplementedError
-  # upstream, and a schedule the framework cannot evaluate is not a default.
+  # `constant` because it is the arm the sweep above actually measured;
+  # `decaying` (strength -> final_strength on a cosine) is selectable and is the
+  # variant to run next, not a default to switch to before it has a number.
   schedule: constant
   erosion_radius: 2
 

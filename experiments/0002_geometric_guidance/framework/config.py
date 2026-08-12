@@ -14,6 +14,11 @@ from roomgen_geometry.segmentation.eomt import (
 from roomgen_guide.config import Config
 from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.experiment import ExperimentConfig
+from roomgen_guide.guidance.schedule import (
+    ConstantStrength,
+    DecayingStrength,
+    GuidanceSchedule,
+)
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 
 DTypeName = Literal["float32", "float16", "bfloat16"]
@@ -99,21 +104,35 @@ class GuidanceConfig(Config):
     """The geometric guidance term under test.
 
     Args:
-        strength: the constant multiplier on the energy gradient before it is
-            applied to the latent. There is no scale-free choice here — the
-            energy is in squared disparity units the depth backend defines — so
-            this is the knob a strength sweep varies.
-        schedule: only `constant` is selectable.
-            `roomgen_guide.guidance.schedule.DecayingStrength` raises
-            `NotImplementedError`, so a decayed schedule is a later variant's
-            business, not a default this framework can quietly pick.
+        strength: the multiplier on the energy gradient before it is applied to
+            the latent, and the value a `decaying` schedule starts from. There
+            is no scale-free choice here — the energy is in squared disparity
+            units the depth backend defines — so this is the knob a strength
+            sweep varies.
+        schedule: `constant` holds `strength` for the whole trajectory;
+            `decaying` falls from it to `final_strength` on a cosine, spending
+            the steering on the early steps that decide layout.
+        final_strength: where a `decaying` schedule lands on the last step;
+            read only by that schedule.
         erosion_radius: pixels trimmed either side of a segment edge before the
             shell mask is trusted.
     """
 
     strength: Annotated[float, Field(ge=0.0)]
-    schedule: Literal["constant"] = "constant"
+    schedule: Literal["constant", "decaying"] = "constant"
+    final_strength: Annotated[float, Field(ge=0.0)] = 0.0
     erosion_radius: Annotated[int, Field(ge=0)] = 2
+
+
+def build_schedule(config: GuidanceConfig) -> GuidanceSchedule:
+    """The strength schedule `config` selects, for the guided arm of a pair."""
+    match config.schedule:
+        case "constant":
+            return ConstantStrength(strength=config.strength)
+        case "decaying":
+            return DecayingStrength(
+                initial=config.strength, final=config.final_strength
+            )
 
 
 class AdherenceConfig(Config):

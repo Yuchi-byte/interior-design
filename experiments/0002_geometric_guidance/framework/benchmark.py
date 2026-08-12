@@ -13,7 +13,7 @@ from torch import Tensor
 from torchvision.io import write_png
 
 from framework.backends import Backends, build_backends
-from framework.config import BenchmarkConfig, SceneConfig
+from framework.config import BenchmarkConfig, SceneConfig, build_schedule
 from framework.metrics import build_adherence
 from framework.photos import ensure_photos, load_photo
 from roomgen_geometry.reference import GeometricReference
@@ -184,7 +184,7 @@ def _run_scene(
             backends=backends,
             config=config,
             reference=reference,
-            schedule=ConstantStrength(strength=config.guidance.strength),
+            schedule=build_schedule(config.guidance),
             seed=seed,
         )
         # Strength 0 is the control: the same photo, prompt, seed, sampler and
