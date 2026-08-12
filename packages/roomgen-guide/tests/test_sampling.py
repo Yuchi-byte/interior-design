@@ -12,8 +12,10 @@ from roomgen_guide.guidance.schedule import ConstantStrength
 from roomgen_guide.sampling.guided import (
     _clipped,
     _normalized,
+    _prompt_embeddings,
     decode_latent,
     guidance_gradient,
+    guidance_gradient_through_unet,
     sample_guided,
 )
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
@@ -81,6 +83,7 @@ def _sample(
     seed: int = 0,
     normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
+    differentiate_through_unet: bool = False,
 ) -> Tensor:
     return sample_guided(
         pipeline,
@@ -94,6 +97,7 @@ def _sample(
         generator=torch.Generator().manual_seed(seed),
         normalize_gradient=normalize_gradient,
         clip_step_rms=clip_step_rms,
+        differentiate_through_unet=differentiate_through_unet,
     )
 
 
@@ -403,6 +407,112 @@ def test_the_guided_step_differentiates_the_energy_through_the_predicted_origina
     )
 
     torch.testing.assert_close(steering, expected)
+
+
+def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    generator: Generator,
+) -> None:
+    latent = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
+    timestep = torch.tensor(500)
+    alpha_cumprod = torch.tensor(0.5)
+    text_guidance_scale = 7.5
+    prompt_embeddings = _prompt_embeddings(
+        fake_pipeline,
+        _PROMPT,
+        device=latent.device,
+        images_per_prompt=1,
+        apply_text_guidance=True,
+    )
+
+    noise_prediction, steering = guidance_gradient_through_unet(
+        fake_pipeline,
+        geometric_guidance,
+        latent=latent,
+        timestep=timestep,
+        prompt_embeddings=prompt_embeddings,
+        text_guidance_scale=text_guidance_scale,
+        apply_text_guidance=True,
+        alpha_cumprod=alpha_cumprod,
+    )
+
+    # The same chain the loop plumbs, composed by hand: classifier-free ε̂ of the
+    # latent, Tweedie's x̂₀ over it, decode, energy.
+    differentiable_latent = latent.clone().requires_grad_(True)
+    model_input = fake_pipeline.scheduler.scale_model_input(
+        torch.cat([differentiable_latent, differentiable_latent]), timestep
+    )
+    unconditional, conditional = fake_pipeline.unet(
+        model_input, timestep, encoder_hidden_states=prompt_embeddings
+    ).sample.chunk(2)
+    attached_noise_prediction = unconditional + text_guidance_scale * (
+        conditional - unconditional
+    )
+    predicted_original = (
+        differentiable_latent - (1.0 - alpha_cumprod).sqrt() * attached_noise_prediction
+    ) / alpha_cumprod.sqrt()
+    expected = assert_gradient_is_finite_and_nonzero(
+        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)),
+        differentiable_latent,
+    )
+    constant_epsilon = guidance_gradient(
+        fake_pipeline.vae,
+        geometric_guidance,
+        latent=latent,
+        noise_prediction=noise_prediction,
+        alpha_cumprod=alpha_cumprod,
+    )
+
+    torch.testing.assert_close(steering, expected)
+    assert not torch.allclose(steering, constant_epsilon)
+    assert not noise_prediction.requires_grad
+    torch.testing.assert_close(noise_prediction, attached_noise_prediction.detach())
+
+
+def test_differentiating_through_the_unet_moves_the_trajectory(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    through_unet = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=500.0,
+        differentiate_through_unet=True,
+    )
+    repeated = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=500.0,
+        differentiate_through_unet=True,
+    )
+    constant_epsilon = _sample(
+        fake_pipeline, room_photo, geometric_guidance, strength=500.0
+    )
+
+    assert bool(torch.isfinite(through_unet).all())
+    assert torch.equal(through_unet, repeated)
+    assert not torch.equal(through_unet, constant_epsilon)
+
+
+def test_zero_strength_leaves_the_trajectory_unguided_through_the_unet_too(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    unguided = _sample(fake_pipeline, room_photo, geometric_guidance, strength=0.0)
+    through_unet = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=0.0,
+        differentiate_through_unet=True,
+    )
+
+    assert torch.equal(unguided, through_unet)
 
 
 def test_the_image_the_guidance_scores_is_still_attached_to_the_latent(

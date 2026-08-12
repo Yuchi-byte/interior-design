@@ -30,6 +30,7 @@ def sample_guided(
     generator: torch.Generator,
     normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
+    differentiate_through_unet: bool = False,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Renoise `photo` and denoise it back under `prompt`, steered by `guidance`.
 
@@ -50,6 +51,11 @@ def sample_guided(
             Below it the step is the raw one, which shrinks as the energy is
             satisfied; above it the step is exactly this size. Mutually
             exclusive with `normalize_gradient`, whose step is already fixed-RMS.
+        differentiate_through_unet: keep the UNet forward on the gradient path,
+            so ∂energy/∂latent carries the denoiser's Jacobian and a push the
+            denoiser would undo is damped at the source (DPS, arXiv:2209.14687),
+            at the cost of a UNet backward per guided step. Left off, ε̂ enters
+            x̂₀ as a constant and only the decoder and the energy are traversed.
 
     A guided step forms the predicted clean image from the current latent,
     decodes it, evaluates `guidance` on it, and shifts the latent along the
@@ -100,23 +106,37 @@ def sample_guided(
 
     total_steps = len(timesteps)
     for step, timestep in enumerate(timesteps):
-        noise_prediction = _predict_noise(
-            pipeline,
-            latent,
-            timestep,
-            prompt_embeddings,
-            text_guidance_scale=text_guidance_scale,
-            apply_text_guidance=apply_text_guidance,
-        )
         strength = schedule(step, total_steps)
-        if strength != 0.0:
-            steering = guidance_gradient(
-                pipeline.vae,
+        steering: Tensor | None = None
+        if strength != 0.0 and differentiate_through_unet:
+            noise_prediction, steering = guidance_gradient_through_unet(
+                pipeline,
                 guidance,
                 latent=latent,
-                noise_prediction=noise_prediction,
+                timestep=timestep,
+                prompt_embeddings=prompt_embeddings,
+                text_guidance_scale=text_guidance_scale,
+                apply_text_guidance=apply_text_guidance,
                 alpha_cumprod=alphas_cumprod[timestep],
             )
+        else:
+            noise_prediction = _predict_noise(
+                pipeline,
+                latent,
+                timestep,
+                prompt_embeddings,
+                text_guidance_scale=text_guidance_scale,
+                apply_text_guidance=apply_text_guidance,
+            )
+            if strength != 0.0:
+                steering = guidance_gradient(
+                    pipeline.vae,
+                    guidance,
+                    latent=latent,
+                    noise_prediction=noise_prediction,
+                    alpha_cumprod=alphas_cumprod[timestep],
+                )
+        if steering is not None:
             if normalize_gradient:
                 steering = _normalized(steering, _RMS_EPSILON)
             update = strength * steering
@@ -156,6 +176,53 @@ def guidance_gradient(
         energy = guidance(decode_latent(vae, predicted_original))
         (gradient,) = torch.autograd.grad(energy, differentiable_latent)
     return gradient
+
+
+def guidance_gradient_through_unet(
+    pipeline: Img2ImgPipeline,
+    guidance: Guidance,
+    *,
+    latent: Float[Tensor, "batch channels height width"],
+    timestep: Tensor,
+    prompt_embeddings: Float[Tensor, "batch sequence embedding"],
+    text_guidance_scale: float,
+    apply_text_guidance: bool,
+    alpha_cumprod: Float[Tensor, ""],
+) -> tuple[
+    Float[Tensor, "batch channels height width"],
+    Float[Tensor, "batch channels height width"],
+]:
+    """One guided step's ε̂ and the ∂energy/∂latent taken through the UNet behind it.
+
+    Args:
+        latent: the current step's latent; needs no gradient of its own, since
+            the energy is differentiated against a leaf made from it here.
+        alpha_cumprod: the scheduler's ᾱ at this step's timestep.
+
+    The returned ε̂ is the one this gradient was taken through, detached and ready
+    for the scheduler, so the step pays for a single UNet forward rather than one
+    per purpose. No weights are updated: the gradient is taken with respect to
+    the latent alone, so no parameter accumulates a `.grad`.
+    """
+    with torch.enable_grad():
+        differentiable_latent = latent.detach().requires_grad_(True)
+        noise_prediction = _predict_noise(
+            pipeline,
+            differentiable_latent,
+            timestep,
+            prompt_embeddings,
+            text_guidance_scale=text_guidance_scale,
+            apply_text_guidance=apply_text_guidance,
+            differentiable=True,
+        )
+        # ε̂ stays attached, which is the whole difference from the constant-ε̂
+        # step: x̂₀ then carries dε̂/dx_t and the denoiser damps its own undoing.
+        predicted_original = (
+            differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
+        ) / alpha_cumprod.sqrt()
+        energy = guidance(decode_latent(pipeline.vae, predicted_original))
+        (gradient,) = torch.autograd.grad(energy, differentiable_latent)
+    return noise_prediction.detach(), gradient
 
 
 def decode_latent(
@@ -243,17 +310,19 @@ def _predict_noise(
     *,
     text_guidance_scale: float,
     apply_text_guidance: bool,
+    differentiable: bool = False,
 ) -> Float[Tensor, "batch channels height width"]:
     batched = torch.cat([latent, latent]) if apply_text_guidance else latent
     model_input: Tensor = pipeline.scheduler.scale_model_input(batched, timestep)
-    # The UNet is off the gradient path on purpose: guidance differentiates the
-    # energy through x̂₀'s closed form only, which costs one decoder backward
-    # per step instead of a UNet one (FreeDoM, arXiv:2303.09833).
-    with torch.no_grad():
+    # The UNet is off the gradient path unless a caller is deliberately
+    # differentiating through it: guidance otherwise differentiates the energy
+    # through x̂₀'s closed form only, which costs one decoder backward per step
+    # instead of a UNet one (FreeDoM, arXiv:2303.09833).
+    with torch.set_grad_enabled(differentiable):
         prediction: Tensor = pipeline.unet(
             model_input, timestep, encoder_hidden_states=prompt_embeddings
         ).sample
-    if not apply_text_guidance:
-        return prediction
-    unconditional, conditional = prediction.chunk(2)
-    return unconditional + text_guidance_scale * (conditional - unconditional)
+        if not apply_text_guidance:
+            return prediction
+        unconditional, conditional = prediction.chunk(2)
+        return unconditional + text_guidance_scale * (conditional - unconditional)
