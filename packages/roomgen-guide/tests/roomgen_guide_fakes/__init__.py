@@ -7,21 +7,15 @@ geometry package knows nothing about diffusion. Both reach their suite through
 """
 
 from roomgen_guide_fakes.pipeline import (
-    DOWNSCALE_FACTOR,
     LATENT_CHANNELS,
-    TRAIN_TIMESTEPS,
     FakePipeline,
     FakeScheduler,
-    FakeUNet,
     FakeVae,
 )
 
 __all__ = [
-    "DOWNSCALE_FACTOR",
     "LATENT_CHANNELS",
-    "TRAIN_TIMESTEPS",
     "FakePipeline",
     "FakeScheduler",
-    "FakeUNet",
     "FakeVae",
 ]

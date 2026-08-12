@@ -16,7 +16,7 @@ from torch import Tensor
 from torchvision.io import write_png
 
 from framework.backends import Backends, build_backends
-from framework.config import BenchmarkConfig, SceneConfig, build_schedule
+from framework.config import BenchmarkConfig, SceneConfig
 from framework.metrics import build_adherence
 from framework.photos import ensure_photos, load_photo
 from framework.residual_maps import mean_absolute_residual, write_signed_residual_map
@@ -28,7 +28,6 @@ from roomgen_guide.eval import (
     shell_coverage,
     signed_depth_residual_map,
 )
-from roomgen_guide.guidance.schedule import ConstantStrength, GuidanceSchedule
 from roomgen_guide.metrics import RunMetrics
 from roomgen_guide.renovate import renovate
 
@@ -61,7 +60,7 @@ class _MaskLog:
 
     masks: list[Bool[Tensor, "1 height width"]] = field(default_factory=list)
 
-    def __call__(self, progress: float, mask: Bool[Tensor, "1 height width"]) -> None:
+    def __call__(self, mask: Bool[Tensor, "1 height width"]) -> None:
         self.masks.append(mask)
 
     def snapshots(self) -> list[Bool[Tensor, "1 height width"]]:
@@ -232,8 +231,8 @@ def _run_scene(
 
     results: list[PairResult] = []
     for seed in config.seeds:
-        # Only the guided arm has masks to record: the control's schedule is
-        # flat zero, so its energy is never evaluated.
+        # Only the guided arm has masks to record: the control's strength is
+        # zero, so its energy is never evaluated.
         mask_log = _MaskLog()
         guided, guided_seconds = _sample(
             photo,
@@ -241,7 +240,7 @@ def _run_scene(
             backends=backends,
             config=config,
             reference=reference,
-            schedule=build_schedule(config.guidance),
+            strength=config.guidance.strength,
             seed=seed,
             on_mask=mask_log,
         )
@@ -254,7 +253,7 @@ def _run_scene(
             backends=backends,
             config=config,
             reference=reference,
-            schedule=ConstantStrength(strength=0.0),
+            strength=0.0,
             seed=seed,
         )
         _write_image(guided, image_dir / f"{scene.photo}_seed{seed}_guided.png")
@@ -357,7 +356,7 @@ def _sample(
     backends: Backends,
     config: BenchmarkConfig,
     reference: GeometricReference,
-    schedule: GuidanceSchedule,
+    strength: float,
     seed: int,
     steps: int | None = None,
     on_mask: _MaskLog | None = None,
@@ -377,17 +376,15 @@ def _sample(
         pipeline=backends.pipeline,
         depth_estimator=backends.depth_estimator,
         segmenter=backends.segmenter,
-        schedule=schedule,
+        strength=strength,
         erosion_radius=config.guidance.erosion_radius,
         steps=config.sampler.steps if steps is None else steps,
         noise_strength=config.sampler.noise_strength,
         text_guidance_scale=config.sampler.text_guidance_scale,
         generator=generator,
-        normalize_gradient=config.guidance.normalize,
         clip_step_rms=config.guidance.clip,
         differentiate_through_unet=config.guidance.through_unet,
         resegment=config.guidance.resegment,
-        resegment_after=config.guidance.resegment_after,
         mask_mode=config.guidance.mask_mode,
         on_mask=on_mask,
         reference=reference,
@@ -417,7 +414,7 @@ def _warm_up(
         backends=backends,
         config=config,
         reference=reference,
-        schedule=build_schedule(config.guidance),
+        strength=config.guidance.strength,
         seed=config.seeds[0],
         steps=_WARM_UP_STEPS,
     )

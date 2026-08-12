@@ -3,7 +3,7 @@ import torch
 from torch import Generator, Tensor
 
 from roomgen_fakes import assert_gradient_is_finite_and_nonzero
-from roomgen_geometry.reward import gradient_matching_error, masked_depth_error
+from roomgen_geometry.reward import masked_depth_error
 
 
 def _disparity(generator: Generator) -> Tensor:
@@ -160,13 +160,3 @@ def test_the_energy_is_float32_whatever_the_maps_arrive_in(
     for dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
         error = masked_depth_error((target + 1.0).to(dtype), target.to(dtype), mask)
         assert error.dtype == torch.float32, dtype
-
-
-def test_the_gradient_matching_term_takes_two_disparity_maps_and_a_mask(
-    generator: Generator,
-) -> None:
-    target = _disparity(generator)
-    mask = torch.ones_like(target, dtype=torch.bool)
-
-    with pytest.raises(NotImplementedError):
-        gradient_matching_error(_disparity(generator), target, mask, levels=4)

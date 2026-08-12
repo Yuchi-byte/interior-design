@@ -14,7 +14,7 @@ from jaxtyping import install_import_hook
 # Scoped to the geometry package on purpose: it is the one that speaks in
 # `Float[Tensor, "batch height width"]`, so a fake or a caller that transposes
 # an axis fails here instead of producing a plausible number. `roomgen_guide`
-# is left alone because beartype rejects `Config.from_raw`'s PEP 673 `Self`
+# is left alone because beartype rejects `Config.from_file`'s PEP 673 `Self`
 # outside a class it decorates itself.
 install_import_hook("roomgen_geometry", "beartype.beartype")
 

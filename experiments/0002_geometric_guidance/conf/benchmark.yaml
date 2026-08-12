@@ -37,21 +37,11 @@ guidance:
   # Clipped raw step, the arm that dominates every other measured (report.md):
   # the raw step's energy-adaptivity handles scenes whose geometry is already
   # close, the cap prevents the high-noise adversarial runaway. 32/32 at noise
-  # 0.6 and 30/32 at 0.8 on seeds 0-3. A pure normalized step (normalize: true,
-  # strength ~0.02-0.04) is bounded but overshoots low-drift scenes; uncapped
-  # raw (clip: null) collapses at noise >= 0.8.
+  # 0.6 and 30/32 at 0.8 on seeds 0-3. Uncapped raw (clip: null) collapses at
+  # noise >= 0.8.
   strength: 10.0
-  normalize: false
   clip: 0.02
-  # `decaying` (strength -> final_strength on a cosine) measured strictly
-  # worse: it halves the geometric win for no adherence gain.
-  schedule: constant
   erosion_radius: 2
-  # Intersect the prediction's shell from the first step. Holding the reference
-  # shell over the early steps instead — where the predicted clean image is
-  # still blur the segmenter reads as furniture-free — is the arm to try next,
-  # not the one this config runs.
-  resegment_after: 0.0
   # Both sides of the run read a prediction's segmentation this way: the
   # guidance while sampling, and the eval that judges the render afterwards.
   # `subtract_contents` exempts only what the segmenter affirmatively calls

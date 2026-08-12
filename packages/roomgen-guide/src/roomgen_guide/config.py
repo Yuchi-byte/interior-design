@@ -20,11 +20,6 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     @classmethod
-    def from_raw(cls, cfg: DictConfig) -> Self:
-        container = OmegaConf.to_container(cfg, resolve=True)
-        return cls.model_validate(container)
-
-    @classmethod
     def from_file(cls, path: Path, overrides: Sequence[str] | None = None) -> Self:
         """Load this config from a YAML file, optionally patched with dotlist overrides."""
         cfg = OmegaConf.load(path)
@@ -37,7 +32,7 @@ class Config(BaseModel):
                 raise ValueError(_merge_failure(overrides, error)) from error
             if not isinstance(cfg, DictConfig):  # pragma: no cover - defensive
                 raise TypeError("Merging overrides did not produce a mapping")
-        return cls.from_raw(cfg)
+        return cls.model_validate(OmegaConf.to_container(cfg, resolve=True))
 
 
 def _merge_failure(overrides: Sequence[str], error: ConfigTypeError) -> str:

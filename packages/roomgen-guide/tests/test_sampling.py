@@ -8,7 +8,6 @@ from torch import Generator, Tensor
 from roomgen_fakes import assert_gradient_is_finite_and_nonzero
 from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
-from roomgen_guide.guidance.schedule import ConstantStrength
 from roomgen_guide.sampling.guided import (
     _encode_photo,
     _guided_update,
@@ -38,34 +37,25 @@ _GOLDEN_SUM = 2902.737061
 _GOLDEN_PIXEL = [0.25365448, 0.37026709, 0.13712433]
 
 
-def _normalized(gradient: Tensor) -> Tensor:
-    return _guided_update(
-        gradient, strength=1.0, normalize_gradient=True, clip_step_rms=None
-    )
-
-
 def _clipped(update: Tensor, cap: float) -> Tensor:
-    return _guided_update(
-        update, strength=1.0, normalize_gradient=False, clip_step_rms=cap
-    )
+    return _guided_update(update, strength=1.0, clip_step_rms=cap)
+
+
+def _direction(update: Tensor) -> Tensor:
+    """The step with its size divided out, so a test can ask whether it turned."""
+    return update / update.square().mean(dim=(1, 2, 3), keepdim=True).sqrt()
 
 
 class MeanBrightnessEnergy:
     def __call__(
-        self,
-        predicted_image: Float[Tensor, "batch 3 height width"],
-        *,
-        progress: float,
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, ""]:
         return predicted_image.mean()
 
 
 class FlatEnergy:
     def __call__(
-        self,
-        predicted_image: Float[Tensor, "batch 3 height width"],
-        *,
-        progress: float,
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, ""]:
         # Attached to the image but flat in it: a literal constant would leave
         # the energy off the graph entirely, which autograd refuses rather than
@@ -79,33 +69,25 @@ class AmplifiedEnergy:
     factor: float
 
     def __call__(
-        self,
-        predicted_image: Float[Tensor, "batch 3 height width"],
-        *,
-        progress: float,
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, ""]:
-        return self.factor * self.energy(predicted_image, progress=progress)
+        return self.factor * self.energy(predicted_image)
 
 
 @dataclass
 class RecordingGuidance:
     energy: Guidance
     scored_on_the_graph: list[bool] = field(default_factory=list)
-    walked: list[float] = field(default_factory=list)
     images: list[Tensor] = field(default_factory=list)
 
     def __call__(
-        self,
-        predicted_image: Float[Tensor, "batch 3 height width"],
-        *,
-        progress: float,
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, ""]:
         self.scored_on_the_graph.append(
             predicted_image.requires_grad and predicted_image.grad_fn is not None
         )
-        self.walked.append(progress)
         self.images.append(predicted_image.detach().clone())
-        return self.energy(predicted_image, progress=progress)
+        return self.energy(predicted_image)
 
 
 class RecordingVae:
@@ -159,7 +141,6 @@ def _sample(
     noise_strength: float = 0.6,
     text_guidance_scale: float = 7.5,
     seed: int = 0,
-    normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
     differentiate_through_unet: bool = False,
 ) -> Tensor:
@@ -168,12 +149,11 @@ def _sample(
         photo,
         _PROMPT,
         guidance=guidance,
-        schedule=ConstantStrength(strength=strength),
+        strength=strength,
         steps=steps,
         noise_strength=noise_strength,
         text_guidance_scale=text_guidance_scale,
         generator=torch.Generator().manual_seed(seed),
-        normalize_gradient=normalize_gradient,
         clip_step_rms=clip_step_rms,
         differentiate_through_unet=differentiate_through_unet,
     )
@@ -226,118 +206,7 @@ def test_guidance_lowers_the_depth_energy_of_the_sampled_image(
     unguided = _sample(fake_pipeline, room_photo, geometric_guidance, strength=0.0)
     guided = _sample(fake_pipeline, room_photo, geometric_guidance, strength=500.0)
 
-    assert float(geometric_guidance(guided, progress=1.0)) < 0.9 * float(
-        geometric_guidance(unguided, progress=1.0)
-    )
-
-
-def test_the_raw_energy_gradient_is_the_step_unless_normalization_is_asked_for(
-    fake_pipeline: FakePipeline,
-    geometric_guidance: GeometricGuidance,
-    room_photo: Tensor,
-) -> None:
-    default = _sample(fake_pipeline, room_photo, geometric_guidance, strength=500.0)
-    unnormalized = _sample(
-        fake_pipeline,
-        room_photo,
-        geometric_guidance,
-        strength=500.0,
-        normalize_gradient=False,
-    )
-    normalized = _sample(
-        fake_pipeline,
-        room_photo,
-        geometric_guidance,
-        strength=500.0,
-        normalize_gradient=True,
-    )
-
-    assert torch.equal(default, unnormalized)
-    assert not torch.equal(default, normalized)
-
-
-def test_normalization_leaves_an_unguided_trajectory_alone(
-    fake_pipeline: FakePipeline,
-    geometric_guidance: GeometricGuidance,
-    room_photo: Tensor,
-) -> None:
-    unguided = _sample(fake_pipeline, room_photo, geometric_guidance, strength=0.0)
-    normalized = _sample(
-        fake_pipeline,
-        room_photo,
-        geometric_guidance,
-        strength=0.0,
-        normalize_gradient=True,
-    )
-
-    assert torch.equal(unguided, normalized)
-
-
-def test_a_flat_energy_normalizes_to_no_step_at_all(
-    fake_pipeline: FakePipeline, room_photo: Tensor
-) -> None:
-    unguided = _sample(fake_pipeline, room_photo, FlatEnergy(), strength=0.0)
-    normalized = _sample(
-        fake_pipeline,
-        room_photo,
-        FlatEnergy(),
-        strength=500.0,
-        normalize_gradient=True,
-    )
-
-    assert bool(torch.isfinite(normalized).all())
-    assert torch.equal(normalized, unguided)
-
-
-def test_the_normalized_trajectory_is_invariant_to_the_scale_of_the_energy(
-    fake_pipeline: FakePipeline,
-    geometric_guidance: GeometricGuidance,
-    room_photo: Tensor,
-) -> None:
-    amplified = AmplifiedEnergy(geometric_guidance, factor=1000.0)
-    step_size = 0.1
-
-    normalized = _sample(
-        fake_pipeline,
-        room_photo,
-        geometric_guidance,
-        strength=step_size,
-        normalize_gradient=True,
-    )
-    normalized_amplified = _sample(
-        fake_pipeline,
-        room_photo,
-        amplified,
-        strength=step_size,
-        normalize_gradient=True,
-    )
-    raw = _sample(fake_pipeline, room_photo, geometric_guidance, strength=step_size)
-    raw_amplified = _sample(fake_pipeline, room_photo, amplified, strength=step_size)
-
-    torch.testing.assert_close(normalized_amplified, normalized, rtol=1e-4, atol=1e-6)
-    assert not torch.allclose(raw_amplified, raw, rtol=1e-4, atol=1e-6)
-
-
-def test_the_normalized_gradient_keeps_its_direction_at_unit_rms(
-    generator: Generator,
-) -> None:
-    gradient = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
-
-    normalized = _normalized(gradient)
-    amplified = _normalized(gradient * 1e6)
-
-    root_mean_square = normalized.square().mean().sqrt()
-    torch.testing.assert_close(root_mean_square, torch.ones(()))
-    torch.testing.assert_close(
-        normalized * gradient.square().mean().sqrt(), gradient, rtol=1e-6, atol=1e-6
-    )
-    torch.testing.assert_close(amplified, normalized)
-
-
-def test_a_zero_gradient_normalizes_to_zero() -> None:
-    zero = torch.zeros((1, LATENT_CHANNELS, 8, 8))
-
-    assert torch.equal(_normalized(zero), zero)
+    assert float(geometric_guidance(guided)) < 0.9 * float(geometric_guidance(unguided))
 
 
 def test_a_step_under_the_cap_is_the_raw_step_untouched(
@@ -375,10 +244,7 @@ def test_a_step_over_the_cap_lands_exactly_on_it_without_turning(
     torch.testing.assert_close(
         clipped.square().mean().sqrt(), torch.tensor(_BINDING_CAP)
     )
-    torch.testing.assert_close(
-        _normalized(clipped),
-        _normalized(update),
-    )
+    torch.testing.assert_close(_direction(clipped), _direction(update))
     assert torch.equal(_clipped(update, 1e6), update)
 
 
@@ -388,6 +254,7 @@ def test_the_capped_trajectory_stops_growing_with_the_energy(
     room_photo: Tensor,
 ) -> None:
     amplified = AmplifiedEnergy(geometric_guidance, factor=1000.0)
+    louder = AmplifiedEnergy(geometric_guidance, factor=1e6)
 
     capped = _sample(
         fake_pipeline,
@@ -396,19 +263,21 @@ def test_the_capped_trajectory_stops_growing_with_the_energy(
         strength=500.0,
         clip_step_rms=_BINDING_CAP,
     )
-    # A cap that binds on every step *is* a fixed step of that size along the
-    # gradient, which is what normalization spells out directly.
-    at_the_cap = _sample(
+    # A thousand times the energy is a thousand times the gradient in the same
+    # direction: while the cap binds, both take the identical step of exactly
+    # that size, and the trajectory stops reading the scale of the energy at all.
+    capped_louder = _sample(
         fake_pipeline,
         room_photo,
-        geometric_guidance,
-        strength=_BINDING_CAP,
-        normalize_gradient=True,
+        louder,
+        strength=500.0,
+        clip_step_rms=_BINDING_CAP,
     )
     uncapped = _sample(fake_pipeline, room_photo, amplified, strength=500.0)
+    uncapped_louder = _sample(fake_pipeline, room_photo, louder, strength=500.0)
 
-    torch.testing.assert_close(capped, at_the_cap, rtol=1e-4, atol=1e-6)
-    assert not torch.allclose(uncapped, at_the_cap, rtol=1e-4, atol=1e-6)
+    torch.testing.assert_close(capped_louder, capped, rtol=1e-4, atol=1e-6)
+    assert not torch.allclose(uncapped_louder, uncapped, rtol=1e-4, atol=1e-6)
 
 
 def test_a_flat_energy_clips_to_no_step_at_all(
@@ -425,22 +294,6 @@ def test_a_flat_energy_clips_to_no_step_at_all(
 
     assert bool(torch.isfinite(clipped).all())
     assert torch.equal(clipped, unguided)
-
-
-def test_capping_a_step_that_is_already_fixed_size_is_rejected(
-    fake_pipeline: FakePipeline,
-    geometric_guidance: GeometricGuidance,
-    room_photo: Tensor,
-) -> None:
-    with pytest.raises(ValueError, match="clip_step_rms"):
-        _sample(
-            fake_pipeline,
-            room_photo,
-            geometric_guidance,
-            strength=500.0,
-            clip_step_rms=_BINDING_CAP,
-            normalize_gradient=True,
-        )
 
 
 def test_a_non_positive_cap_is_rejected(
@@ -473,7 +326,6 @@ def test_the_guided_step_differentiates_the_energy_through_the_predicted_origina
         latent=latent,
         noise_prediction=noise_prediction,
         alpha_cumprod=alpha_cumprod,
-        progress=0.0,
     )
 
     # Tweedie's x̂₀ spelled out, so the step is pinned to that estimate rather
@@ -483,9 +335,7 @@ def test_the_guided_step_differentiates_the_energy_through_the_predicted_origina
         differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
     ) / alpha_cumprod.sqrt()
     expected = assert_gradient_is_finite_and_nonzero(
-        geometric_guidance(
-            decode_latent(fake_pipeline.vae, predicted_original), progress=0.0
-        ),
+        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)),
         differentiable_latent,
     )
 
@@ -518,7 +368,6 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         text_guidance_scale=text_guidance_scale,
         apply_text_guidance=True,
         alpha_cumprod=alpha_cumprod,
-        progress=0.0,
     )
 
     # The same chain the loop plumbs, composed by hand: classifier-free ε̂ of the
@@ -537,9 +386,7 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         differentiable_latent - (1.0 - alpha_cumprod).sqrt() * attached_noise_prediction
     ) / alpha_cumprod.sqrt()
     expected = assert_gradient_is_finite_and_nonzero(
-        geometric_guidance(
-            decode_latent(fake_pipeline.vae, predicted_original), progress=0.0
-        ),
+        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)),
         differentiable_latent,
     )
     constant_epsilon = guidance_gradient(
@@ -548,7 +395,6 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         latent=latent,
         noise_prediction=noise_prediction,
         alpha_cumprod=alpha_cumprod,
-        progress=0.0,
     )
 
     torch.testing.assert_close(steering, expected)
@@ -633,42 +479,6 @@ def test_noise_strength_decides_how_much_of_the_trajectory_is_redone(
     assert len(complete.scored_on_the_graph) == 4
 
 
-def test_the_energy_is_told_how_far_through_the_walk_each_step_is(
-    fake_pipeline: FakePipeline,
-    geometric_guidance: GeometricGuidance,
-    room_photo: Tensor,
-) -> None:
-    whole = RecordingGuidance(geometric_guidance)
-    through_unet = RecordingGuidance(geometric_guidance)
-    # Half the schedule renoised: the walk is the two steps that are redone, and
-    # the first of them is its start — the fraction is of the walk, not of the
-    # trajectory the photo was never taken back up.
-    renoised = RecordingGuidance(geometric_guidance)
-    single = RecordingGuidance(geometric_guidance)
-
-    _sample(fake_pipeline, room_photo, whole, strength=1.0, steps=6, noise_strength=1.0)
-    _sample(
-        fake_pipeline,
-        room_photo,
-        through_unet,
-        strength=1.0,
-        steps=3,
-        noise_strength=1.0,
-        differentiate_through_unet=True,
-    )
-    _sample(
-        fake_pipeline, room_photo, renoised, strength=1.0, steps=4, noise_strength=0.5
-    )
-    _sample(
-        fake_pipeline, room_photo, single, strength=1.0, steps=1, noise_strength=1.0
-    )
-
-    assert whole.walked == pytest.approx([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
-    assert through_unet.walked == pytest.approx([0.0, 0.5, 1.0])
-    assert renoised.walked == pytest.approx([0.0, 1.0])
-    assert single.walked == pytest.approx([0.0])
-
-
 def test_classifier_free_guidance_on_the_prompt_changes_the_image(
     fake_pipeline: FakePipeline,
     geometric_guidance: GeometricGuidance,
@@ -718,13 +528,13 @@ def test_a_noise_strength_outside_the_unit_interval_is_rejected(
         )
 
 
-def test_each_batch_element_is_normalized_and_capped_on_its_own(
+def test_each_batch_element_is_capped_on_its_own(
     generator: Generator,
 ) -> None:
-    # Both step-size contracts are per image. Reduced over the whole batch they
-    # are not contracts at all: one loud element sets the divisor, and every
-    # quiet element beside it takes a step orders of magnitude below the size it
-    # was promised — silently, since the batch's own RMS still looks right.
+    # The cap is a per-image contract. Reduced over the whole batch it is not a
+    # contract at all: one loud element sets the divisor, and every quiet
+    # element beside it takes a step orders of magnitude below the one it was
+    # promised — silently, since the batch's own RMS still looks right.
     gradient = torch.stack(
         [
             1000.0 * torch.randn((LATENT_CHANNELS, 8, 8), generator=generator),
@@ -733,13 +543,8 @@ def test_each_batch_element_is_normalized_and_capped_on_its_own(
         ]
     )
 
-    normalized = _normalized(gradient)
     clipped = _clipped(gradient, _BINDING_CAP)
 
-    for element in range(3):
-        torch.testing.assert_close(
-            normalized[element].square().mean().sqrt(), torch.ones(())
-        )
     # The cap binds on the loud element and on nothing else, which is the whole
     # point of it: the quiet elements pass through as the raw step.
     torch.testing.assert_close(
@@ -755,7 +560,6 @@ def test_one_element_of_a_batch_steps_as_it_would_have_stepped_alone(
     loud = 1000.0 * torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
     batched = torch.cat([loud, quiet])
 
-    torch.testing.assert_close(_normalized(batched)[1:], _normalized(quiet))
     torch.testing.assert_close(
         _clipped(batched, _BINDING_CAP)[1:], _clipped(quiet, _BINDING_CAP)
     )
@@ -764,21 +568,15 @@ def test_one_element_of_a_batch_steps_as_it_would_have_stepped_alone(
 def test_a_half_precision_gradient_is_still_sized_by_a_cap_that_binds() -> None:
     # A guidance gradient runs around 1e-5 per element. Squared in float16 that
     # is under the subnormal floor, so its RMS underflows to exactly zero: the
-    # normalisation divides by the epsilon and returns inf, and the cap divides
-    # by it too, gets a factor of 1e6, clamps that to 1 and passes the step
-    # through untouched — a cap that reports success while never binding.
+    # cap then divides by the epsilon instead, gets a factor of 1e6, clamps that
+    # to 1 and passes the step through untouched — a cap that reports success
+    # while never binding.
     gradient = torch.full((1, LATENT_CHANNELS, 8, 8), 1e-5, dtype=torch.float16)
     cap = 1e-6
 
-    normalized = _normalized(gradient)
     clipped = _clipped(gradient, cap)
 
-    assert normalized.dtype == torch.float16
     assert clipped.dtype == torch.float16
-    assert bool(torch.isfinite(normalized).all())
-    torch.testing.assert_close(
-        normalized.float().square().mean().sqrt(), torch.ones(()), rtol=1e-3, atol=1e-3
-    )
     # Loosely, because a step this small is subnormal in float16 and lands on a
     # grid about a twentieth of itself: the sizing is exact, the dtype it is
     # handed back in is what rounds — and the latent it is subtracted from would
@@ -921,7 +719,7 @@ def test_the_guided_step_moves_the_latent_before_the_scheduler_advances_it(
         apply_text_guidance=True,
     )
     first: tuple[Tensor, Tensor, Tensor, Tensor] | None = None
-    for step, timestep in enumerate(timesteps):
+    for timestep in timesteps:
         noise_prediction = _predict_noise(
             fake_pipeline,
             latent,
@@ -936,14 +734,8 @@ def test_the_guided_step_moves_the_latent_before_the_scheduler_advances_it(
             latent=latent,
             noise_prediction=noise_prediction,
             alpha_cumprod=alphas_cumprod[timestep],
-            progress=step / (steps - 1),
         )
-        update = _guided_update(
-            steering,
-            strength=strength,
-            normalize_gradient=False,
-            clip_step_rms=None,
-        )
+        update = _guided_update(steering, strength=strength, clip_step_rms=None)
         if first is None:
             first = (noise_prediction, timestep, latent, update)
         latent = scheduler.step(noise_prediction, timestep, latent - update).prev_sample

@@ -7,7 +7,6 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from roomgen_guide.guidance.base import Guidance
-from roomgen_guide.guidance.schedule import GuidanceSchedule
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline, LatentAutoencoder
 
 # Small enough to be invisible against any gradient worth stepping along, and
@@ -17,9 +16,8 @@ _RMS_EPSILON: Final = 1e-12
 # The step is sized in float32 whatever the latent's dtype. A guidance gradient
 # runs around 1e-5 per element, and squaring that in float16 lands under the
 # 6e-8 subnormal floor: the RMS underflows to exactly zero, which turns
-# `normalize_gradient` into a NaN and `clip_step_rms` into a cap that never
-# binds. Only the sizing arithmetic is lifted; the update is handed back in the
-# latent's own dtype.
+# `clip_step_rms` into a cap that never binds. Only the sizing arithmetic is
+# lifted; the update is handed back in the latent's own dtype.
 _UPDATE_DTYPE: Final = torch.float32
 
 
@@ -29,12 +27,11 @@ def sample_guided(
     prompt: str,
     *,
     guidance: Guidance,
-    schedule: GuidanceSchedule,
+    strength: float,
     steps: int,
     noise_strength: float,
     text_guidance_scale: float,
     generator: torch.Generator,
-    normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
     differentiate_through_unet: bool = False,
 ) -> Float[Tensor, "batch 3 height width"]:
@@ -43,21 +40,19 @@ def sample_guided(
     Args:
         photo: NCHW, floating point, values in ``[0, 1]``; the image returned
             follows the same convention.
+        strength: what the energy gradient is multiplied by before it is applied
+            to the latent, at every step of the walk; 0 leaves the trajectory
+            unguided.
         noise_strength: how far up the trajectory the photo is renoised, in
             ``(0, 1]``; 1 discards it entirely.
         text_guidance_scale: classifier-free guidance on the prompt, unrelated
             to `guidance`; 1 turns it off.
         generator: the only source of randomness in the loop, so a run is
             reproducible from its seed alone.
-        normalize_gradient: step along the gradient divided by its own RMS, which
-            makes the strength `schedule` returns a step size in latent-RMS units
-            — bounded per step and invariant to the absolute scale of the energy
-            — instead of a multiplier on a gradient whose size the energy sets.
-            Sized per batch element, as is the cap below.
-        clip_step_rms: ceiling on the RMS of the raw step, in latent-RMS units.
-            Below it the step is the raw one, which shrinks as the energy is
-            satisfied; above it the step is exactly this size. Mutually
-            exclusive with `normalize_gradient`, whose step is already fixed-RMS.
+        clip_step_rms: ceiling on the RMS of the raw step, in latent-RMS units,
+            sized per batch element. Below it the step is the raw one, which
+            shrinks as the energy is satisfied; above it the step is exactly
+            this size.
         differentiate_through_unet: keep the UNet forward on the gradient path,
             so ∂energy/∂latent carries the denoiser's Jacobian and a push the
             denoiser would undo is damped at the source (DPS, arXiv:2209.14687),
@@ -66,21 +61,17 @@ def sample_guided(
 
     A guided step forms the predicted clean image from the current latent,
     decodes it, evaluates `guidance` on it, and shifts the latent along the
-    gradient of that energy — scaled by `schedule` — before the scheduler takes
+    gradient of that energy — scaled by `strength` — before the scheduler takes
     its step. No weights are updated.
     """
     if steps < 1:
         raise ValueError(f"steps must be at least 1, got {steps}")
+    if strength < 0.0:
+        raise ValueError(f"strength must be non-negative, got {strength}")
     if not 0.0 < noise_strength <= 1.0:
         raise ValueError(f"noise_strength must lie in (0, 1], got {noise_strength}")
-    if clip_step_rms is not None:
-        if normalize_gradient:
-            raise ValueError(
-                "clip_step_rms caps the raw step, but normalize_gradient already "
-                "fixes every step at the schedule's strength; pass one or the other"
-            )
-        if clip_step_rms <= 0.0:
-            raise ValueError(f"clip_step_rms must be positive, got {clip_step_rms}")
+    if clip_step_rms is not None and clip_step_rms <= 0.0:
+        raise ValueError(f"clip_step_rms must be positive, got {clip_step_rms}")
 
     scheduler = pipeline.scheduler
     prediction_type: str = scheduler.config.prediction_type
@@ -109,13 +100,7 @@ def sample_guided(
         apply_text_guidance=apply_text_guidance,
     )
 
-    total_steps = len(timesteps)
-    for step, timestep in enumerate(timesteps):
-        strength = schedule(step, total_steps)
-        # The fraction of the *walked* trajectory behind this step: the energy
-        # reads it to know how much of x̂₀ it can believe. A single walked step
-        # is the first one, as `DecayingStrength` also treats it.
-        progress = step / (total_steps - 1) if total_steps > 1 else 0.0
+    for timestep in timesteps:
         steering: Tensor | None = None
         if strength != 0.0 and differentiate_through_unet:
             noise_prediction, steering = guidance_gradient_through_unet(
@@ -127,7 +112,6 @@ def sample_guided(
                 text_guidance_scale=text_guidance_scale,
                 apply_text_guidance=apply_text_guidance,
                 alpha_cumprod=alphas_cumprod[timestep],
-                progress=progress,
             )
         else:
             noise_prediction = _predict_noise(
@@ -145,14 +129,10 @@ def sample_guided(
                     latent=latent,
                     noise_prediction=noise_prediction,
                     alpha_cumprod=alphas_cumprod[timestep],
-                    progress=progress,
                 )
         if steering is not None:
             latent = latent - _guided_update(
-                steering,
-                strength=strength,
-                normalize_gradient=normalize_gradient,
-                clip_step_rms=clip_step_rms,
+                steering, strength=strength, clip_step_rms=clip_step_rms
             )
         latent = scheduler.step(
             noise_prediction, timestep, latent, generator=generator
@@ -168,7 +148,6 @@ def guidance_gradient(
     latent: Float[Tensor, "batch channels height width"],
     noise_prediction: Float[Tensor, "batch channels height width"],
     alpha_cumprod: Float[Tensor, ""],
-    progress: float,
 ) -> Float[Tensor, "batch channels height width"]:
     """The steering direction of one guided step: ∂energy/∂latent at `latent`.
 
@@ -178,8 +157,6 @@ def guidance_gradient(
         noise_prediction: this step's ε, held constant — the gradient runs
             through Tweedie's x̂₀, the decoder and `guidance`, not the UNet.
         alpha_cumprod: the scheduler's ᾱ at this step's timestep.
-        progress: this step's position in the walked trajectory, as
-            :class:`~roomgen_guide.guidance.base.Guidance` defines it.
     """
     # `enable_grad` rather than an implicit ambient mode: the caller may be
     # inside the `no_grad` a diffusers pipeline runs under, and this region is
@@ -189,7 +166,7 @@ def guidance_gradient(
         predicted_original = (
             differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
         ) / alpha_cumprod.sqrt()
-        energy = guidance(decode_latent(vae, predicted_original), progress=progress)
+        energy = guidance(decode_latent(vae, predicted_original))
         (gradient,) = torch.autograd.grad(energy, differentiable_latent)
     return gradient
 
@@ -204,7 +181,6 @@ def guidance_gradient_through_unet(
     text_guidance_scale: float,
     apply_text_guidance: bool,
     alpha_cumprod: Float[Tensor, ""],
-    progress: float,
 ) -> tuple[
     Float[Tensor, "batch channels height width"],
     Float[Tensor, "batch channels height width"],
@@ -215,8 +191,6 @@ def guidance_gradient_through_unet(
         latent: the current step's latent; needs no gradient of its own, since
             the energy is differentiated against a leaf made from it here.
         alpha_cumprod: the scheduler's ᾱ at this step's timestep.
-        progress: this step's position in the walked trajectory, as
-            :class:`~roomgen_guide.guidance.base.Guidance` defines it.
 
     The returned ε̂ is the one this gradient was taken through, detached and ready
     for the scheduler, so the step pays for a single UNet forward rather than one
@@ -239,9 +213,7 @@ def guidance_gradient_through_unet(
         predicted_original = (
             differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
         ) / alpha_cumprod.sqrt()
-        energy = guidance(
-            decode_latent(pipeline.vae, predicted_original), progress=progress
-        )
+        energy = guidance(decode_latent(pipeline.vae, predicted_original))
         (gradient,) = torch.autograd.grad(energy, differentiable_latent)
     return noise_prediction.detach(), gradient
 
@@ -261,15 +233,9 @@ def _guided_update(
     gradient: Float[Tensor, "batch channels height width"],
     *,
     strength: float,
-    normalize_gradient: bool,
     clip_step_rms: float | None,
 ) -> Float[Tensor, "batch channels height width"]:
-    update = gradient.to(_UPDATE_DTYPE)
-    if normalize_gradient:
-        # Unit RMS whatever the energy's units are, so `strength` becomes the
-        # size of the step rather than a multiplier on it.
-        update = update / (_root_mean_square(update) + _RMS_EPSILON)
-    update = strength * update
+    update = strength * gradient.to(_UPDATE_DTYPE)
     if clip_step_rms is not None:
         # min(1, cap/RMS): a step under the cap is multiplied by exactly 1.0 and
         # so passes through bit-for-bit, and one over it lands exactly on the cap.
@@ -281,10 +247,10 @@ def _guided_update(
 def _root_mean_square(
     tensor: Float[Tensor, "batch channels height width"],
 ) -> Float[Tensor, "batch 1 1 1"]:
-    # Per batch element, keeping the reduction broadcastable back over it: both
-    # step-size contracts — unit-RMS normalisation and the RMS cap — are stated
-    # per image, so one loud element in a batch must not shrink every other
-    # element's step, nor a quiet one let a loud element through above the cap.
+    # Per batch element, keeping the reduction broadcastable back over it: the
+    # cap is stated per image, so one loud element in a batch must not shrink
+    # every other element's step, nor a quiet one let a loud element through
+    # above the cap.
     return tensor.square().mean(dim=(1, 2, 3), keepdim=True).sqrt()
 
 

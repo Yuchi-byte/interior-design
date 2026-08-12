@@ -20,7 +20,7 @@ packages/
       reference.py          #   GeometricReference, frozen from the input photo
   roomgen-guide/          # guided sampling + experiment harness
     src/roomgen_guide/
-      guidance/             #   Guidance protocol, geometric energy, strength schedules
+      guidance/             #   Guidance protocol + the geometric depth energy
       sampling/guided.py    #   the guided denoising loop over a diffusers pipeline
       renovate.py           #   end-to-end img2img renovation entry point (SD1.5)
       settings.py           #   RoomgenSettings (ROOMGEN_* env vars)

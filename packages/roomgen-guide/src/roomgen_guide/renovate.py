@@ -15,7 +15,6 @@ from roomgen_geometry.masking import MaskMode
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.guidance.geometric import GeometricGuidance, MaskObserver
-from roomgen_guide.guidance.schedule import GuidanceSchedule
 from roomgen_guide.sampling.guided import sample_guided
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
 
@@ -31,18 +30,16 @@ def renovate(
     pipeline: Img2ImgPipeline,
     depth_estimator: DepthEstimator,
     segmenter: Segmenter,
-    schedule: GuidanceSchedule,
+    strength: float,
     erosion_radius: int,
     steps: int,
     noise_strength: float,
     text_guidance_scale: float,
     generator: torch.Generator,
-    normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
     differentiate_through_unet: bool = False,
     reference: GeometricReference | None = None,
     resegment: bool = True,
-    resegment_after: float = 0.5,
     mask_mode: MaskMode = "intersect_shell",
     on_mask: MaskObserver | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
@@ -51,11 +48,11 @@ def renovate(
     Args:
         photo: NCHW, floating point, values in ``[0, 1]``; the image returned
             follows the same convention.
-        normalize_gradient: turns `schedule`'s strength into a step size in
-            latent-RMS units, invariant to the scale of the geometric energy.
+        strength: what the geometric energy's gradient is multiplied by before
+            it moves the latent, at every step; 0 is the unguided control.
         clip_step_rms: ceiling on the RMS of the raw step, keeping the step that
             a well-matched scene earns while bounding the one a large energy
-            asks for; mutually exclusive with `normalize_gradient`.
+            asks for.
         differentiate_through_unet: DPS-style gradient — keep the graph through
             the UNet so the step carries the denoiser's Jacobian, at roughly
             one extra UNet backward per guided step.
@@ -65,24 +62,19 @@ def renovate(
             `None` freezes the photo here, at the cost of a depth and a
             segmentation pass per call.
         resegment: score on the reference shell *and* the prediction's own,
-            re-segmenting the sample at each guided step past `resegment_after`
-            — occluding a wall with new furniture is then free, moving that wall
-            is not. `False` scores the reference shell alone for the whole
-            trajectory, which charges a renovation for every surface it covers
-            up, and leaves `segmenter` unused whenever `reference` is already
-            built.
+            re-segmenting the sample at each guided step — occluding a wall with
+            new furniture is then free, moving that wall is not. `False` scores
+            the reference shell alone, which charges a renovation for every
+            surface it covers up, and leaves `segmenter` unused whenever
+            `reference` is already built.
         mask_mode: which way a prediction's segmentation is read when it
             narrows the reference shell — `intersect_shell` keeps what the
             prediction also calls shell, `subtract_contents` keeps everything it
             does not affirmatively call contents. Whatever judges the render
             afterwards must read it the same way or the two disagree about what
             was ever being scored.
-        resegment_after: fraction of the walked trajectory before which the
-            reference shell is scored alone even when `resegment` is set, since
-            an early x̂₀ is too blurred to segment and its shell would swallow
-            the frame; from there on the intersection is scored.
-        on_mask: called with `(progress, mask)` at each guided step, for a
-            caller recording what the reward actually scored.
+        on_mask: called with the mask each guided step scored, for a caller
+            recording what the reward actually saw.
 
     Samples against the photo's frozen
     :class:`~roomgen_geometry.reference.GeometricReference` with the same
@@ -105,15 +97,13 @@ def renovate(
             segmenter=segmenter if resegment else None,
             erosion_radius=erosion_radius if resegment else None,
             mask_mode=mask_mode,
-            resegment_after=resegment_after,
             on_mask=on_mask,
         ),
-        schedule=schedule,
+        strength=strength,
         steps=steps,
         noise_strength=noise_strength,
         text_guidance_scale=text_guidance_scale,
         generator=generator,
-        normalize_gradient=normalize_gradient,
         clip_step_rms=clip_step_rms,
         differentiate_through_unet=differentiate_through_unet,
     )

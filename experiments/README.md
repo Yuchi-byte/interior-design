@@ -19,6 +19,8 @@ experiments/
 └── NNNN_slug/
     ├── run.py               # entry point
     ├── conf/                # config groups (variants)
+    ├── framework/           # the run's own machinery, if it outgrows run.py
+    ├── tests/               # its weightless surface, inside the gate
     └── report.md            # Hypothesis -> Setup -> Results -> Decision
 ```
 
@@ -32,7 +34,7 @@ experiments/
 - **`conf/`** holds config groups; select a variant explicitly rather than
   patching top-level keys ad hoc.
 - **`report.md`** records the finding: **Hypothesis** (what claim is being
-  tested) -> **Setup** (scenes, prompts, seeds, guidance schedule, sampler
+  tested) -> **Setup** (scenes, prompts, seeds, guidance strength, sampler
   budget) -> **Results** (numbers, pointers to the run) -> **Decision** (what
   this settles, and what runs next).
 

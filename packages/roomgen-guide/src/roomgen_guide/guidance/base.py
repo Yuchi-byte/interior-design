@@ -16,10 +16,6 @@ class Guidance(Protocol):
         predicted_image: the decoded x̂₀ of the current step, NCHW,
             floating point, values in ``[0, 1]``, still attached to the latent
             it was formed from.
-        progress: how far through the *walked* trajectory this step is — 0 at
-            the first walked step, 1 at the last, and 0 when only one is walked.
-            Early x̂₀ is blur, late x̂₀ is nearly the sample, so an energy that
-            reads its own input differently at the two ends is told which it has.
 
     Low energy means the constraint holds. The sampler differentiates the
     returned scalar with respect to that latent, so an implementation that
@@ -27,8 +23,5 @@ class Guidance(Protocol):
     """
 
     def __call__(
-        self,
-        predicted_image: Float[Tensor, "batch 3 height width"],
-        *,
-        progress: float,
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, ""]: ...

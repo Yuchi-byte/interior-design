@@ -48,13 +48,12 @@ _MASK_SNAPSHOT_CAPTIONS: Final = (
     "Scored mask, walk 100%",
 )
 _MASK_NOTE: Final = (
-    "White is what the reward actually scored at that step. Early in the walk "
-    "the predicted clean image is still blur, so the shell of a segmentation of "
-    "it would swallow the frame and the reference's own mask is scored alone; "
-    'from <span class="mono">resegment_after</span> of the walked trajectory '
-    "on, the sample is re-segmented every step and the score falls on the "
-    "reference shell intersected with the prediction's, which is what stops the "
-    "furniture a renovation adds from being charged as moved architecture."
+    "White is what the reward actually scored at that step. With a segmenter "
+    "configured the sample is re-segmented every step and the score falls on "
+    "the reference shell intersected with the prediction's, which is what stops "
+    "the furniture a renovation adds from being charged as moved architecture; "
+    'under <span class="mono">resegment: false</span> the reference shell is '
+    "scored alone the whole way."
 )
 _DEPTH_MAP_CAPTIONS: Final = (
     "Unguided \N{MINUS SIGN} reference",

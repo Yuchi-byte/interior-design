@@ -15,11 +15,6 @@ from roomgen_geometry.segmentation.eomt import (
 from roomgen_guide.config import Config
 from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.experiment import ExperimentConfig
-from roomgen_guide.guidance.schedule import (
-    ConstantStrength,
-    DecayingStrength,
-    GuidanceSchedule,
-)
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 
 DTypeName = Literal["float32", "float16", "bfloat16"]
@@ -111,23 +106,12 @@ class GuidanceConfig(Config):
     """The geometric guidance term under test.
 
     Args:
-        strength: what the energy gradient is scaled by before it is applied to
-            the latent, and the value a `decaying` schedule starts from — the
-            knob a strength sweep varies. `normalize` decides its units: a
-            multiplier on a gradient in the squared-disparity units the depth
-            backend defines, or a step size in latent-RMS units.
-        normalize: divide the gradient by its own RMS before the step, bounding
-            the per-step push so a large energy cannot run the sampler away into
-            a depth-satisfying texture.
+        strength: what the energy gradient is multiplied by at every step before
+            it is applied to the latent — the knob a strength sweep varies, in
+            the squared-disparity units the depth backend defines.
         clip: ceiling on the RMS of the raw step, in latent-RMS units: the raw
             step keeps shrinking as the geometry is satisfied, and the cap is
-            what stops a large energy from running away. Read only when
-            `normalize` is false, which the sampler enforces.
-        schedule: `constant` holds `strength` for the whole trajectory;
-            `decaying` falls from it to `final_strength` on a cosine, spending
-            the steering on the early steps that decide layout.
-        final_strength: where a `decaying` schedule lands on the last step;
-            read only by that schedule.
+            what stops a large energy from running away.
         erosion_radius: pixels trimmed either side of a segment edge before the
             shell mask is trusted.
         resegment: segment each predicted image and score depth only on
@@ -140,37 +124,17 @@ class GuidanceConfig(Config):
             `subtract_contents` scores everything it does not affirmatively call
             contents, so an id outside the ADE20K shell/contents partition stays
             scored instead of being excused.
-        resegment_after: fraction of the walked trajectory before which the
-            reference shell is scored alone even under `resegment`. An early x̂₀
-            is blur the segmenter reads as furniture-free, so its shell covers
-            the frame and intersecting with it costs a step of layout budget for
-            nothing; 0 intersects from the first step, 1 only on the last.
         through_unet: DPS-style gradient, keeping the graph through the UNet so
             the step carries the denoiser's Jacobian; costs roughly one extra
             UNet backward per guided step.
     """
 
     strength: Annotated[float, Field(ge=0.0)]
-    normalize: bool = False
     clip: Annotated[float, Field(gt=0.0)] | None = None
-    schedule: Literal["constant", "decaying"] = "constant"
-    final_strength: Annotated[float, Field(ge=0.0)] = 0.0
     erosion_radius: Annotated[int, Field(ge=0)] = 2
     resegment: bool = True
-    resegment_after: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
     mask_mode: MaskMode = "intersect_shell"
     through_unet: bool = False
-
-
-def build_schedule(config: GuidanceConfig) -> GuidanceSchedule:
-    """The strength schedule `config` selects, for the guided arm of a pair."""
-    match config.schedule:
-        case "constant":
-            return ConstantStrength(strength=config.strength)
-        case "decaying":
-            return DecayingStrength(
-                initial=config.strength, final=config.final_strength
-            )
 
 
 class AdherenceConfig(Config):

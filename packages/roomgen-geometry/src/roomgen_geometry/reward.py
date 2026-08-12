@@ -64,18 +64,3 @@ def masked_depth_error(
     # case it leaves the maps unaligned — every non-empty mask, however
     # degenerate, is scored against a fit that has at least matched their means.
     return squared_residual / weight.flatten(1).sum(-1).clamp(min=1.0)
-
-
-def gradient_matching_error(
-    prediction: Float[Tensor, "batch height width"],
-    target: Float[Tensor, "batch height width"],
-    mask: Bool[Tensor, "batch height width"],
-    *,
-    levels: int,
-) -> Float[Tensor, "batch"]:
-    """Masked disagreement in depth *gradients* across `levels` image-pyramid levels.
-
-    Shares the alignment convention of :func:`masked_depth_error`, and sharpens
-    the planarity and edge placement that a pure value error tolerates.
-    """
-    raise NotImplementedError

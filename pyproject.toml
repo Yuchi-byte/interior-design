@@ -64,7 +64,7 @@ select = [
     "B",   # bugbear: mutable defaults, silent-failure loops, zip(strict=)
     "A",   # shadowed builtins
     "C4",  # comprehensions
-    "T20", # no print: library code reports through the Logger protocol
+    "T20", # no print: library code reports by raising or returning
     "PT",  # pytest style
     "RET", # returns
     "SIM", # simplify
@@ -164,18 +164,14 @@ init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
 
-# Third-party packages that ship no py.typed, so imports from them are untyped.
-# The whole pretrained-model stack (diffusers/transformers/accelerate and the
-# weight + image plumbing under it) is in this bucket.
+# Third-party packages that ship no py.typed, so imports from them are untyped:
+# the pretrained-model stack and the image plumbing under it.
 [[tool.mypy.overrides]]
 module = [
     "transformers.*",
     "diffusers.*",
-    "accelerate.*",
     "torchvision.*",
     "PIL.*",
-    "safetensors.*",
-    "cv2.*",
 ]
 ignore_missing_imports = true
 
@@ -216,6 +212,5 @@ pythonpath = [
     "experiments/0002_geometric_guidance",
 ]
 markers = [
-    "slow: long-running (many diffusion steps, full-resolution renders); excluded from quick local runs on request only, not from CI by default",
     "models: requires downloading pretrained model weights from the Hugging Face Hub; excluded from CI, which has no network or GPU",
 ]

@@ -50,8 +50,8 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   pixels a reward may score, under either `MaskMode` polarity —
   `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts
   only affirmative contents, so an id the partition does not name stays scored;
-  `architectural_mask` is that function at its default polarity, which is how
-  the reference photo's shell is always read. Plus the boundary erosion, applied
+  `architectural_mask` is that function at `intersect_shell`, which is how the
+  reference photo's shell is always read. Plus the boundary erosion, applied
   to the kept side in either mode, that drops the few pixels either side of a
   segment edge where monocular depth is unreliable — a max-pool over the
   inverted mask (Chebyshev radius in pixels); the image border is not treated as
@@ -59,8 +59,7 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels.
 - `reward.py`: `masked_depth_error`, the scale-and-shift-invariant masked
-  objective, beside the `gradient_matching_error` the multi-scale term is
-  reserved under — declared and not implemented.
+  objective.
 - `reference.py`: `GeometricReference`, the frozen (masked depth, mask) pair
   computed once from the input photo and detached.
 
@@ -69,19 +68,14 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
 The guided sampler and the experiment harness shared with `experiments/`.
 
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
-  image x̂₀ and its `progress` through the walked trajectory (0 first, 1 last)
-  to a scalar energy.
+  image x̂₀ to a scalar energy.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
   re-runs the depth model, and scores it against a `GeometricReference` over the
-  reference's shell — alone while `progress < resegment_after`, since an early
-  x̂₀ is blur whose segmentation covers the frame, and from there on intersected
-  with the shell of a configured segmenter's (detached, `no_grad`) view of that
-  same x̂₀, so furniture the renovation puts in front of a wall is free and a
-  wall that has moved is not; an optional `on_mask` hook reports the effective
-  mask of each step to a caller that wants to record it.
-- `guidance/schedule.py`: guidance-strength schedules over the timestep — strong
-  early while layout is still being decided, decayed late so texture detail is
-  not fought.
+  reference's shell — intersected, whenever a segmenter is configured, with the
+  shell of that segmenter's (detached, `no_grad`) view of the same x̂₀, so
+  furniture the renovation puts in front of a wall is free and a wall that has
+  moved is not; an optional `on_mask` hook reports the effective mask of each
+  step to a caller that wants to record it.
 - `sampling/pipeline.py`: `Img2ImgPipeline` and the component Protocols under
   it — the structural view of a diffusers img2img pipeline, so a weightless fake
   can stand in for one.
@@ -179,10 +173,7 @@ prediction,
 
 which is invariant to any affine rescaling of `d` by construction. This is the
 scale-and-shift-invariant loss of MiDaS (arXiv:1907.01341) used as a reward
-rather than a training objective. `gradient_matching_error` reserves the
-multi-scale term beside it — the same masked mean over `|∇(s·d + t) − ∇r|` at
-several pyramid levels, sharpening the planarity and edge alignment a pure value
-error tolerates — and raises `NotImplementedError` until the reward needs it.
+rather than a training objective.
 
 Everything downstream depends on this alignment: it is what makes the reward
 comparable across two different images at all.
@@ -194,8 +185,9 @@ from the current latent and the model's noise prediction, decodes it through the
 VAE, runs the same `DepthEstimator` on the result, and evaluates the energy `E`
 above. The steering direction is the gradient of that energy **with respect to
 the latent** at that step, and it is applied to the latent before the scheduler
-takes its step, scaled by `guidance/schedule.py`. No weights are updated — this
-is training-free guidance in the universal-guidance / FreeDoM family.
+takes its step, multiplied by one `strength` held constant over the walk and
+optionally capped at a fixed step RMS (`clip_step_rms`). No weights are updated
+— this is training-free guidance in the universal-guidance / FreeDoM family.
 
 The gradient therefore backpropagates through the depth network *and* the VAE
 decoder. The UNet sits outside that path, its noise prediction entering x̂₀'s

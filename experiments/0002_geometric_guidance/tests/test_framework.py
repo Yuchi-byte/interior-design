@@ -11,10 +11,8 @@ import json
 from pathlib import Path
 
 import pytest
-from framework.config import LATENT_ALIGNMENT, BenchmarkConfig, build_schedule
+from framework.config import LATENT_ALIGNMENT, BenchmarkConfig
 from framework.gallery import GALLERY_FILENAME, write_gallery
-
-from roomgen_guide.guidance.schedule import ConstantStrength, DecayingStrength
 
 CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
 
@@ -51,21 +49,6 @@ def test_an_override_addressing_a_list_element_says_so() -> None:
 def test_an_unknown_override_key_is_still_rejected() -> None:
     with pytest.raises(ValueError, match="guidnce"):
         BenchmarkConfig.from_file(CONF_DIR / "smoke.yaml", ["guidnce.strength=1"])
-
-
-def test_the_schedule_a_variant_selects_is_the_one_it_gets() -> None:
-    constant = build_schedule(
-        BenchmarkConfig.from_file(CONF_DIR / "smoke.yaml").guidance
-    )
-    decaying = build_schedule(
-        BenchmarkConfig.from_file(
-            CONF_DIR / "smoke.yaml",
-            ["guidance.schedule=decaying", "guidance.final_strength=1.0"],
-        ).guidance
-    )
-
-    assert isinstance(constant, ConstantStrength)
-    assert isinstance(decaying, DecayingStrength)
 
 
 def _results(tmp_path: Path) -> Path:

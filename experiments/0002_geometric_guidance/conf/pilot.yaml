@@ -26,9 +26,7 @@ sampler:
 
 guidance:
   strength: 10.0
-  normalize: false
   clip: 0.02
-  schedule: constant
   erosion_radius: 2
 
 adherence:

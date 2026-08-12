@@ -21,7 +21,7 @@ MaskMode = Literal["intersect_shell", "subtract_contents"]
 def scorable_mask(
     segmentation: Int[Tensor, "batch height width"],
     *,
-    mode: MaskMode = "intersect_shell",
+    mode: MaskMode,
     erosion_radius: int,
 ) -> Bool[Tensor, "batch height width"]:
     """The pixels one segmentation leaves available to the reward, under either polarity.
@@ -58,7 +58,7 @@ def scorable_mask(
 def architectural_mask(
     segmentation: Int[Tensor, "batch height width"], *, erosion_radius: int
 ) -> Bool[Tensor, "batch height width"]:
-    """The pixels the geometric reward is allowed to score: `scorable_mask` at its default polarity.
+    """The pixels the geometric reward is allowed to score: `scorable_mask` at `intersect_shell`.
 
     True on the shell classes
     (:data:`~roomgen_geometry.segmentation.ade20k.ARCHITECTURAL_CLASSES`) and

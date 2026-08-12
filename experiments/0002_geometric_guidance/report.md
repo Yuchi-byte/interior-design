@@ -55,9 +55,7 @@ selected variant, ensures the photos, builds the stack, and drives
   `text_guidance_scale=7.5`, DDIM (the checkpoint's PNDM is replaced: DDIM's
   update is the deterministic closed form the guided loop's x̂₀ correction
   assumes).
-- **Guidance.** `ConstantStrength` 10.0 (pinned by the sweep below).
-  `DecayingStrength` (cosine, `strength` → `final_strength`) is selectable via
-  `guidance.schedule=decaying` and is the next variant to measure.
+- **Guidance.** Constant strength 10.0 (pinned by the sweep below).
 - **Metrics.** `roomgen_guide.eval`: gate (a) is `depth_error` against the
   reference, gate (b) the CLIP prompt score
   (`openai/clip-vit-base-patch32`); the smoke variant substitutes
@@ -73,7 +71,7 @@ selected variant, ensures the photos, builds the stack, and drives
 
 There is no scale-free choice: the energy is in the depth backend's own squared
 disparity units. The number is anchored on `test_sampling.py` /
-`test_renovate.py`, which both drive the loop at `ConstantStrength(500.0)`, and
+`test_renovate.py`, which both drive the loop at strength 500.0, and
 then corrected for the fact that the real stack's energy is not the fakes'.
 Measured on these photos with Depth Anything V2 at 512x512 (CPU, float32):
 
@@ -305,5 +303,5 @@ checkpoint-free smoke metric; the shared machinery is in `roomgen_guide`.
    here), but there is no knob to keep the *energy* in float32 above a
    half-precision VAE without a cast inside `packages/`. `conf/benchmark.yaml`
    therefore runs float32 throughout.
-3. **`reward.gradient_matching_error` is a `NotImplementedError`** — expected,
-   that is v2's business, noted so the sequencing stays explicit.
+3. **There is no multi-scale (gradient-matching) reward term.** v2's business,
+   noted so the sequencing stays explicit.
