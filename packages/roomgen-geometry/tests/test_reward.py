@@ -3,7 +3,8 @@ import torch
 from torch import Generator, Tensor
 
 from roomgen_fakes import assert_gradient_is_finite_and_nonzero
-from roomgen_geometry.reward import masked_depth_error
+from roomgen_geometry.reward import masked_class_error, masked_depth_error
+from roomgen_geometry.segmentation.ade20k import NUM_CLASSES
 
 
 def _disparity(generator: Generator) -> Tensor:
@@ -266,3 +267,162 @@ def test_the_energy_is_float32_whatever_the_maps_arrive_in(
     for dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
         error = masked_depth_error((target + 1.0).to(dtype), target.to(dtype), mask)
         assert error.dtype == torch.float32, dtype
+
+
+_MARGIN = 0.5
+
+
+def _class_scores(target_share: float, *, size: int = 4) -> Tensor:
+    """Per-class scores where class 0 holds `target_share` of the mass and class 1 the rest."""
+    scores = torch.zeros((1, NUM_CLASSES, size, size))
+    scores[:, 0] = target_share
+    scores[:, 1] = 1.0 - target_share
+    return scores
+
+
+def _target(size: int = 4) -> Tensor:
+    return torch.zeros((1, size, size), dtype=torch.int64)
+
+
+def test_the_class_energy_vanishes_where_the_prediction_agrees_with_the_photo() -> None:
+    mask = torch.ones((1, 4, 4), dtype=torch.bool)
+
+    error = masked_class_error(_class_scores(1.0), _target(), mask, margin=_MARGIN)
+
+    assert float(error) == 0.0
+
+
+def test_the_class_energy_stops_pulling_once_the_reference_class_is_settled() -> None:
+    # The dead zone that makes this a satisfaction constraint rather than a
+    # likelihood: nothing is gained by rendering something *more* window-like
+    # than the margin, so there is no gradient inviting adversarial texture.
+    mask = torch.ones((1, 4, 4), dtype=torch.bool)
+    settled = _class_scores(_MARGIN + 0.2).requires_grad_(True)
+
+    error = masked_class_error(settled, _target(), mask, margin=_MARGIN)
+
+    assert float(error.detach()) == 0.0
+    (gradient,) = torch.autograd.grad(error.sum(), settled)
+    assert float(gradient.abs().max()) == 0.0
+
+
+def test_the_class_energy_grows_as_the_reference_class_loses_the_pixel() -> None:
+    mask = torch.ones((1, 4, 4), dtype=torch.bool)
+
+    slight = float(
+        masked_class_error(_class_scores(0.4), _target(), mask, margin=_MARGIN)
+    )
+    total = float(
+        masked_class_error(_class_scores(0.0), _target(), mask, margin=_MARGIN)
+    )
+
+    assert 0.0 < slight < total
+    # Bounded by the margin squared, whatever the prediction does: an unbounded
+    # per-pixel term would make a composite energy's mixture a function of the
+    # frame's worst pixel rather than of the weight set for it.
+    assert total == pytest.approx(_MARGIN**2)
+
+
+def test_the_class_energy_scores_only_the_masked_pixels() -> None:
+    mask = torch.zeros((1, 4, 4), dtype=torch.bool)
+    mask[:, :2] = True
+    wrong = _class_scores(0.0)
+
+    error = masked_class_error(wrong, _target(), mask, margin=_MARGIN)
+
+    # Half the frame at the full per-pixel cost, averaged over the masked half
+    # alone rather than over the frame.
+    assert float(error) == pytest.approx(_MARGIN**2)
+
+
+def test_the_class_energy_scores_an_empty_mask_zero_rather_than_dividing_by_it() -> (
+    None
+):
+    empty = torch.zeros((1, 4, 4), dtype=torch.bool)
+    scores = _class_scores(0.0).requires_grad_(True)
+
+    error = masked_class_error(scores, _target(), empty, margin=_MARGIN)
+
+    assert float(error) == 0.0
+    (gradient,) = torch.autograd.grad(error.sum(), scores)
+    assert torch.isfinite(gradient).all()
+
+
+def test_the_class_energy_gradient_pushes_the_reference_class_up() -> None:
+    mask = torch.ones((1, 4, 4), dtype=torch.bool)
+    scores = _class_scores(0.1).requires_grad_(True)
+
+    gradient = assert_gradient_is_finite_and_nonzero(
+        masked_class_error(scores, _target(), mask, margin=_MARGIN).sum(), scores
+    )
+
+    # Descending the energy raises the reference class's share and lowers the
+    # rival's, which is the direction a sampler is steered in.
+    assert float(gradient[:, 0].max()) < 0.0
+    assert float(gradient[:, 1].min()) > 0.0
+
+
+def test_a_non_finite_score_outside_the_mask_poisons_neither_direction() -> None:
+    mask = torch.ones((1, 4, 4), dtype=torch.bool)
+    mask[:, 3:] = False
+    scores = _class_scores(0.1)
+    scores[:, :, 3:] = float("nan")
+    scores.requires_grad_(True)
+
+    gradient = assert_gradient_is_finite_and_nonzero(
+        masked_class_error(scores, _target(), mask, margin=_MARGIN).sum(), scores
+    )
+
+    assert torch.isfinite(gradient).all()
+
+
+def test_the_class_energy_scores_every_batch_element_on_its_own() -> None:
+    scores = torch.cat([_class_scores(1.0), _class_scores(0.0)])
+    target = torch.zeros((2, 4, 4), dtype=torch.int64)
+    mask = torch.ones((2, 4, 4), dtype=torch.bool)
+
+    error = masked_class_error(scores, target, mask, margin=_MARGIN)
+
+    assert error.shape == (2,)
+    assert float(error[0]) == 0.0
+    assert float(error[1]) > 0.0
+
+
+def test_the_class_energy_is_float32_whatever_the_scores_arrive_in() -> None:
+    target, mask = _target(), torch.ones((1, 4, 4), dtype=torch.bool)
+
+    for dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+        error = masked_class_error(
+            _class_scores(0.1).to(dtype), target, mask, margin=_MARGIN
+        )
+        assert error.dtype == torch.float32, dtype
+
+
+def test_the_class_energy_rejects_a_margin_outside_the_unit_interval() -> None:
+    mask = torch.ones((1, 4, 4), dtype=torch.bool)
+
+    with pytest.raises(ValueError, match="margin"):
+        masked_class_error(_class_scores(0.1), _target(), mask, margin=0.0)
+
+
+@pytest.mark.parametrize(
+    ("alignment", "scored"),
+    [("scale_shift", False), ("shift", True), ("none", True)],
+    ids=["the default absorbs it", "shift charges it", "raw charges it"],
+)
+def test_only_the_default_alignment_forgives_a_uniformly_rescaled_room(
+    alignment: str, scored: bool, generator: Generator
+) -> None:
+    # Why the looser modes exist. A render whose geometry is right but whose
+    # absolute scale is off is a *perfect* match under the scale-and-shift fit
+    # the hard rule mandates — which is correct for an affine-invariant backend,
+    # whose scale is undetermined, and is exactly the blindness a metric backend
+    # is brought in to remove.
+    target = torch.rand((1, 16, 16), generator=generator) + 0.5
+    mask = torch.ones((1, 16, 16), dtype=torch.bool)
+
+    error = float(
+        masked_depth_error(2.0 * target, target, mask, alignment=alignment)  # type: ignore[arg-type]
+    )
+
+    assert (error > 0.05) is scored
