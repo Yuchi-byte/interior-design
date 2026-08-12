@@ -16,6 +16,7 @@ from pathlib import Path
 
 from framework.benchmark import Summary, run_benchmark
 from framework.config import BenchmarkConfig
+from framework.gallery import write_gallery
 
 from roomgen_guide.settings import RoomgenSettings
 
@@ -52,6 +53,8 @@ def main() -> int:
 
     summary = run_benchmark(config, settings)
     _report(summary)
+    gallery = write_gallery(summary.output_dir / "results.json")
+    print(f"[gallery] {gallery}")
     return 0 if summary.passed else 1
 
 
