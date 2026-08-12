@@ -10,6 +10,7 @@ import argparse
 import base64
 import io
 import json
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from html import escape
@@ -18,24 +19,30 @@ from typing import Final
 
 from PIL import Image
 
+if __package__ in (None, ""):  # run as a script: `framework` is not yet importable
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from framework.residual_maps import RESIDUAL_CLIP
+
 IMAGE_SUBDIRECTORY: Final = "images"
 GALLERY_FILENAME: Final = "qualitative.html"
 THUMBNAIL_EDGE: Final = 416
 JPEG_QUALITY: Final = 80
 
-# Rendered per scene as its own strip cell / detail pane; anything the file
-# names but the run did not write is simply skipped, so a results.json from a
-# run that emitted no depth maps still produces a complete page.
+# Rendered per scene as its own strip cell; anything the file names but the run
+# did not write is simply skipped, so a results.json from a run that emitted no
+# depth maps still produces a complete page.
 _STRIP: Final[tuple[tuple[str, str], ...]] = (
     ("{scene}_photo.png", "Photograph"),
     ("{scene}_seed{seed}_control.png", "Unguided control"),
     ("{scene}_seed{seed}_guided.png", "Guided"),
-    ("{scene}_seed{seed}_depthdiff.png", "Depth difference"),
 )
 _HERO_CAPTION: Final = "Guided"
-_DETAIL: Final[tuple[tuple[str, str], ...]] = (
-    ("{scene}_seed{seed}_deptherr.png", "Masked depth error, control vs guided"),
-    ("{scene}_shell_mask.png", "Eroded shell mask (scored region in white)"),
+_SHELL_MASK: Final = "{scene}_shell_mask.png"
+_SHELL_MASK_CAPTION: Final = "Eroded shell mask (scored region in white)"
+_DEPTH_MAP_CAPTIONS: Final = (
+    "Unguided \N{MINUS SIGN} reference",
+    "Guided \N{MINUS SIGN} reference",
 )
 
 # Top-level keys of results.json that are structure rather than run parameters,
@@ -61,7 +68,9 @@ class _Run:
     depth_error_reduction: float
     adherence_ratio: float
     reconstruction_depth_error: float | None
-    mean_control_residual: float | None
+    mean_abs_control_residual: float | None
+    depth_map_control: str | None
+    depth_map_guided: str | None
 
     def geometry_passed(self, gate: _Gate) -> bool:
         margin = gate.depth_error_margin
@@ -84,21 +93,25 @@ def write_gallery(results_path: Path, output_path: Path | None = None) -> Path:
             so the page needs no network and no sibling files.
         output_path: defaults to `qualitative.html` beside `results_path`.
     """
-    document = _mapping(json.loads(results_path.read_text()))
+    document = _mapping(json.loads(results_path.read_text(encoding="utf-8")))
     config = _mapping(document.get("config"))
     runs = _runs(document)
     if not runs:
         raise ValueError(f"{results_path} contains no run entries to render")
 
+    page = _page(
+        document,
+        config=config,
+        runs=runs,
+        image_dir=results_path.parent / IMAGE_SUBDIRECTORY,
+    )
     destination = output_path or results_path.parent / GALLERY_FILENAME
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # The page carries no <head>, so it cannot declare a charset: escaping every
+    # non-ASCII character to a numeric reference makes it render the same
+    # whatever encoding the viewer guesses.
     destination.write_text(
-        _page(
-            document,
-            config=config,
-            runs=runs,
-            image_dir=results_path.parent / IMAGE_SUBDIRECTORY,
-        )
+        page.encode("ascii", "xmlcharrefreplace").decode(), encoding="ascii"
     )
     return destination
 
@@ -193,18 +206,11 @@ def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> s
         for pattern, caption in _STRIP
     ]
     strip = [cell for cell in cells if cell]
-    detail = [
-        cell
-        for cell in (
-            _figure(
-                image_dir / pattern.format(scene=shown.scene, seed=shown.seed),
-                caption=caption,
-                scene=shown.scene,
-            )
-            for pattern, caption in _DETAIL
-        )
-        if cell
-    ]
+    mask = _figure(
+        image_dir / _SHELL_MASK.format(scene=shown.scene),
+        caption=_SHELL_MASK_CAPTION,
+        scene=shown.scene,
+    )
     return (
         '  <section class="scene">\n'
         '    <header class="scene-head">\n'
@@ -212,19 +218,58 @@ def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> s
         f'      <p class="prompt">&ldquo;{escape(shown.prompt)}&rdquo;</p>\n'
         "    </header>\n"
         f'    <div class="strip" style="--columns: {len(strip)}">{"".join(strip)}</div>\n'
+        f"{_depth_row(shown, image_dir=image_dir)}"
         f"{_stats(runs, gate=gate)}"
-        f"{_detail_block(detail)}"
+        f"{_detail_block(mask)}"
         "  </section>\n"
     )
 
 
-def _detail_block(figures: list[str]) -> str:
-    if not figures:
+def _depth_row(run: _Run, *, image_dir: Path) -> str:
+    figures = [
+        _figure(image_dir / Path(name).name, caption=caption, scene=run.scene)
+        for name, caption in zip(
+            (run.depth_map_control, run.depth_map_guided),
+            _DEPTH_MAP_CAPTIONS,
+            strict=True,
+        )
+        if name
+    ]
+    if not any(figures):
+        return ""
+    return (
+        '    <div class="depth-row">\n'
+        '      <p class="row-label">Depth vs reference</p>\n'
+        f'      <div class="duo">{"".join(figures)}</div>\n'
+        f'      <p class="map-note">{_map_note(run)}</p>\n'
+        "    </div>\n"
+    )
+
+
+def _map_note(run: _Run) -> str:
+    # The saturation point is imported rather than restated: the maps and their
+    # caption drift apart silently otherwise.
+    scale = (
+        f" ({_energy(run.mean_abs_control_residual)})"
+        if run.mean_abs_control_residual is not None
+        else ""
+    )
+    return (
+        "Signed deviation from the photo's depth, both panels on one shared "
+        f"scale saturating at &plusmn;{RESIDUAL_CLIP:g}&times; the control's mean "
+        f"absolute masked residual{scale}: blue reads further from the camera "
+        "than the photo, red reads closer, pale is geometry left where it was. "
+        "Grey is outside the shell mask, which scores nothing."
+    )
+
+
+def _detail_block(figure: str) -> str:
+    if not figure:
         return ""
     return (
         "    <details>\n"
         "      <summary>What the reward sees</summary>\n"
-        f'      <div class="duo">{"".join(figures)}</div>\n'
+        f'      <div class="duo">{figure}</div>\n'
         "    </details>\n"
     )
 
@@ -262,8 +307,10 @@ def _stats(runs: tuple[_Run, ...], *, gate: _Gate) -> str:
         fields.append(f"seed {shown.seed}")
     if shown.reconstruction_depth_error is not None:
         fields.append(f"VAE floor {_energy(shown.reconstruction_depth_error)}")
-    if shown.mean_control_residual is not None:
-        fields.append(f"control residual {_energy(shown.mean_control_residual)}")
+    if shown.mean_abs_control_residual is not None:
+        fields.append(
+            f"control mean |deviation| {_energy(shown.mean_abs_control_residual)}"
+        )
     spans = "".join(f'<span class="metric">{field}</span>' for field in fields)
     return f'    <p class="stats">{spans}</p>\n'
 
@@ -317,7 +364,9 @@ def _run(row: dict[str, object]) -> _Run:
         ),
         adherence_ratio=adherence if adherence is not None else 0.0,
         reconstruction_depth_error=_number(row.get("reconstruction_depth_error")),
-        mean_control_residual=_number(row.get("mean_control_residual")),
+        mean_abs_control_residual=_number(row.get("mean_abs_control_residual")),
+        depth_map_control=_text(row.get("depth_map_control")),
+        depth_map_guided=_text(row.get("depth_map_guided")),
     )
 
 
@@ -509,6 +558,14 @@ figcaption {
 .pass { color: var(--pass); }
 .fail { color: var(--fail); }
 .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.depth-row { margin-top: 0.9rem; }
+.row-label {
+  font-family: "Avenir Next", Futura, system-ui, sans-serif;
+  text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.64rem;
+  color: var(--ink-2); margin: 0 0 0.4rem;
+}
+.map-note { max-width: 72ch; color: var(--ink-2); font-size: 0.76rem;
+  margin: 0.45rem 0 0; }
 details { margin-top: 0.7rem; }
 summary {
   font-family: "Avenir Next", Futura, system-ui, sans-serif;
