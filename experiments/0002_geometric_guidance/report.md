@@ -254,9 +254,24 @@ at 0.8 is a coherent aggressive restyle preserving the window-wall structure
 noise 0.6); use ~0.03 for high-noise work. Raw mode stays available but is
 only safe at noise ≤ 0.6.
 
-Next: v2 sequencing — gradient-matching term, newer/flow-matching base
-models, and a look at the persistently hardest scenes (bedroom_warm_ensuite,
-the kitchens at the geometry margin).
+### Held-out seeds (2, 3 — never used for tuning) at the pinned default
+
+13/16. All twelve high-drift runs pass (reductions 20–91%, adherence ≥92.6%).
+The three failures are kitchens whose control barely drifted
+(E_control 0.016–0.051, the lowest in the set) where the fixed 0.04-RMS push
+made depth *worse* (−24% to −55%) — overshoot of an already-good geometry.
+The hard-scene pattern across every arm is the same one: the relative 20%
+margin is hardest exactly where the control is already good (kitchens,
+bedroom_warm_ensuite: large excluded-furniture area, low-drift shell), so the
+gate partly conflates "guidance weak" with "nothing to fix".
+
+The two step rules fail in complementary regimes: the raw step scales with
+the energy (adapts down when error is tiny; unbounded above — collapses at
+noise 0.8), the normalized step is bounded above (no collapse) but never
+shrinks (overshoots when there is nothing to fix). Next arm: a clipped raw
+step — raw scaling, RMS-capped — adaptive below, bounded above.
+
+Then v2 sequencing: gradient-matching term, newer/flow-matching base models.
 
 ## Gaps in `roomgen_guide` this framework had to work around
 
