@@ -42,18 +42,15 @@ sampler:
   text_guidance_scale: 7.5
 
 guidance:
-  # Pinned by the pilot sweep (report.md): depth-error reduction peaks near 10
-  # (-64% vs control, adherence intact), degrades past 50, and 150 destroys
-  # both sides of the gate.
-  strength: 10.0
-  # Divides the gradient by its own RMS, so `strength` becomes a bounded step
-  # size in latent-RMS units instead of a multiple of an energy whose scale the
-  # depth backend sets; false is the raw-gradient step the strength above was
-  # calibrated for, and true needs its own sweep.
-  normalize: false
-  # `constant` because it is the arm the sweep above actually measured;
-  # `decaying` (strength -> final_strength on a cosine) is selectable and is the
-  # variant to run next, not a default to switch to before it has a number.
+  # Bounded step in latent-RMS units (gradient divided by its own RMS): the
+  # 0.02-0.04 plateau passes 16/16 at noise 0.6, and the bound is what stops
+  # the adversarial collapse raw-gradient guidance hits at noise 0.8 (use
+  # ~0.03 there). Raw mode (normalize: false) wants strength ~10 and is only
+  # safe at noise <= 0.6.
+  strength: 0.04
+  normalize: true
+  # `decaying` (strength -> final_strength on a cosine) measured strictly
+  # worse: it halves the geometric win for no adherence gain.
   schedule: constant
   erosion_radius: 2
 

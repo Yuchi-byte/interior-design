@@ -227,9 +227,36 @@ earned its keep. High-noise restyle needs the guidance step bounded relative
 to the gradient's scale (FreeDoM-style normalization), not a raw
 energy-gradient multiple.
 
-Next: gradient-normalized guidance step in `sample_guided` (strength becomes
-a step size, robust across noise levels), re-sweep at 0.6 and 0.8, then v2
-sequencing (gradient-matching term, newer/flow-matching base models).
+### Normalized-step sweep (2026-08-12, full benchmark per cell)
+
+`normalize_gradient` divides the gradient by its own RMS, making `strength` a
+per-step latent-RMS displacement (total push ≤ steps × strength regardless of
+the energy).
+
+| strength | noise 0.6 | noise 0.8 |
+|---|---|---|
+| 0.02 | **16/16**, mean red 71.5%, adh ≥96.0% | — |
+| 0.03 | 14/16 (two kitchen geometry near-misses) | **15/16**, mean red 71.5%, adh ≥91.2% |
+| 0.04 | **16/16**, mean red 71.3%, adh ≥95.3% | — |
+| 0.05 | — | 13/16 (adherence 87–89%) |
+| 0.1 | 5/16 — overshoot, depth error *worse* than control | 4/16 |
+| 0.3 | 0/16 | 0/16 |
+
+The 0.02–0.04 plateau matches raw-10's quality at 0.6 (the 0.03 misses are
+seed-noise at the 20% margin: −12%/−19% with adherence intact). The decisive
+result is 0.8: normalized 0.03 gets the same mean −71.5% with adherence
+≥91% — where the raw step collapsed two scenes into adversarial noise — and
+its one failure is an honest geometry near-miss. The guided lakehouse image
+at 0.8 is a coherent aggressive restyle preserving the window-wall structure
+(verified by eye, `outputs/noise08_inspect/lakehouse_norm003_guided.png`).
+
+**Pinned defaults: `normalize: true, strength: 0.04`** (16/16 at the default
+noise 0.6); use ~0.03 for high-noise work. Raw mode stays available but is
+only safe at noise ≤ 0.6.
+
+Next: v2 sequencing — gradient-matching term, newer/flow-matching base
+models, and a look at the persistently hardest scenes (bedroom_warm_ensuite,
+the kitchens at the geometry margin).
 
 ## Gaps in `roomgen_guide` this framework had to work around
 
