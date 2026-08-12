@@ -38,6 +38,7 @@ def renovate(
     generator: torch.Generator,
     normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
+    differentiate_through_unet: bool = False,
     reference: GeometricReference | None = None,
     resegment: bool = True,
 ) -> Float[Tensor, "batch 3 height width"]:
@@ -51,6 +52,9 @@ def renovate(
         clip_step_rms: ceiling on the RMS of the raw step, keeping the step that
             a well-matched scene earns while bounding the one a large energy
             asks for; mutually exclusive with `normalize_gradient`.
+        differentiate_through_unet: DPS-style gradient — keep the graph through
+            the UNet so the step carries the denoiser's Jacobian, at roughly
+            one extra UNet backward per guided step.
         reference: the photo's already-frozen geometry, which the caller must
             have built with this same `depth_estimator` and `segmenter` — a
             reference is only meaningful to the backends that produced it.
@@ -91,6 +95,7 @@ def renovate(
         generator=generator,
         normalize_gradient=normalize_gradient,
         clip_step_rms=clip_step_rms,
+        differentiate_through_unet=differentiate_through_unet,
     )
 
 

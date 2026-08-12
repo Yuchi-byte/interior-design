@@ -297,6 +297,7 @@ def _sample(
         generator=generator,
         normalize_gradient=config.guidance.normalize,
         clip_step_rms=config.guidance.clip,
+        differentiate_through_unet=config.guidance.through_unet,
         resegment=config.guidance.resegment,
         reference=reference,
     )

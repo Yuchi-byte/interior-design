@@ -127,6 +127,9 @@ class GuidanceConfig(Config):
             reference-shell AND prediction-shell, so furniture the renovation
             adds may occlude the shell for free; false scores the reference
             mask alone (pre-occlusion semantics, the control arm for A/B).
+        through_unet: DPS-style gradient, keeping the graph through the UNet so
+            the step carries the denoiser's Jacobian; costs roughly one extra
+            UNet backward per guided step.
     """
 
     strength: Annotated[float, Field(ge=0.0)]
@@ -136,6 +139,7 @@ class GuidanceConfig(Config):
     final_strength: Annotated[float, Field(ge=0.0)] = 0.0
     erosion_radius: Annotated[int, Field(ge=0)] = 2
     resegment: bool = True
+    through_unet: bool = False
 
 
 def build_schedule(config: GuidanceConfig) -> GuidanceSchedule:
