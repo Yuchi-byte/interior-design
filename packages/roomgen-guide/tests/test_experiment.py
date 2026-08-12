@@ -10,7 +10,7 @@ def test_a_framework_config_loads_its_seeds_from_yaml_with_overrides(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "baseline.yaml"
-    path.write_text("name: 0001_unguided_baseline\nseeds: [0, 1, 2]\n")
+    path.write_text("name: 0002_geometric_guidance\nseeds: [0, 1, 2]\n")
 
     config = ExperimentConfig.from_file(path, overrides=["name=0001_renamed"])
 
