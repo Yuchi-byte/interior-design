@@ -19,11 +19,13 @@ so a term is anything of that shape.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
+
+from roomgen_guide.guidance.base import ASCENDED_SCORE, RewardDirection
 
 
 @runtime_checkable
@@ -114,6 +116,10 @@ class MfmWeightedReward:
         terms: at least one, evaluated in the order given — which is the order
             they cost their forward passes in.
     """
+
+    #: Ascended, like every term in it — see `MfmGeometricReward.direction` for
+    #: what the declaration is for.
+    direction: ClassVar[RewardDirection] = ASCENDED_SCORE
 
     terms: tuple[MfmRewardTerm, ...]
 

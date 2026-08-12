@@ -222,20 +222,55 @@ def load_flow_map_sampler(
     once the encoders are gone, which halves the transient; the vendored tree
     stays byte-identical to the commit its NOTICE.md records.
     """
-    if str(fmrg_path) not in sys.path:
-        sys.path.insert(0, str(fmrg_path))
-    two_timestep = importlib.import_module("flux_two_timestep")
-    reward_module = importlib.import_module("fluxfm_sampler_reward")
-    with _transformer_held_on_cpu(two_timestep.FluxPipelineTwoTimestep):
-        sampler: TwoTimeFlowMapSampler = reward_module.FluxFlowMapSampler(
-            model_id=model_id,
-            lora_path=str(lora_path),
-            device=device,
-            dtype=dtype,
-            prompt=prompt,
-        )
+    with _fmrg_on_path(fmrg_path):
+        try:
+            two_timestep = importlib.import_module("flux_two_timestep")
+            reward_module = importlib.import_module("fluxfm_sampler_reward")
+        except ModuleNotFoundError as error:
+            raise ModuleNotFoundError(
+                f"{error.name!r} is not importable with fmrg_path {fmrg_path} on "
+                f"sys.path. Point fmrg_path at the vendored FMRG checkout — the "
+                f"directory holding flux_two_timestep/ and "
+                f"fluxfm_sampler_reward.py, `packages/fmrg` in this repo — and "
+                f"if the missing module is one of its own dependencies, install "
+                f"the diffusers release its NOTICE.md pins."
+            ) from error
+        with _transformer_held_on_cpu(two_timestep.FluxPipelineTwoTimestep):
+            sampler: TwoTimeFlowMapSampler = reward_module.FluxFlowMapSampler(
+                model_id=model_id,
+                lora_path=str(lora_path),
+                device=device,
+                dtype=dtype,
+                prompt=prompt,
+            )
     sampler.pipeline.transformer.to(device)
     return sampler
+
+
+@contextlib.contextmanager
+def _fmrg_on_path(fmrg_path: Path) -> Iterator[None]:
+    """`sys.path` carrying the vendored checkout, rolled back if the load fails.
+
+    The entry outlives a *successful* load deliberately: FMRG's modules import
+    their own siblings lazily, inside the calls the sampler makes later, so
+    removing it here would break the object this function returns. What must not
+    survive is a failure — a mistyped `fmrg_path` that stayed on `sys.path`
+    would shadow imports for the rest of the process, and the next call with the
+    right path would find `flux_two_timestep` already half-imported from the
+    wrong one.
+    """
+    entry = str(fmrg_path)
+    if entry in sys.path:
+        yield
+        return
+    sys.path.insert(0, entry)
+    try:
+        yield
+    except BaseException:
+        # `remove` and not `pop(0)`: another thread may have inserted since.
+        with contextlib.suppress(ValueError):
+            sys.path.remove(entry)
+        raise
 
 
 @contextlib.contextmanager

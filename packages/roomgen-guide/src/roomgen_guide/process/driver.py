@@ -6,7 +6,11 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from roomgen_guide.guidance.base import Guidance
+from roomgen_guide.guidance.base import (
+    Guidance,
+    require_descended_energy,
+    require_per_element,
+)
 from roomgen_guide.process.endpoint import EndpointProcess, StepContext
 from roomgen_guide.process.tilt import TiltPolicy
 
@@ -21,17 +25,20 @@ def sample_endpoint_process[Prediction](
 
     Args:
         reward: the energy the walk descends, evaluated on the endpoint estimate
-            in pixel space; a weighted sum of terms is one of these too.
+            in pixel space; a weighted sum of terms is one of these too. A reward
+            declaring itself a score to ascend — MFM's adapters — is rejected
+            here rather than quietly steered away from.
         tilt: what turns that energy's gradient into the step's steering, and
             what decides whether a step is steered at all.
 
     No weights are updated: the only gradient taken is with respect to the state.
     """
+    require_descended_energy(reward)
     state = process.initial_state()
     total = process.steps
     for index in range(total):
         step = StepContext(index=index, total=total)
-        evaluated = _EvaluatedStep(process, reward, step)
+        evaluated = _EvaluatedStep(process, reward, step, state)
         steering = tilt(evaluated, state=state, step=step)
         state = process.advance(
             state, step, prediction=evaluated.prediction, steering=steering
@@ -44,11 +51,20 @@ class _EvaluatedStep[Prediction]:
     process: EndpointProcess[Prediction]
     reward: Guidance
     step: StepContext
+    state: Float[Tensor, "batch *state"]
     prediction: Prediction | None = None
 
     def __call__(
         self, state: Float[Tensor, "batch *state"]
     ) -> Float[Tensor, "batch *state"]:
+        if self.prediction is None and not torch.equal(state, self.state):
+            raise ValueError(
+                "a tilt policy must evaluate the step's own state before any "
+                "candidate: the first evaluation's model output is what "
+                "`advance` reuses, so probing a displaced state first steps the "
+                "walk off a prediction taken where the state never was — with "
+                "the steering itself perfectly correct and nothing to see"
+            )
         # `enable_grad` rather than an ambient mode: the caller may be inside the
         # `no_grad` a diffusers pipeline runs under, and this region is the one
         # place in the walk where that would silently zero the steering.
@@ -64,6 +80,8 @@ class _EvaluatedStep[Prediction]:
             # a batch is a throughput decision and not a free one. A backend that
             # weights batch members against each other by their own energies
             # (MFM-G's IWAE over posterior draws) reads the reward directly.
-            energy = self.reward(endpoint.image).mean()
+            energy = require_per_element(
+                self.reward(endpoint.image), reward=self.reward
+            ).mean()
             (gradient,) = torch.autograd.grad(energy, endpoint.state)
         return gradient

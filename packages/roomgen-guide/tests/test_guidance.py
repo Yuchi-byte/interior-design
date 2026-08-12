@@ -3,7 +3,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from roomgen_guide.guidance.base import Guidance
+from roomgen_guide.guidance.base import Guidance, WrongDirectionError
 from roomgen_guide.guidance.composite import WeightedGuidance, WeightedTerm
 
 
@@ -91,3 +91,39 @@ def test_a_weighted_sum_is_taken_per_batch_element() -> None:
 def test_a_composite_with_no_terms_is_rejected() -> None:
     with pytest.raises(ValueError, match="at least one term"):
         WeightedGuidance(())
+
+
+def test_a_term_that_collapsed_its_batch_is_refused() -> None:
+    class ReducedEnergy:
+        def __call__(
+            self, predicted_image: Float[Tensor, "batch 3 height width"]
+        ) -> Float[Tensor, "batch"]:
+            return predicted_image.mean()
+
+    composite = WeightedGuidance(
+        (WeightedTerm(MeanBrightnessEnergy()), WeightedTerm(ReducedEnergy()))
+    )
+
+    # It would otherwise broadcast: the reduced term adds its own batch mean to
+    # every element of the sum, which reads as a term that simply pulls weakly
+    # and is instead a term the batch cannot be taken apart on.
+    with pytest.raises(ValueError, match="0-dim energy"):
+        composite(torch.rand(4, 3, 8, 8))
+
+
+def test_a_term_that_is_ascended_is_refused_at_construction() -> None:
+    class ScoreLikeReward:
+        direction = "score"
+
+        def __call__(
+            self, predicted_image: Float[Tensor, "batch 3 height width"]
+        ) -> Float[Tensor, "batch"]:
+            return -predicted_image.mean(dim=(1, 2, 3))
+
+    # Summed into an energy, a score subtracts its own constraint from the
+    # composite — the sum is still finite, still per element, still a valid
+    # `Guidance`, and steers the sample away from exactly what the term was for.
+    with pytest.raises(WrongDirectionError, match="reward to ascend"):
+        WeightedGuidance(
+            (WeightedTerm(MeanBrightnessEnergy()), WeightedTerm(ScoreLikeReward()))
+        )

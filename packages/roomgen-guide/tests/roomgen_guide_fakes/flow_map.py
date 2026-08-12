@@ -116,11 +116,23 @@ class ToyFlowMapBackend:
         class_label: stands for the conditioning the process never sees.
         encode_jitter: how much of the encode is the generator's, so a test can
             tell whether the walk's seed reaches the initial state.
+        dtype: what the backend speaks at its own boundary — the latents it
+            encodes and the velocities it returns. `bfloat16` stands for every
+            real flow-map checkpoint, whose ulp at O(1) is coarser than a
+            steering step, and is how a test can tell the process is not
+            accumulating its state in it.
     """
 
-    def __init__(self, *, class_label: int = 7, encode_jitter: float = 0.05) -> None:
+    def __init__(
+        self,
+        *,
+        class_label: int = 7,
+        encode_jitter: float = 0.05,
+        dtype: torch.dtype = torch.float32,
+    ) -> None:
         self._class_label = class_label
         self._encode_jitter = encode_jitter
+        self._dtype = dtype
         self.velocity_calls = 0
 
     def schedule(
@@ -142,12 +154,16 @@ class ToyFlowMapBackend:
         posterior = torch.randn(
             image.shape, generator=generator, device=image.device, dtype=image.dtype
         )
-        return image * 2.0 - 1.0 + self._encode_jitter * posterior
+        latent = image * 2.0 - 1.0 + self._encode_jitter * posterior
+        return latent.to(self._dtype)
 
     def decode(
         self, latent: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, "batch 3 height width"]:
-        return _to_image(latent)
+        # float32 out whatever the backend runs in, which is what
+        # `FluxFlowMapBackend.decode` does and for the same reason: the depth
+        # network the reward is built on is a float32 one.
+        return _to_image(latent.float())
 
     @jaxtyped(typechecker=beartype)
     def velocity(
@@ -165,7 +181,8 @@ class ToyFlowMapBackend:
         # renoised photo keeps the photo's structure and the arm that starts
         # from noise cannot recover it, which is the whole img2img claim.
         endpoint = _smoothed(latent) + self._class_label / 1000.0
-        return (latent - endpoint) / max(sigma - target_sigma, _MINIMUM_SIGMA)
+        velocity = (latent - endpoint) / max(sigma - target_sigma, _MINIMUM_SIGMA)
+        return velocity.to(self._dtype)
 
 
 def _smoothed(

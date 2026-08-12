@@ -131,6 +131,36 @@ class RecordingScheduler(FakeScheduler):
         return output
 
 
+class _CountingScheduler:
+    """A scheduler that counts the one call which mutates it."""
+
+    def __init__(self, scheduler: FakeScheduler) -> None:
+        self._scheduler = scheduler
+        self.set_timesteps_calls = 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._scheduler, name)
+
+    def set_timesteps(self, *args: object, **kwargs: object) -> object:
+        self.set_timesteps_calls += 1
+        return self._scheduler.set_timesteps(*args, **kwargs)
+
+
+class _CountingPipeline:
+    """A pipeline that counts the text-encoder pass a construction costs."""
+
+    def __init__(self, pipeline: FakePipeline, scheduler: _CountingScheduler) -> None:
+        self._pipeline = pipeline
+        self.scheduler = scheduler
+        self.unet = pipeline.unet
+        self.vae = pipeline.vae
+        self.encode_prompt_calls = 0
+
+    def encode_prompt(self, *args: object, **kwargs: object) -> object:
+        self.encode_prompt_calls += 1
+        return self._pipeline.encode_prompt(*args, **kwargs)
+
+
 def _sample(
     pipeline: FakePipeline,
     photo: Tensor,
@@ -845,3 +875,34 @@ def test_the_fake_stacks_trajectory_matches_its_recorded_digest(
 
     assert float(image.sum()) == pytest.approx(_GOLDEN_SUM, abs=1e-3)
     assert image[0, :, 17, 29].tolist() == pytest.approx(_GOLDEN_PIXEL, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"strength": -1.0}, "strength must be non-negative"),
+        ({"strength": 1.0, "clip_step_rms": 0.0}, "clip_step_rms must be positive"),
+        ({"strength": 1.0, "steps": 0}, "steps must be at least 1"),
+        ({"strength": 1.0, "noise_strength": 1.5}, "noise_strength"),
+    ],
+)
+def test_a_run_that_cannot_be_taken_is_refused_before_anything_is_touched(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+    kwargs: dict[str, float | int],
+    message: str,
+) -> None:
+    scheduler = _CountingScheduler(fake_pipeline.scheduler)
+    pipeline = _CountingPipeline(fake_pipeline, scheduler)
+
+    with pytest.raises(ValueError, match=message):
+        _sample(pipeline, room_photo, geometric_guidance, **kwargs)  # type: ignore[arg-type]
+
+    # Setting the scheduler's timesteps mutates an object the caller passed in,
+    # and encoding the prompt is a text-encoder forward. A rejected argument
+    # must cost neither: a caller that catches the ValueError and retries with a
+    # corrected one would otherwise be handed a scheduler somebody else's
+    # settings are already on.
+    assert scheduler.set_timesteps_calls == 0
+    assert pipeline.encode_prompt_calls == 0

@@ -1,13 +1,23 @@
 """A few-step flow map as an endpoint process, started from the photographed room."""
 
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
 
 from roomgen_guide.process.endpoint import Endpoint, StepContext
+
+# The walk's state is float32 whatever the backend runs in. Steering is small by
+# construction — a capped update is a fraction of a percent of the state's RMS —
+# and bfloat16, the dtype every flow-map checkpoint here loads in, carries an ulp
+# of about 8e-3 at O(1). Accumulating the state in it rounds any steering below
+# roughly 2e-3 RMS away entirely: `state + steering` comes back bit-identical to
+# `state`, the guided walk is `torch.equal` to the unguided one, and nothing
+# anywhere reports a problem — the gradient was finite, the cap never bound, the
+# loop ran. Only the two places the backend is actually called are cast down.
+_STATE_DTYPE: Final = torch.float32
 
 
 @runtime_checkable
@@ -91,12 +101,20 @@ class FlowMapProcess:
     One instance drives one sample: it holds that sample's photo, schedule and
     generator, and the prompt lives in the backend.
 
+    **The state is float32 whatever the backend runs in**, and only the velocity
+    call and the decode are cast down to it — see `_STATE_DTYPE`.
+
     Args:
         photo: NCHW, floating point, values in ``[0, 1]``.
         steps: how many flow-map steps the walk takes; the NFE budget, since a
             guided step reuses the model call its endpoint already made.
         start_sigma: how far up the interpolant the photo is renoised, in
-            ``(0, 1]``; 1 discards the photo and generates from noise.
+            ``(0, 1]``; 1 discards the photo and generates from noise. It is the
+            *pre-shift* request, not the sigma the walk starts at: a backend
+            whose schedule is resolution-warped moves it, and FLUX's is —
+            `start_sigma` 0.6 begins at sigma 0.826 at 1024², so the renovation
+            arm keeps less of the photo than the number suggests. The first
+            entry of `schedule` is the truth.
         generator: the only source of randomness in the walk — the VAE's
             encoding sample and the renoise — so a run is reproducible from its
             seed alone. It must live on the device the latents do.
@@ -118,11 +136,14 @@ class FlowMapProcess:
         self._backend = backend
         self._generator = generator
         with torch.no_grad():
-            self._photo_latent = backend.encode(photo, generator=generator)
+            encoded = backend.encode(photo, generator=generator)
+        # What the backend speaks at its own call boundary, read off the latent
+        # it just handed back rather than asked for: the four-call protocol has
+        # no reason to name a dtype, and this is the only place one is needed.
+        self._backend_dtype = encoded.dtype
+        self._photo_latent = encoded.to(_STATE_DTYPE)
         self._sigmas = tuple(
-            backend.schedule(
-                steps=steps, start_sigma=start_sigma, latent=self._photo_latent
-            )
+            backend.schedule(steps=steps, start_sigma=start_sigma, latent=encoded)
         )
         if len(self._sigmas) != steps + 1:
             raise ValueError(
@@ -145,7 +166,7 @@ class FlowMapProcess:
             latent.shape,
             generator=self._generator,
             device=latent.device,
-            dtype=latent.dtype,
+            dtype=_STATE_DTYPE,
         )
         sigma = self._sigmas[0]
         return sigma * noise + (1.0 - sigma) * latent
@@ -161,13 +182,9 @@ class FlowMapProcess:
         # at a single model call. Under `no_grad` rather than detached after the
         # fact so the transformer's activations are never kept at all.
         with torch.no_grad():
-            velocity = self._backend.velocity(
-                differentiable_latent, sigma=sigma, target_sigma=0.0
-            )
+            velocity = self._velocity(differentiable_latent, sigma=sigma)
         endpoint_latent = differentiable_latent - sigma * velocity
-        return Endpoint(
-            differentiable_latent, self._backend.decode(endpoint_latent), velocity
-        )
+        return Endpoint(differentiable_latent, self._decode(endpoint_latent), velocity)
 
     def advance(
         self,
@@ -180,9 +197,7 @@ class FlowMapProcess:
         sigma, next_sigma = self._sigmas[step.index], self._sigmas[step.index + 1]
         with torch.no_grad():
             velocity = (
-                self._backend.velocity(state, sigma=sigma, target_sigma=0.0)
-                if prediction is None
-                else prediction
+                self._velocity(state, sigma=sigma) if prediction is None else prediction
             )
             if steering is not None:
                 state = state + steering
@@ -192,4 +207,23 @@ class FlowMapProcess:
         self, state: Float[Tensor, "batch *latent"]
     ) -> Float[Tensor, "batch 3 height width"]:
         with torch.no_grad():
-            return self._backend.decode(state)
+            return self._decode(state)
+
+    def _velocity(
+        self, state: Float[Tensor, "batch *latent"], *, sigma: float
+    ) -> Float[Tensor, "batch *latent"]:
+        # The model call is one of the two boundaries the backend's dtype exists
+        # at: the transformer is handed what it runs in, and what it returns is
+        # lifted straight back, so every accumulation the walk does is float32.
+        velocity = self._backend.velocity(
+            state.to(self._backend_dtype), sigma=sigma, target_sigma=0.0
+        )
+        return velocity.to(_STATE_DTYPE)
+
+    def _decode(
+        self, latent: Float[Tensor, "batch *latent"]
+    ) -> Float[Tensor, "batch 3 height width"]:
+        # The other boundary: the VAE runs in the backend's dtype, and the cast
+        # into it stays on the graph, so the energy's gradient comes back to the
+        # float32 leaf. The image's own dtype is the backend's to decide.
+        return self._backend.decode(latent.to(self._backend_dtype))

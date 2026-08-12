@@ -54,20 +54,24 @@ def sample_guided(
     gradient of that energy — scaled by `strength` — before the scheduler takes
     its step. No weights are updated.
     """
-    return sample_endpoint_process(
-        LatentDiffusionProcess(
-            pipeline,
-            photo,
-            prompt,
-            steps=steps,
-            noise_strength=noise_strength,
-            text_guidance_scale=text_guidance_scale,
-            generator=generator,
-            differentiate_through_unet=differentiate_through_unet,
-        ),
-        reward=guidance,
-        tilt=ClippedGradientTilt(strength=strength, clip_step_rms=clip_step_rms),
+    # The tilt is built first because building it is where `strength` and
+    # `clip_step_rms` are validated, and constructing the process is where the
+    # scheduler's timesteps are set and the prompt is encoded. Inline as one
+    # expression, Python evaluates the process argument first and a rejected
+    # `strength` leaves a mutated scheduler and a wasted text-encoder pass
+    # behind it.
+    tilt = ClippedGradientTilt(strength=strength, clip_step_rms=clip_step_rms)
+    process = LatentDiffusionProcess(
+        pipeline,
+        photo,
+        prompt,
+        steps=steps,
+        noise_strength=noise_strength,
+        text_guidance_scale=text_guidance_scale,
+        generator=generator,
+        differentiate_through_unet=differentiate_through_unet,
     )
+    return sample_endpoint_process(process, reward=guidance, tilt=tilt)
 
 
 class LatentDiffusionProcess:

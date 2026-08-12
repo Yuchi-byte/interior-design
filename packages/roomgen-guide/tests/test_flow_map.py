@@ -22,6 +22,10 @@ _STRENGTH = 100_000.0
 # Far enough up the interpolant that the walk has work to do, far enough down
 # that the photo it started from is still visible in the sample.
 _RENOVATION_SIGMA = 0.6
+# A steering step nothing in the codebase rejects and every recorded run stayed
+# above: an order of magnitude under bfloat16's ulp at O(1), which is exactly
+# the band a state accumulated in the backend's dtype rounds away.
+_LEGAL_STEERING_RMS = 1e-3
 
 
 @pytest.fixture
@@ -161,7 +165,7 @@ def test_a_walk_from_pure_noise_is_the_same_walk_whatever_the_photo(
     assert not torch.equal(renoised, renoised_negative)
 
 
-def test_a_guided_step_pays_for_one_model_call_however_many_iterations(
+def test_advance_never_pays_for_a_model_call_the_endpoint_already_made(
     photographed_room: Tensor, room_guidance: GeometricGuidance
 ) -> None:
     once = ToyFlowMapBackend()
@@ -187,9 +191,11 @@ def test_a_guided_step_pays_for_one_model_call_however_many_iterations(
         backend=unguided,
     )
 
-    # One velocity call per evaluated endpoint and none in `advance`, which is
-    # what makes the inner loop cheap: an extra iteration costs a decode and a
-    # depth backward, never a transformer forward.
+    # One velocity call per evaluated endpoint and none in `advance`: what the
+    # reuse saves is the *step's* second call, not the inner loop's. An extra
+    # iteration re-evaluates the reward at a displaced state, and a displaced
+    # state needs its own velocity — n iterations cost n model calls, exactly as
+    # FMRG's `n_opt` does. The cheap part is the pullback, not the loop.
     assert once.velocity_calls == _STEPS
     assert twice.velocity_calls == 2 * _STEPS
     assert unguided.velocity_calls == _STEPS
@@ -250,6 +256,87 @@ def test_the_schedule_the_backend_returns_has_to_reach_the_data_end(
 
     with pytest.raises(ValueError, match="the schedule ends at sigma"):
         _process(photographed_room, TruncatedBackend())
+
+
+def test_a_schedule_that_does_not_name_every_step_is_refused(
+    photographed_room: Tensor,
+) -> None:
+    class ShortBackend(ToyFlowMapBackend):
+        def schedule(
+            self, *, steps: int, start_sigma: float, latent: Tensor
+        ) -> list[float]:
+            walked = super().schedule(
+                steps=steps, start_sigma=start_sigma, latent=latent
+            )
+            return walked[:-1]
+
+    # steps + 1, never steps: the sigma before every step and the one after the
+    # last. A schedule one short would walk the last step to the wrong sigma, or
+    # index past the end, depending on which end it dropped.
+    with pytest.raises(
+        ValueError, match=f"returned {_STEPS} sigmas for {_STEPS} steps"
+    ):
+        _process(photographed_room, ShortBackend())
+
+
+def test_the_state_is_float32_whatever_the_backend_runs_in(
+    photographed_room: Tensor,
+) -> None:
+    process = _process(photographed_room, ToyFlowMapBackend(dtype=torch.bfloat16))
+
+    state = process.initial_state()
+    endpoint = process.endpoint(state, StepContext(index=0, total=_STEPS))
+
+    assert state.dtype == torch.float32
+    assert endpoint.state.dtype == torch.float32
+    assert (
+        process.advance(
+            state, StepContext(index=0, total=_STEPS), prediction=None, steering=None
+        ).dtype
+        == torch.float32
+    )
+
+
+def test_a_steering_finer_than_the_backends_dtype_still_moves_the_state(
+    photographed_room: Tensor,
+) -> None:
+    # bfloat16's ulp at O(1) is about 8e-3, so a steering at 1e-3 RMS — well
+    # inside the caps the recorded runs used — is rounded away entirely by
+    # `state + steering` if the state is kept in the backend's dtype. The walk
+    # then comes back bit-identical to the unguided one with nothing to report.
+    process = _process(photographed_room, ToyFlowMapBackend(dtype=torch.bfloat16))
+    state = process.initial_state()
+    step = StepContext(index=0, total=_STEPS)
+    steering = torch.full_like(state, _LEGAL_STEERING_RMS)
+
+    steered = process.advance(state, step, prediction=None, steering=steering)
+    unsteered = process.advance(state, step, prediction=None, steering=None)
+
+    assert not torch.equal(steered, unsteered)
+
+
+def test_a_bfloat16_backend_walks_a_guided_trajectory_and_not_the_unguided_one(
+    photographed_room: Tensor, room_guidance: GeometricGuidance
+) -> None:
+    capped = ClippedGradientTilt(strength=_STRENGTH, clip_step_rms=_LEGAL_STEERING_RMS)
+    guided = _walk(
+        photographed_room,
+        room_guidance,
+        tilt=capped,
+        backend=ToyFlowMapBackend(dtype=torch.bfloat16),
+    )
+    unguided = _walk(
+        photographed_room,
+        room_guidance,
+        tilt=ClippedGradientTilt(strength=0.0),
+        backend=ToyFlowMapBackend(dtype=torch.bfloat16),
+    )
+
+    # `_STRENGTH` saturates the cap, so every applied step is exactly
+    # `_LEGAL_STEERING_RMS`. Nothing enforces a floor on that number anywhere —
+    # the config accepts it, the gradient is finite, the cap binds — so the only
+    # thing standing between it and a silently unguided run is the state's dtype.
+    assert not torch.equal(guided, unguided)
 
 
 @pytest.mark.parametrize(

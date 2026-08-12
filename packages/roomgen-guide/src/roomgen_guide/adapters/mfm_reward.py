@@ -21,7 +21,7 @@ gated like the rest of the repo while the vendored tree stays outside all three.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import ClassVar, Final
 
 import torch
 from jaxtyping import Bool, Float
@@ -32,6 +32,7 @@ from roomgen_geometry.masking import MaskMode, scorable_mask
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.reward import masked_depth_error
 from roomgen_geometry.segmentation.base import Segmenter
+from roomgen_guide.guidance.base import ASCENDED_SCORE, RewardDirection
 
 # MFM samples under `torch.autocast(cuda, bfloat16)`, and bfloat16 carries about
 # three significant decimal digits — fewer than the depth error's own dynamic
@@ -56,24 +57,32 @@ class MfmGeometricReward:
         segmenter: re-segments each sample so the score falls on the reference's
             shell intersected with the sample's own, as
             :class:`~roomgen_guide.guidance.geometric.GeometricGuidance` does.
-            `None` — the default here, unlike in guidance — scores the
-            reference's shell alone: MFM evaluates the reward on several
-            posterior draws per particle per step, so a segmentation forward per
-            draw is a large constant on the sampling loop, and a mask that
-            shrinks as the sample fills with furniture is a way for a *search*
-            to score well without holding any geometry.
+            `None` — the default here as it is there — scores the reference's
+            shell alone. What diverges is the guided path as a whole:
+            :func:`roomgen_guide.renovate.renovate` re-segments by default
+            (`resegment=True`) and there is no equivalent default here, because
+            MFM evaluates the reward on several posterior draws per particle per
+            step, so a segmentation forward per draw is a large constant on the
+            sampling loop, and a mask that shrinks as the sample fills with
+            furniture is a way for a *search* to score well without holding any
+            geometry.
         erosion_radius: for the sample's mask; required with `segmenter` and
             meaningless without it.
         mask_mode: which way a sample's segmentation is read, as
             :func:`roomgen_geometry.masking.scorable_mask` defines it.
-        scale: multiplies the energy before the sign flip. This is MFM's
-            `image_reward._lambda` under another name, and it is not cosmetic:
-            MFM-G weights its posterior draws by ``softmax`` over their rewards
-            (`utils/steering.py`'s IWAE estimator takes a `logsumexp`), and
-            fine-tuning tilts by ``exp(reward)``, so `scale` is the temperature
-            of both. Gradient *magnitude* is a separate matter — the steering
-            config renormalises the steering drift against the base drift, which
-            divides `scale` back out.
+        scale: multiplies the energy before the sign flip. It stands where MFM's
+            `image_reward._lambda` does on the steering path (upstream applies
+            that inside its own `load_image_reward_fn`, which this replaces), and
+            it is not cosmetic: MFM-G weights its posterior draws by ``softmax``
+            over their rewards (`utils/steering.py`'s IWAE estimator takes a
+            `logsumexp`), and fine-tuning tilts by ``exp(reward)``, so `scale` is
+            the temperature of both. On the **fine-tuning** path it does not
+            replace a lambda but multiplies one: `losses/finetune.py` computes
+            ``cfg.loss._lambda * reward_fn.score(...)``, so the temperature the
+            target is actually tilted at is ``cfg.loss._lambda * scale``. Set one
+            of the two and leave the other at 1. Gradient *magnitude* is a
+            separate matter — the steering config renormalises the steering drift
+            against the base drift, which divides `scale` back out.
         autocast: whether the reward may run under an ambient autocast. False —
             the default — evaluates depth and the energy in float32 inside a
             sampler that is otherwise bfloat16, which is the same float32-by-
@@ -85,6 +94,12 @@ class MfmGeometricReward:
     target is tilted by ``exp(score)`` and a positive-unbounded reward would
     exponentiate away.
     """
+
+    #: This is ascended, and `__call__(images) -> [batch]` is exactly what
+    #: `Guidance` looks like, so nothing structural stops it being handed to
+    #: `sample_endpoint_process` — which descends, and would steer every sample
+    #: away from the room. The declaration is what that driver refuses on.
+    direction: ClassVar[RewardDirection] = ASCENDED_SCORE
 
     reference: GeometricReference
     depth_estimator: DepthEstimator

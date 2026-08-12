@@ -93,7 +93,9 @@ flow map. The driver only carries it from `endpoint` to `advance`.
 | Latent-space models | the process: decode inside `endpoint`, since the reward is always scored in pixel space |
 
 A policy that evaluates candidate states must evaluate the step's own `state`
-**first**: the first evaluation's model output is the one `advance` reuses.
+**first**: the first evaluation's model output is the one `advance` reuses. The
+driver enforces it — a first evaluation anywhere else raises rather than
+silently stepping off a prediction taken at a state the walk was never at.
 
 ## The FMRG adapter, concretely
 
@@ -112,9 +114,29 @@ Built, in `adapters/flow_map.py` and `adapters/fmrg_flux.py`.
 - `endpoint`: the two-time flow map's jump to sigma 0 from the leaf,
   VAE-decoded. The endpoint is sharp at every noise level, which is the whole
   reason for the move — no `(1-t)/t` blow-up in the high-noise window. The
-  velocity enters as a constant, so a guided step costs one transformer call
-  however many inner iterations the policy takes.
+  velocity enters as a constant, so the *pullback* is cheap: the gradient
+  traverses the decoder and the flow map's arithmetic, never the transformer.
+  What that saves is the step's second model call, not the inner loop's — n
+  inner iterations evaluate n displaced states and cost **n velocity calls**,
+  exactly as FMRG's `n_opt` does. A guided walk of `s` steps at `n` iterations
+  costs `s * n` transformer forwards; an unguided one costs `s`.
 - `advance`: the Euler step off that same velocity to the next sigma.
+- **State dtype.** `FlowMapProcess` keeps the walk's state in float32 and casts
+  down only at the two places the backend is called (the velocity input, the
+  decoder input). This is not tidiness: a capped steering step is small, and
+  bfloat16's ulp at O(1) is ~8e-3, so a state accumulated in the backend's own
+  dtype rounds any steering under ~2e-3 RMS away completely — `torch.equal` to
+  the unguided walk, with a finite gradient, a cap that bound, and no warning
+  anywhere. A new backend inherits this; a new *process* has to do it itself.
+- **`start_sigma` is a request, not the answer.** FLUX warps the grid by
+  sequence length, so `start_sigma` 0.6 starts the walk at sigma 0.826 at
+  1024². Read the first entry of `schedule`, not the argument.
+- **Caveat, unverified against upstream.** The adapter conditions every velocity
+  call on `(t, 0)` — the jump straight to data — where FMRG's reference sampler
+  uses `(t, t_next)`. For an ideal two-time flow map these agree; for the
+  learned one they are two different network evaluations, so an unguided arm
+  through this adapter is **not** a bit-comparable FMRG baseline. Nothing here
+  has been checked against upstream's own samples.
 - Tilt: `ClippedGradientTilt(strength, clip_step_rms, iterations, guided_steps)`
   — FMRG's `n_opt` inner loop under v1's RMS cap, inside FMRG's headline
   window: guide early, stop early. Upstream's loop has no cap at all, and its
@@ -139,6 +161,32 @@ Built, in `adapters/flow_map.py` and `adapters/fmrg_flux.py`.
   MFM's *own* sampler or its exp-tilted fine-tuning loss, that needs the sign and
   temperature converted, and that shim already exists:
   `roomgen_guide.adapters.mfm_reward.MfmGeometricReward`.
+
+## Direction: the one mistake the shapes cannot catch
+
+`MfmGeometricReward.__call__(images) -> Float[Tensor, "batch"]` *is* the
+`Guidance` signature, so `isinstance(reward, Guidance)` is true, mypy is happy,
+and `sample_endpoint_process` will take one — and then descend a score, steering
+every sample away from the room it was supposed to hold, at full strength, with
+a finite gradient and a walk that finishes normally. MFM's own call sites are
+what pin the shape: `mfm/utils/steering.py` calls `reward_fn(x1_data)`
+positionally and views the result as `[batch, mc_samples]`, so the adapter
+cannot hide behind a keyword or a wrapper type without breaking upstream.
+
+The convention is therefore **declared, not inferred**. A batch-callable may
+carry `direction: ClassVar[RewardDirection]` (`guidance/base.py`):
+
+- absent → `"energy"`, descended. Every plain callable stays a `Guidance`.
+- `"score"` → ascended. The MFM adapters carry this.
+
+`sample_endpoint_process` and `WeightedGuidance` call `require_descended_energy`
+and raise `WrongDirectionError` naming the class. Write `direction = "score"` on
+any new adapter that presents this repo's energy to a sampler that ascends.
+
+The same two callers also call `require_per_element`, which rejects a 0-dim
+energy: a reward that reduced for its caller still broadcasts and still walks,
+and would hand every posterior draw an identical weight to the estimator that
+weights draws by their own energies (cbe914e).
 
 ## Composing rewards
 

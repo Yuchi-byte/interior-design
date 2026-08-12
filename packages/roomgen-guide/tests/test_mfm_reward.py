@@ -17,6 +17,20 @@ from roomgen_guide.adapters.mfm_reward import MfmGeometricReward
 _EROSION_RADIUS: Final = 2
 
 
+class _DtypeSpy:
+    """A depth backend that records the dtype it was handed."""
+
+    def __init__(self, estimator: FakeDepthEstimator, seen: list[torch.dtype]) -> None:
+        self._estimator = estimator
+        self._seen = seen
+
+    def __call__(
+        self, images: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, "batch height width"]:
+        self._seen.append(images.dtype)
+        return self._estimator(images)
+
+
 @pytest.fixture
 def reference(
     fake_depth_estimator: FakeDepthEstimator,
@@ -194,3 +208,61 @@ def test_a_reward_that_steers_away_from_the_reference_is_refused(
         MfmGeometricReward(
             reference=reference, depth_estimator=fake_depth_estimator, scale=-1.0
         )
+
+
+def test_an_image_that_is_not_a_batch_of_frames_is_refused(
+    reward: MfmGeometricReward, generator: Generator
+) -> None:
+    with pytest.raises(ValueError, match=r"must be \(batch, 3, height, width\)"):
+        reward.score(torch.rand((3, 64, 64), generator=generator))
+
+
+def test_the_energy_is_float32_inside_the_samplers_bfloat16_autocast(
+    reward: MfmGeometricReward, room_photo: Float[Tensor, "1 3 64 64"]
+) -> None:
+    seen: list[torch.dtype] = []
+    lifted = MfmGeometricReward(
+        reference=reward.reference,
+        depth_estimator=_DtypeSpy(reward.depth_estimator, seen),
+    )
+    images = room_photo.to(torch.bfloat16)
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        energy = lifted.energy(images)
+
+    # MFM samples under an ambient bfloat16 autocast, and bfloat16 carries about
+    # three decimal digits — fewer than the depth error's dynamic range over a
+    # run. The lift is the adapter's, not the caller's: the depth backend
+    # returns its prediction in the dtype it was *called* with, so an unlifted
+    # input quantises the energy and the gradient behind it without failing.
+    assert seen == [torch.float32]
+    assert energy.dtype == torch.float32
+
+
+def test_the_lift_leaves_a_bfloat16_caller_a_gradient_it_can_use(
+    reward: MfmGeometricReward, room_photo: Float[Tensor, "1 3 64 64"]
+) -> None:
+    leaf = room_photo.to(torch.bfloat16).requires_grad_(True)
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        score = reward.score(leaf).sum()
+    (gradient,) = torch.autograd.grad(score, leaf)
+
+    assert torch.isfinite(gradient).all()
+    assert float(gradient.abs().max()) > 0.0
+
+
+def test_the_autocast_escape_hatch_hands_the_backend_what_it_was_given(
+    reward: MfmGeometricReward, room_photo: Float[Tensor, "1 3 64 64"]
+) -> None:
+    seen: list[torch.dtype] = []
+    under_autocast = MfmGeometricReward(
+        reference=reward.reference,
+        depth_estimator=_DtypeSpy(reward.depth_estimator, seen),
+        autocast=True,
+    )
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        under_autocast.energy(room_photo.to(torch.bfloat16))
+
+    assert seen == [torch.bfloat16]

@@ -89,7 +89,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
   `score(images, prompts)` Meta Flow Maps ascends; `flow_map.py`'s
   `FlowMapProcess` is a few-step flow map as an `EndpointProcess` (the photo
   encoded and renoised to a partial sigma, the map's jump to sigma 0 as the
-  endpoint, an Euler step off that same jump) over the four-call
+  endpoint, an Euler step off that same jump, the state carried in float32 and
+  cast down only at the backend's two call boundaries) over the four-call
   `FlowMapBackend` behind it; `fmrg_flux.py` is that backend for FMRG's FLUX
   sampler, the one module that reaches the vendored tree — by deferred import
   only, and never at test time. `mfm_composite.py`'s `MfmWeightedReward` sums
@@ -99,7 +100,10 @@ The guided sampler and the experiment harness shared with `experiments/`.
   units have nothing to do with each other.
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
   image x̂₀ to one energy per batch element — the reward boundary the process
-  package steers by, reducing it with `.mean()` for its single backward.
+  package steers by, reducing it with `.mean()` for its single backward — plus
+  the `direction` convention that separates a descended energy from an ascended
+  score (structurally identical), and the `require_descended_energy` /
+  `require_per_element` guards the driver and `WeightedGuidance` enforce it with.
 - `guidance/composite.py`: `WeightedGuidance`, several energies summed into the
   one a sampler descends, so an extra reward rides alongside the geometric one.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
