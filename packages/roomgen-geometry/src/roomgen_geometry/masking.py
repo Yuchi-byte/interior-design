@@ -33,18 +33,18 @@ def scorable_mask(
             shell (:data:`~roomgen_geometry.segmentation.ade20k.ARCHITECTURAL_CLASSES`);
             `subtract_contents` exempts only what is affirmatively contents
             (:data:`~roomgen_geometry.segmentation.ade20k.CONTENTS_CLASSES`), so
-            an id the partition does not cover — a void or ignore index a backend
-            may emit where it is unsure — stays scored rather than excused.
+            an id neither list names — an ignore index, or the sky, tree, or
+            person a window frames — stays scored rather than excused.
         erosion_radius: in pixels, passed on to :func:`erode_boundaries`.
 
     Erosion is applied to the kept side in both modes, never to the exemption:
     the unreliable band either side of a segment edge is dropped from the score
     rather than trusted, so the region a mode exempts grows by the radius.
 
-    The two modes agree wherever every id is one the partition covers, since
-    `CONTENTS_CLASSES` is its complement over the 150 labelled ids; they part
-    company on ids outside it and on the eroded band around them. The result is a
-    constant either way: it is derived from a segmentation that never carries
+    The two modes agree wherever every id is named by one of the two class
+    lists; they part company on every id named by neither — which is most of the
+    outdoor and stuff classes — and on the eroded band around them. The result is
+    a constant either way: it is derived from a segmentation that never carries
     gradient.
     """
     exempt = (

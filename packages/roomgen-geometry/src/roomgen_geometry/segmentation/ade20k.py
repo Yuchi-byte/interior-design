@@ -1,7 +1,10 @@
-"""The ADE20K-150 label table and its architectural-shell / contents partition.
+"""The ADE20K-150 label table and its two affirmative class lists.
 
 The shell is the set of surfaces a renovation must leave where they are; the
-contents are everything a renovation is free to move, replace, or delete.
+contents are the objects a renovation is free to move, replace, or delete. Both
+are named class by class and neither is the other's complement: the ids in
+neither list — outdoors, people, stuff — are the ones the two `MaskMode`
+polarities disagree about, which is the whole reason to spell them out.
 """
 
 from typing import Final
@@ -194,9 +197,124 @@ ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
     }
 )
 
-# The complement, named because the partition is the domain statement: every
-# class that is not shell is something a renovation may change, so it is
-# excluded from the reward rather than merely unmentioned.
-CONTENTS_CLASSES: Final[frozenset[int]] = (
-    frozenset(range(NUM_CLASSES)) - ARCHITECTURAL_CLASSES
+
+def _named_contents(ids: set[int]) -> frozenset[int]:
+    """The contents list, checked against the shell it must not overlap.
+
+    The two lists are hand-curated and mutually exclusive by hand, so the
+    conditions that make `subtract_contents` mean anything — every id real, both
+    halves non-empty, no id claimed twice — are asserted where they are stated
+    rather than trusted to a reviewer.
+    """
+    contents = frozenset(ids)
+    if not contents or not ARCHITECTURAL_CLASSES:
+        raise ValueError("neither half of the class partition may be empty")
+    unknown = (contents | ARCHITECTURAL_CLASSES) - frozenset(range(NUM_CLASSES))
+    if unknown:
+        raise ValueError(f"class ids outside the ADE20K-150 table: {sorted(unknown)}")
+    both = contents & ARCHITECTURAL_CLASSES
+    if both:
+        raise ValueError(f"classes claimed as shell and contents: {sorted(both)}")
+    return contents
+
+
+# The objects a renovation legitimately adds, moves, or replaces: furniture,
+# furnishings, appliances, decor, lighting, textiles, potted plants,
+# electronics. Named affirmatively, never as the complement of the shell —
+# `subtract_contents` excuses a pixel from the reward only where the segmenter
+# commits to one of these, so a class in neither list (sky, tree, person,
+# water, road: what a window shows or what walks through the frame) stays
+# scored. Borderline calls:
+#   curtain, blind: hang off the wall and swing clear of it, so a new window
+#     dressing is not held to the old one's depth.
+#   painting, poster, mirror, bulletin board: on the wall plane, but depth
+#     reads the canvas, or the reflected room, not the wall behind it.
+#   fireplace, bathtub, shower, toilet, sink, counter, countertop, kitchen
+#     island, radiator: plumbed or fixed, yet exactly what a renovation rips
+#     out — freezing them forbids the change the reward exists to allow.
+#   plant, flower, pot: indoors these are pots standing on the floor; the
+#     greenery a window shows is tree/grass/palm, which is in neither list.
+#   fan, hood, light, chandelier, sconce: mounted, but swapped per fit-out.
+CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
+    {
+        7,  # bed
+        10,  # cabinet
+        15,  # table
+        17,  # plant
+        18,  # curtain
+        19,  # chair
+        22,  # painting
+        23,  # sofa
+        24,  # shelf
+        27,  # mirror
+        28,  # rug
+        30,  # armchair
+        31,  # seat
+        33,  # desk
+        35,  # wardrobe
+        36,  # lamp
+        37,  # bathtub
+        39,  # cushion
+        41,  # box
+        44,  # chest of drawers
+        45,  # counter
+        47,  # sink
+        49,  # fireplace
+        50,  # refrigerator
+        55,  # case
+        56,  # pool table
+        57,  # pillow
+        62,  # bookcase
+        63,  # blind
+        64,  # coffee table
+        65,  # toilet
+        66,  # flower
+        67,  # book
+        69,  # bench
+        70,  # countertop
+        71,  # stove
+        73,  # kitchen island
+        74,  # computer
+        75,  # swivel chair
+        77,  # bar
+        78,  # arcade machine
+        81,  # towel
+        82,  # light
+        85,  # chandelier
+        89,  # television receiver
+        92,  # apparel
+        97,  # ottoman
+        98,  # bottle
+        99,  # buffet
+        100,  # poster
+        107,  # washer
+        108,  # plaything
+        110,  # stool
+        112,  # basket
+        115,  # bag
+        117,  # cradle
+        118,  # oven
+        119,  # ball
+        120,  # food
+        124,  # microwave
+        125,  # pot
+        129,  # dishwasher
+        130,  # screen
+        131,  # blanket
+        132,  # sculpture
+        133,  # hood
+        134,  # sconce
+        135,  # vase
+        137,  # tray
+        138,  # ashcan
+        139,  # fan
+        141,  # crt screen
+        142,  # plate
+        143,  # monitor
+        144,  # bulletin board
+        145,  # shower
+        146,  # radiator
+        147,  # glass
+        148,  # clock
+    }
 )

@@ -119,11 +119,11 @@ def test_the_shell_mask_is_the_default_polarity_of_the_scorable_mask() -> None:
     )
 
 
-def test_the_two_modes_agree_on_every_id_the_partition_covers() -> None:
-    # The whole label table, which the partition covers exactly: contents is
-    # defined as the complement of shell over it, so keeping what is shell and
-    # dropping what is contents are the same statement here.
-    segmentation = torch.arange(NUM_CLASSES).reshape(1, 10, 15)
+def test_the_two_modes_agree_on_every_id_one_of_the_lists_names() -> None:
+    # Restricted to the classes the two lists between them name, keeping what is
+    # shell and dropping what is contents are the same statement.
+    named = sorted(ARCHITECTURAL_CLASSES | CONTENTS_CLASSES)
+    segmentation = torch.tensor(named).reshape(1, 1, len(named))
 
     intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
     subtracting = scorable_mask(
@@ -132,6 +132,55 @@ def test_the_two_modes_agree_on_every_id_the_partition_covers() -> None:
 
     assert torch.equal(intersecting, subtracting)
     assert int(intersecting.sum()) == len(ARCHITECTURAL_CLASSES)
+
+
+def test_the_two_modes_part_company_on_the_rest_of_the_label_table() -> None:
+    unclaimed = sorted(
+        set(range(NUM_CLASSES)) - ARCHITECTURAL_CLASSES - CONTENTS_CLASSES
+    )
+    segmentation = torch.tensor(unclaimed).reshape(1, 1, len(unclaimed))
+
+    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
+    subtracting = scorable_mask(
+        segmentation, mode="subtract_contents", erosion_radius=0
+    )
+
+    assert not bool(intersecting.any())
+    assert bool(subtracting.all())
+
+
+def test_a_window_view_and_a_passer_by_are_scored_only_by_subtract_contents() -> None:
+    # A wall with a window onto sky and a tree, a sofa in front of it, and a
+    # person crossing the room. The sofa is contents under either mode; the view
+    # through the glass and the person are named by neither list, so subtracting
+    # still has to reconstruct them and intersecting lets them go.
+    segmentation = torch.full((1, 16, 16), _WALL)
+    segmentation[:, 2:8, 2:8] = ADE20K_LABELS.index("windowpane")
+    segmentation[:, 3:5, 3:7] = ADE20K_LABELS.index("sky")
+    segmentation[:, 5:7, 3:7] = ADE20K_LABELS.index("tree")
+    segmentation[:, 10:14, 2:8] = _SOFA
+    segmentation[:, 4:12, 11:14] = ADE20K_LABELS.index("person")
+
+    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
+    subtracting = scorable_mask(
+        segmentation, mode="subtract_contents", erosion_radius=0
+    )
+
+    view, person, sofa, glass = (
+        (slice(None), slice(3, 7), slice(3, 7)),
+        (slice(None), slice(4, 12), slice(11, 14)),
+        (slice(None), slice(10, 14), slice(2, 8)),
+        (slice(None), 2, slice(2, 8)),
+    )
+    assert not bool(intersecting[view].any())
+    assert not bool(intersecting[person].any())
+    assert bool(subtracting[view].all())
+    assert bool(subtracting[person].all())
+    assert not bool(intersecting[sofa].any())
+    assert not bool(subtracting[sofa].any())
+    # The window frame itself is shell, and both modes keep scoring it.
+    assert bool(intersecting[glass].all())
+    assert bool(subtracting[glass].all())
 
 
 def test_the_modes_part_company_on_an_id_neither_set_names() -> None:
