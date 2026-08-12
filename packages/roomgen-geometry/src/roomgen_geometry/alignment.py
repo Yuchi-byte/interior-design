@@ -1,10 +1,23 @@
 """Closed-form least-squares removal of the positive-affine freedom in inverse depth."""
 
-from typing import Final, NamedTuple
+from typing import Final, Literal, NamedTuple
 
 import torch
 from jaxtyping import Bool, Float
 from torch import Tensor
+
+# How much of the affine freedom a comparison hands back to the prediction.
+#
+# `scale_shift` is the default and the only mode an affine-invariant backend
+# (Depth Anything V2) may be scored under — see CLAUDE.md's "never compare raw
+# depth maps". The looser modes exist for *metric* backends, whose disparity is
+# determined absolutely rather than up to a scale and shift: for those, fitting
+# a scale is handing back a degree of freedom the network resolved, which is
+# exactly the freedom an over- or under-scaled room escapes through. `shift`
+# keeps a global offset free, `none` fits nothing. Choosing either for an
+# affine-invariant backend measures affine mismatch and is wrong however good
+# the number looks.
+type AlignmentMode = Literal["scale_shift", "shift", "none"]
 
 # The normal equations of a scale/shift fit are ill-conditioned whenever the
 # masked depth range is narrow, and float32 loses several digits there for no
@@ -52,8 +65,18 @@ def align_scale_shift(
     prediction: Float[Tensor, "batch height width"],
     target: Float[Tensor, "batch height width"],
     mask: Bool[Tensor, "batch height width"],
+    *,
+    mode: AlignmentMode = "scale_shift",
 ) -> ScaleShift:
     """Per-batch-element least-squares fit of `prediction` onto `target`.
+
+    Args:
+        mode: which parameters the fit is free to move. The default
+            `scale_shift` is the full affine solve described below and is the
+            only correct mode for an affine-invariant backend; `shift` solves
+            for the offset alone at a fixed unit scale, and `none` returns the
+            identity so the two maps are scored where they already stand. See
+            :data:`AlignmentMode` for when the looser two are legitimate.
 
     Minimises ``sum_i mask_i * (scale * prediction_i + shift - target_i)^2``
     **subject to a non-negative scale**, lightly ridge-damped and with `scale`
@@ -93,6 +116,29 @@ def align_scale_shift(
     count = weight.flatten(1).sum(-1)
     sum_prediction = predicted.flatten(1).sum(-1)
     sum_target = reference.flatten(1).sum(-1)
+    safe_count = count.clamp(min=1.0)
+    # An empty mask determines nothing at all, and unlike a flat one it has no
+    # mean to match; every mode leaves its shift at zero so the maps are scored
+    # as they stand by the caller's own empty-mask handling.
+    empty = count == 0
+    unit = torch.ones_like(count)
+    nothing = torch.zeros_like(count)
+
+    match mode:
+        case "none":
+            return _cast(ScaleShift(unit, nothing, nothing), prediction.dtype)
+        case "shift":
+            # The offset that matches the two masked means, which is the whole
+            # of the least-squares solve once the scale is held at one. Nothing
+            # can be refused at a fixed *positive* scale, so `refused_variance`
+            # — the charge for a scale the floor rejected — is identically zero.
+            shift = torch.where(
+                empty, nothing, (sum_target - sum_prediction) / safe_count
+            )
+            return _cast(ScaleShift(unit, shift, nothing), prediction.dtype)
+        case "scale_shift":
+            pass
+
     sum_prediction_squared = (predicted * predicted).flatten(1).sum(-1)
     sum_cross = (predicted * reference).flatten(1).sum(-1)
 
@@ -106,7 +152,6 @@ def align_scale_shift(
     # batch element, and branching on a tensor value would both break batching
     # and drop the gradient.
     safe_damped = torch.where(damped > 0.0, damped, torch.ones_like(damped))
-    safe_count = count.clamp(min=1.0)
 
     # Cramer's rule on [[sum_dd, sum_d], [sum_d, count]] @ [scale, shift] =
     # [sum_cross, sum_target], for the scale only. Its numerator carries the
@@ -133,17 +178,17 @@ def align_scale_shift(
     # the cap binds instead of jumping there.
     shift = (sum_target - scale * sum_prediction) / safe_count
 
-    # An empty mask determines neither, and unlike a flat one it has no mean to
-    # match; the identity fit leaves the maps as they are for the caller's own
-    # empty-mask handling to score. It refuses nothing either — every sum above
-    # is zero over it, so the penalty already is.
-    empty = count == 0
-    scale = torch.where(empty, torch.ones_like(scale), scale)
-    shift = torch.where(empty, torch.zeros_like(shift), shift)
+    # An empty mask determines neither. It refuses nothing either — every sum
+    # above is zero over it, so the penalty already is.
+    scale = torch.where(empty, unit, scale)
+    shift = torch.where(empty, nothing, shift)
+    return _cast(ScaleShift(scale, shift, refused_variance), prediction.dtype)
+
+
+def _cast(fit: ScaleShift, dtype: torch.dtype) -> ScaleShift:
+    """Bring a fit solved in float64 back to the caller's precision."""
     return ScaleShift(
-        scale.to(prediction.dtype),
-        shift.to(prediction.dtype),
-        refused_variance.to(prediction.dtype),
+        fit.scale.to(dtype), fit.shift.to(dtype), fit.refused_variance.to(dtype)
     )
 
 

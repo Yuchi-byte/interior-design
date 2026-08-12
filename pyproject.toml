@@ -176,6 +176,11 @@ module = [
     "diffusers.*",
     "torchvision.*",
     "PIL.*",
+    # Upstream Depth Anything 3, installed out of band rather than locked: its
+    # `numpy<2` pin contradicts roomgen-geometry's `numpy>=2` and its export
+    # extras (xformers, open3d, pycolmap) are not on any path this repo takes.
+    # `depth/depth_anything_v3.py` carries the install line.
+    "depth_anything_3.*",
 ]
 ignore_missing_imports = true
 

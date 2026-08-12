@@ -274,3 +274,87 @@ def test_a_shape_annotation_with_no_hand_written_guard_is_still_enforced() -> No
             torch.zeros((8, 8)),
             ScaleShift(torch.ones(1), torch.zeros(1), torch.zeros(1)),
         )
+
+
+def _room(generator: Generator) -> tuple[Tensor, Tensor]:
+    """A disparity map and a mask over most of it."""
+    disparity = torch.rand((2, 16, 16), generator=generator) + 0.5
+    mask = torch.ones((2, 16, 16), dtype=torch.bool)
+    mask[:, :2] = False
+    return disparity, mask
+
+
+def test_no_alignment_leaves_both_maps_exactly_where_they_stand(
+    generator: Generator,
+) -> None:
+    prediction, mask = _room(generator)
+    target = 3.0 * prediction + 1.0
+
+    fit = align_scale_shift(prediction, target, mask, mode="none")
+
+    assert torch.equal(fit.scale, torch.ones(2))
+    assert torch.equal(fit.shift, torch.zeros(2))
+    assert torch.equal(fit.refused_variance, torch.zeros(2))
+    assert torch.equal(apply_scale_shift(prediction, fit), prediction)
+
+
+def test_shift_only_matches_the_masked_means_and_nothing_else(
+    generator: Generator,
+) -> None:
+    prediction, mask = _room(generator)
+    offset = torch.tensor([0.25, -0.75])
+    target = prediction + offset[:, None, None]
+
+    fit = align_scale_shift(prediction, target, mask, mode="shift")
+
+    assert torch.equal(fit.scale, torch.ones(2))
+    assert torch.allclose(fit.shift, offset)
+    # A pure offset is all a metric backend should ever have to give up, and
+    # under this mode it is removed exactly.
+    assert torch.allclose(apply_scale_shift(prediction, fit), target)
+
+
+def test_shift_only_refuses_to_absorb_a_scale_the_full_fit_would_swallow(
+    generator: Generator,
+) -> None:
+    # The experiment this mode exists for, in one assertion: a room rendered at
+    # the wrong absolute size is free under `scale_shift` and charged under
+    # `shift`. A metric backend is the only kind that can tell the difference.
+    prediction, mask = _room(generator)
+    target = 2.0 * prediction
+
+    full = _masked_mean_squared_error(
+        prediction, target, mask
+    )  # scored through the affine fit
+    shifted = align_scale_shift(prediction, target, mask, mode="shift")
+    residual = apply_scale_shift(prediction, shifted) - target
+    charged = (residual**2)[mask].mean()
+
+    assert float(full) == pytest.approx(0.0, abs=1e-6)
+    assert float(charged) > 0.05
+
+
+@pytest.mark.parametrize("mode", ["scale_shift", "shift", "none"])
+def test_every_mode_leaves_an_empty_mask_alone(mode: str) -> None:
+    prediction = torch.full((1, 4, 4), 3.0)
+    target = torch.zeros((1, 4, 4))
+    empty = torch.zeros((1, 4, 4), dtype=torch.bool)
+
+    fit = align_scale_shift(prediction, target, empty, mode=mode)  # type: ignore[arg-type]
+
+    assert torch.equal(apply_scale_shift(prediction, fit), prediction)
+    assert torch.equal(fit.refused_variance, torch.zeros(1))
+
+
+@pytest.mark.parametrize("mode", ["scale_shift", "shift", "none"])
+def test_every_mode_keeps_the_prediction_on_the_graph(
+    mode: str, generator: Generator
+) -> None:
+    prediction, mask = _room(generator)
+    prediction = prediction.requires_grad_(True)
+    target = 0.7 * prediction.detach() + 0.2
+
+    fit = align_scale_shift(prediction, target, mask, mode=mode)  # type: ignore[arg-type]
+    aligned = apply_scale_shift(prediction, fit)
+
+    assert_gradient_is_finite_and_nonzero((aligned**2).sum(), prediction)
