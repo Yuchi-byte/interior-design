@@ -46,6 +46,11 @@ guidance:
   # (-64% vs control, adherence intact), degrades past 50, and 150 destroys
   # both sides of the gate.
   strength: 10.0
+  # Divides the gradient by its own RMS, so `strength` becomes a bounded step
+  # size in latent-RMS units instead of a multiple of an energy whose scale the
+  # depth backend sets; false is the raw-gradient step the strength above was
+  # calibrated for, and true needs its own sweep.
+  normalize: false
   # `constant` because it is the arm the sweep above actually measured;
   # `decaying` (strength -> final_strength on a cosine) is selectable and is the
   # variant to run next, not a default to switch to before it has a number.

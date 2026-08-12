@@ -32,6 +32,10 @@ sampler:
   text_guidance_scale: 7.5
 
 guidance:
+  # Raw-gradient units, which is what this stack's ~3e-5 energy gradient asks
+  # for. `normalize: true` re-denominates the knob into latent-RMS step sizes,
+  # where the equivalent of 500 here is ~0.02 and this value would blow the
+  # trajectory apart — override both together.
   strength: 500.0
   schedule: constant
   erosion_radius: 2

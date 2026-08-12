@@ -104,11 +104,14 @@ class GuidanceConfig(Config):
     """The geometric guidance term under test.
 
     Args:
-        strength: the multiplier on the energy gradient before it is applied to
-            the latent, and the value a `decaying` schedule starts from. There
-            is no scale-free choice here — the energy is in squared disparity
-            units the depth backend defines — so this is the knob a strength
-            sweep varies.
+        strength: what the energy gradient is scaled by before it is applied to
+            the latent, and the value a `decaying` schedule starts from — the
+            knob a strength sweep varies. `normalize` decides its units: a
+            multiplier on a gradient in the squared-disparity units the depth
+            backend defines, or a step size in latent-RMS units.
+        normalize: divide the gradient by its own RMS before the step, bounding
+            the per-step push so a large energy cannot run the sampler away into
+            a depth-satisfying texture.
         schedule: `constant` holds `strength` for the whole trajectory;
             `decaying` falls from it to `final_strength` on a cosine, spending
             the steering on the early steps that decide layout.
@@ -119,6 +122,7 @@ class GuidanceConfig(Config):
     """
 
     strength: Annotated[float, Field(ge=0.0)]
+    normalize: bool = False
     schedule: Literal["constant", "decaying"] = "constant"
     final_strength: Annotated[float, Field(ge=0.0)] = 0.0
     erosion_radius: Annotated[int, Field(ge=0)] = 2

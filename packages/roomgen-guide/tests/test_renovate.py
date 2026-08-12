@@ -19,6 +19,9 @@ _NOISE_STRENGTH = 0.6
 _TEXT_GUIDANCE_SCALE = 7.5
 _EROSION_RADIUS = 2
 _STRENGTH = 500.0
+# A normalized step is measured in latent-RMS units, so it is a different scale
+# of number entirely from the raw-gradient multiplier above.
+_STEP_SIZE = 0.1
 
 
 def _renovate(
@@ -29,6 +32,7 @@ def _renovate(
     *,
     strength: float,
     seed: int = 0,
+    normalize_gradient: bool = False,
     reference: GeometricReference | None = None,
 ) -> Tensor:
     return renovate(
@@ -43,6 +47,7 @@ def _renovate(
         noise_strength=_NOISE_STRENGTH,
         text_guidance_scale=_TEXT_GUIDANCE_SCALE,
         generator=torch.Generator().manual_seed(seed),
+        normalize_gradient=normalize_gradient,
         reference=reference,
     )
 
@@ -118,6 +123,53 @@ def test_the_renovation_is_steered_by_the_photos_own_frozen_geometry(
     )
 
     assert torch.equal(renovated, sampled)
+
+
+def test_the_normalized_step_reaches_the_sampler(
+    fake_pipeline: FakePipeline,
+    room_photo: Tensor,
+    fake_depth_estimator: FakeDepthEstimator,
+    fake_segmenter: FakeSegmenter,
+) -> None:
+    reference = GeometricReference.from_photo(
+        room_photo,
+        depth_estimator=fake_depth_estimator,
+        segmenter=fake_segmenter,
+        erosion_radius=_EROSION_RADIUS,
+    )
+    sampled = sample_guided(
+        fake_pipeline,
+        room_photo,
+        _PROMPT,
+        guidance=GeometricGuidance(
+            depth_estimator=fake_depth_estimator, reference=reference
+        ),
+        schedule=ConstantStrength(strength=_STEP_SIZE),
+        steps=_STEPS,
+        noise_strength=_NOISE_STRENGTH,
+        text_guidance_scale=_TEXT_GUIDANCE_SCALE,
+        generator=torch.Generator().manual_seed(0),
+        normalize_gradient=True,
+    )
+
+    normalized = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        fake_segmenter,
+        strength=_STEP_SIZE,
+        normalize_gradient=True,
+    )
+    unnormalized = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        fake_segmenter,
+        strength=_STEP_SIZE,
+    )
+
+    assert torch.equal(normalized, sampled)
+    assert not torch.equal(normalized, unnormalized)
 
 
 def test_a_prebuilt_reference_renovates_exactly_as_one_built_in_the_call(

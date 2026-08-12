@@ -261,6 +261,7 @@ def _sample(
         noise_strength=config.sampler.noise_strength,
         text_guidance_scale=config.sampler.text_guidance_scale,
         generator=generator,
+        normalize_gradient=config.guidance.normalize,
         reference=reference,
     )
     return image, time.perf_counter() - started

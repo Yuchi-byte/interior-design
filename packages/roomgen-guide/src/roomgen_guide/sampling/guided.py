@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 import torch
 from jaxtyping import Float
 from torch import Tensor
@@ -9,6 +11,10 @@ from torch import Tensor
 from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.schedule import GuidanceSchedule
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline, LatentAutoencoder
+
+# Small enough to be invisible against any gradient worth stepping along, and
+# there only so that an exactly zero gradient normalises to zero rather than NaN.
+_NORMALIZATION_EPSILON: Final = 1e-12
 
 
 def sample_guided(
@@ -22,6 +28,7 @@ def sample_guided(
     noise_strength: float,
     text_guidance_scale: float,
     generator: torch.Generator,
+    normalize_gradient: bool = False,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Renoise `photo` and denoise it back under `prompt`, steered by `guidance`.
 
@@ -34,6 +41,10 @@ def sample_guided(
             to `guidance`; 1 turns it off.
         generator: the only source of randomness in the loop, so a run is
             reproducible from its seed alone.
+        normalize_gradient: step along the gradient divided by its own RMS, which
+            makes the strength `schedule` returns a step size in latent-RMS units
+            — bounded per step and invariant to the absolute scale of the energy
+            — instead of a multiplier on a gradient whose size the energy sets.
 
     A guided step forms the predicted clean image from the current latent,
     decodes it, evaluates `guidance` on it, and shifts the latent along the
@@ -86,13 +97,16 @@ def sample_guided(
         )
         strength = schedule(step, total_steps)
         if strength != 0.0:
-            latent = latent - strength * guidance_gradient(
+            steering = guidance_gradient(
                 pipeline.vae,
                 guidance,
                 latent=latent,
                 noise_prediction=noise_prediction,
                 alpha_cumprod=alphas_cumprod[timestep],
             )
+            if normalize_gradient:
+                steering = _normalized(steering, _NORMALIZATION_EPSILON)
+            latent = latent - strength * steering
         latent = scheduler.step(noise_prediction, timestep, latent).prev_sample
 
     return decode_latent(pipeline.vae, latent)
@@ -137,6 +151,14 @@ def decode_latent(
     # the decode is in range; a decode pinned at the rails would zero the
     # guidance instead, which is what the loop's gradient tests are watching for.
     return ((decoded + 1.0) / 2.0).clamp(0.0, 1.0)
+
+
+def _normalized(
+    gradient: Float[Tensor, "batch channels height width"], epsilon: float
+) -> Float[Tensor, "batch channels height width"]:
+    # ‖g‖₂ / √numel(g): the RMS, so the result has unit RMS whatever the energy's
+    # units are, and a step of `strength` moves the latent by that much per entry.
+    return gradient / (gradient.square().mean().sqrt() + epsilon)
 
 
 def _encode_photo(
