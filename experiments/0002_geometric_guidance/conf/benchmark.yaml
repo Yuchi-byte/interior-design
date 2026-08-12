@@ -42,19 +42,10 @@ sampler:
   text_guidance_scale: 7.5
 
 guidance:
-  # Anchored on the magnitude the guided loop is tested at — `test_sampling.py`
-  # and `test_renovate.py` both use ConstantStrength(500.0) — then corrected for
-  # the energy scale of the real stack, which is not the fakes'. Measured on
-  # these photos with Depth Anything V2 at 512 (see report.md, Setup): the fake
-  # stack's masked depth error runs ~5e-3, while the real one is ~2e-4 for a
-  # purely photometric change and ~8e-1 for a 32px wall shift, with
-  # |dE/dimage| ~1e-3 where the fakes give ~1e-5. Real gradients are therefore
-  # one to two orders larger, and 500 would over-steer.
-  #
-  # This is a starting point, not a calibrated constant. Sweep it first:
-  #   --set guidance.strength=50 / 150 / 500 / 1500
-  # and pin whichever value clears both sides of the gate on every scene.
-  strength: 150.0
+  # Pinned by the pilot sweep (report.md): depth-error reduction peaks near 10
+  # (-64% vs control, adherence intact), degrades past 50, and 150 destroys
+  # both sides of the gate.
+  strength: 10.0
   # `constant` is the only option: DecayingStrength is a NotImplementedError
   # upstream, and a schedule the framework cannot evaluate is not a default.
   schedule: constant

@@ -134,18 +134,26 @@ a placeholder — no number in this section is measured, estimated, or otherwise
 real. The magnitudes in Setup are the *only* measured numbers in this document,
 and they are properties of the reward, not results of a sampling run.
 
-**TODO after the first real GPU run:** fill the strength sweep, then the
-per-scene table at the pinned strength, then the cost table, then the decision.
-Record the run's `results.json` path.
+### Strength sweep (pilot scene, seed 0, 10 steps, 2026-08-12)
 
-### Strength sweep (pin the constant first)
+The planned 50–1500 grid was wrong by an order of magnitude: the first pilot at
+150 *destroyed* the geometry (E_guided 1.49 vs control 0.040, adherence 56%),
+so the sweep ran downward instead.
 
-| strength | mean E_guided | mean E_control | reduction | mean adherence ratio | runs passing |
+| strength | E_guided | E_control | reduction | adherence ratio | gate |
 |---|---|---|---|---|---|
-| 50 | TODO | TODO | TODO | TODO | TODO |
-| 150 | TODO | TODO | TODO | TODO | TODO |
-| 500 | TODO | TODO | TODO | TODO | TODO |
-| 1500 | TODO | TODO | TODO | TODO | TODO |
+| 0.1 | 0.0397 | 0.0403 | 1.6% | 100.0% | fail (geometry) |
+| 0.5 | 0.0375 | 0.0403 | 7.0% | 100.1% | fail (geometry) |
+| 2 | 0.0313 | 0.0403 | 22.4% | 100.2% | pass |
+| **10** | **0.0146** | 0.0403 | **63.8%** | 100.1% | pass |
+| 50 | 0.0199 | 0.0403 | 50.8% | 100.9% | pass |
+| 150 | 1.4913 | 0.0403 | −3597% | 55.6% | fail (both) |
+
+Monotone improvement up to ~10, past the peak by 50, catastrophic by 150.
+**Pinned: 10.0** in both `pilot.yaml` and `benchmark.yaml`.
+
+**TODO after the full benchmark run:** the per-scene table at strength 10, the
+cost table, and the decision. Record the run's `results.json` path.
 
 ### Per (scene, seed) at the pinned strength
 

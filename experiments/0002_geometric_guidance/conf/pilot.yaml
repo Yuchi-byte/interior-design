@@ -3,9 +3,6 @@
 # `benchmark.yaml`, so a pilot that renders and scores has validated the whole
 # real path — checkpoints, dtypes, CUDA generator, CLIP download, artifacts.
 #
-# A FAILED verdict here is not a broken pod. The gate is the benchmark's, and
-# the strength has not been swept yet; read the numbers, not the exit code.
-#
 #   ROOMGEN_HF_HOME=/workspace/hf-cache uv run --no-sync \
 #     python experiments/0002_geometric_guidance/run.py --config pilot
 name: 0002_geometric_guidance_pilot
@@ -32,7 +29,7 @@ sampler:
   text_guidance_scale: 7.5
 
 guidance:
-  strength: 150.0
+  strength: 10.0
   schedule: constant
   erosion_radius: 2
 
