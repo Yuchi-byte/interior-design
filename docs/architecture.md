@@ -155,11 +155,18 @@ whose normal equations are the 2x2 system
 with the closed-form solution (writing `S_dd = Σ w d²`, `S_d = Σ w d`,
 `S_1 = Σ w`, `S_dr = Σ w d r`, `S_r = Σ w r`, `det = S_dd·S_1 − S_d²`):
 
-    s = (S_1·S_dr − S_d·S_r) / det
-    t = (S_dd·S_r  − S_d·S_dr) / det
+    s = clamp( (S_1·S_dr − S_d·S_r) / (det + λ·S_1·S_dd),  ±1000 )
+    t = (S_r − s·S_d) / S_1
 
-`det` degenerates when the masked region is tiny or has near-constant depth;
-the solve guards on it rather than propagating a NaN into the gradient.
+`det` degenerates when the masked region is tiny or has near-constant depth.
+The ridge `λ = 1e-12` and the cap on `s` are what carry the solve through that
+continuously — `s` falls to 0 and the fit becomes mean-matching, rather than
+jumping to an unaligned comparison — and `t` is back-substituted from the capped
+`s` so the fit still matches the two masked means. Both are slack by orders on a
+conditioned mask. An empty mask alone falls back to the identity `(1, 0)`.
+Pixels outside the mask are *replaced* with zero rather than weighted by it,
+since `0 × NaN` is NaN in both directions. The whole solve runs in float64 and
+the energy in float32, whatever dtype the maps arrive in.
 `masked_depth_error` is then the masked mean squared residual of the aligned
 prediction,
 

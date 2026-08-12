@@ -14,10 +14,23 @@ _SOLVE_DTYPE: Final = torch.float64
 
 # The 2x2 system's determinant is non-negative by Cauchy-Schwarz and vanishes
 # exactly when the masked depths carry no variance (empty mask, one pixel, a
-# flat region). Comparing it against this fraction of its own scale makes the
-# test dimensionless, so it fires the same way for disparity in [0, 1] and for
-# disparity in [0, 1000].
-_DEGENERACY_TOLERANCE: Final = 1e-12
+# flat region), so the solve needs a ridge rather than a threshold: a threshold
+# leaves the fit jumping between the two regimes it separates, while damping the
+# determinant by this fraction of its own scale drives the scale smoothly to
+# zero as the variance vanishes. Being a fraction makes it dimensionless, so it
+# bites the same way for disparity in [0, 1] and for disparity in [0, 1000], and
+# it is 4000x above float64's rounding on the determinant — small enough that
+# the fit it returns on any conditioned mask is the undamped one to eleven
+# figures.
+_DEGENERACY_DAMPING: Final = 1e-12
+
+# The least-squares scale is `correlation * target_std / prediction_std`, so it
+# only reaches this bound once the prediction's masked spread has fallen to a
+# thousandth of the reference's — a prediction with no structure left to align.
+# Capping it there bounds `d(aligned prediction)/d(prediction)` by the same
+# factor, instead of letting the fit and its gradient grow without limit on the
+# way down to the damped solve's zero.
+_MAX_SCALE: Final = 1e3
 
 
 class ScaleShift(NamedTuple):
@@ -32,52 +45,67 @@ def align_scale_shift(
 ) -> ScaleShift:
     """Per-batch-element least-squares fit of `prediction` onto `target`.
 
-    Minimises ``sum_i mask_i * (scale * prediction_i + shift - target_i)^2``.
-    Differentiable in both maps, and finite on a degenerate mask, where it
-    returns the identity fit ``(1, 0)`` rather than a division by zero.
+    Minimises ``sum_i mask_i * (scale * prediction_i + shift - target_i)^2``,
+    lightly ridge-damped and with ``|scale|`` capped at 1000. Both are slack by
+    many orders on any pair of depth maps that share structure — the fit
+    returned there is the plain least-squares one to eleven figures — and both
+    exist for the ill-conditioned end, where an undamped fit blows up like
+    ``1 / prediction_std``. Damped and capped, it instead falls continuously to
+    the mean-matching ``(0, masked mean of target)``: whatever the masked pixels
+    determine is determined, and a mask over which the prediction carries no
+    variance (one pixel, a flat region) determines the level but not the slope.
+
+    Only an *empty* mask, which determines nothing at all, falls back to the
+    identity ``(1, 0)``. Differentiable in both maps throughout, with the
+    gradient bounded by the cap.
     """
     _check_shapes(prediction, target, mask)
 
+    # Excluded pixels are *replaced*, not weighted: `0 * NaN` is NaN, so a
+    # single non-finite pixel anywhere in either map — including the region the
+    # mask exists to exclude — would otherwise poison every sum below and come
+    # back as a NaN gradient over the whole image.
+    zero = torch.zeros((), dtype=_SOLVE_DTYPE, device=prediction.device)
     weight = mask.to(_SOLVE_DTYPE)
-    predicted = prediction.to(_SOLVE_DTYPE)
-    reference = target.to(_SOLVE_DTYPE)
+    predicted = torch.where(mask, prediction.to(_SOLVE_DTYPE), zero)
+    reference = torch.where(mask, target.to(_SOLVE_DTYPE), zero)
 
     count = weight.flatten(1).sum(-1)
-    sum_prediction = (weight * predicted).flatten(1).sum(-1)
-    sum_target = (weight * reference).flatten(1).sum(-1)
-    sum_prediction_squared = (weight * predicted * predicted).flatten(1).sum(-1)
-    sum_cross = (weight * predicted * reference).flatten(1).sum(-1)
+    sum_prediction = predicted.flatten(1).sum(-1)
+    sum_target = reference.flatten(1).sum(-1)
+    sum_prediction_squared = (predicted * predicted).flatten(1).sum(-1)
+    sum_cross = (predicted * reference).flatten(1).sum(-1)
 
     determinant = count * sum_prediction_squared - sum_prediction * sum_prediction
-    degenerate = determinant <= _DEGENERACY_TOLERANCE * count * sum_prediction_squared
-
-    # Double guard. `torch.where` alone still evaluates the untaken branch and
-    # backpropagates its NaN, so the denominator is sanitised *before* the
-    # division rather than the quotient afterwards; and the selection is a
-    # `where` rather than a Python `if` because the test is per batch element,
-    # and branching on a tensor value would both break batching and drop the
-    # gradient.
-    safe_determinant = torch.where(
-        degenerate, torch.ones_like(determinant), determinant
-    )
-    identity_scale = torch.ones_like(determinant)
-    identity_shift = torch.zeros_like(determinant)
+    damped = determinant + _DEGENERACY_DAMPING * count * sum_prediction_squared
+    # The damping is itself zero when there is nothing to damp — an empty mask,
+    # or one over which the prediction is identically zero — and `torch.where`
+    # still evaluates the untaken branch and backpropagates its NaN, so the
+    # denominator is sanitised *before* the division rather than the quotient
+    # afterwards. A `where` rather than a Python `if` because the test is per
+    # batch element, and branching on a tensor value would both break batching
+    # and drop the gradient.
+    safe_damped = torch.where(damped > 0.0, damped, torch.ones_like(damped))
+    safe_count = count.clamp(min=1.0)
 
     # Cramer's rule on [[sum_dd, sum_d], [sum_d, count]] @ [scale, shift] =
-    # [sum_cross, sum_target]. Solving the shift from its own cofactor instead
-    # of back-substituting `(sum_target - scale * sum_prediction) / count`
-    # keeps the whole solve behind one guarded denominator.
-    scale = torch.where(
-        degenerate,
-        identity_scale,
-        (count * sum_cross - sum_prediction * sum_target) / safe_determinant,
-    )
-    shift = torch.where(
-        degenerate,
-        identity_shift,
-        (sum_prediction_squared * sum_target - sum_prediction * sum_cross)
-        / safe_determinant,
-    )
+    # [sum_cross, sum_target], for the scale only. Its numerator carries the
+    # masked covariance, which vanishes with the variance the damping is holding
+    # the denominator up by, so the slope tends to zero rather than diverging.
+    slope = (count * sum_cross - sum_prediction * sum_target) / safe_damped
+    scale = slope.clamp(-_MAX_SCALE, _MAX_SCALE)
+    # The shift is back-substituted from the *capped* scale rather than solved
+    # from its own cofactor: it is what makes the capped fit still match the two
+    # masked means, and so what makes the fit continuous in the prediction where
+    # the cap binds instead of jumping there.
+    shift = (sum_target - scale * sum_prediction) / safe_count
+
+    # An empty mask determines neither, and unlike a flat one it has no mean to
+    # match; the identity fit leaves the maps as they are for the caller's own
+    # empty-mask handling to score.
+    empty = count == 0
+    scale = torch.where(empty, torch.ones_like(scale), scale)
+    shift = torch.where(empty, torch.zeros_like(shift), shift)
     return ScaleShift(scale.to(prediction.dtype), shift.to(prediction.dtype))
 
 

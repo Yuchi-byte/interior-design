@@ -69,6 +69,11 @@ class NoiseScheduler(Protocol):
 
     `alphas_cumprod` is indexed by *training* timestep, as the schedulers that
     subsample a trajectory (DDIM, PNDM) keep it.
+
+    `step` takes the loop's generator even though the deterministic samplers
+    roomgen drives (DDIM at eta=0) draw nothing: the loop's contract is that its
+    generator is the only source of randomness in a run, and a stochastic
+    scheduler that read the global RNG instead would break it silently.
     """
 
     config: SchedulerConfig
@@ -97,6 +102,7 @@ class NoiseScheduler(Protocol):
         model_output: Float[Tensor, "batch channels height width"],
         timestep: Int[Tensor, ""],
         sample: Float[Tensor, "batch channels height width"],
+        generator: torch.Generator | None = None,
     ) -> SchedulerStepOutput: ...
 
 

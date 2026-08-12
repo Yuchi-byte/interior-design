@@ -14,6 +14,14 @@ from roomgen_guide.sampling.pipeline import Img2ImgPipeline, LatentAutoencoder
 # there only so that an exactly zero gradient rescales to zero rather than NaN.
 _RMS_EPSILON: Final = 1e-12
 
+# The step is sized in float32 whatever the latent's dtype. A guidance gradient
+# runs around 1e-5 per element, and squaring that in float16 lands under the
+# 6e-8 subnormal floor: the RMS underflows to exactly zero, which turns
+# `normalize_gradient` into a NaN and `clip_step_rms` into a cap that never
+# binds. Only the sizing arithmetic is lifted; the update is handed back in the
+# latent's own dtype.
+_UPDATE_DTYPE: Final = torch.float32
+
 
 def sample_guided(
     pipeline: Img2ImgPipeline,
@@ -45,6 +53,7 @@ def sample_guided(
             makes the strength `schedule` returns a step size in latent-RMS units
             — bounded per step and invariant to the absolute scale of the energy
             — instead of a multiplier on a gradient whose size the energy sets.
+            Sized per batch element, as is the cap below.
         clip_step_rms: ceiling on the RMS of the raw step, in latent-RMS units.
             Below it the step is the raw one, which shrinks as the energy is
             satisfied; above it the step is exactly this size. Mutually
@@ -145,7 +154,9 @@ def sample_guided(
                 normalize_gradient=normalize_gradient,
                 clip_step_rms=clip_step_rms,
             )
-        latent = scheduler.step(noise_prediction, timestep, latent).prev_sample
+        latent = scheduler.step(
+            noise_prediction, timestep, latent, generator=generator
+        ).prev_sample
 
     return decode_latent(pipeline.vae, latent)
 
@@ -253,23 +264,28 @@ def _guided_update(
     normalize_gradient: bool,
     clip_step_rms: float | None,
 ) -> Float[Tensor, "batch channels height width"]:
+    update = gradient.to(_UPDATE_DTYPE)
     if normalize_gradient:
         # Unit RMS whatever the energy's units are, so `strength` becomes the
         # size of the step rather than a multiplier on it.
-        gradient = gradient / (_root_mean_square(gradient) + _RMS_EPSILON)
-    update = strength * gradient
-    if clip_step_rms is None:
-        return update
-    # min(1, cap/RMS): a step under the cap is multiplied by exactly 1.0 and so
-    # passes through bit-for-bit, and one over it lands exactly on the cap.
-    scale = clip_step_rms / (_root_mean_square(update) + _RMS_EPSILON)
-    return update * scale.clamp(max=1.0)
+        update = update / (_root_mean_square(update) + _RMS_EPSILON)
+    update = strength * update
+    if clip_step_rms is not None:
+        # min(1, cap/RMS): a step under the cap is multiplied by exactly 1.0 and
+        # so passes through bit-for-bit, and one over it lands exactly on the cap.
+        scale = clip_step_rms / (_root_mean_square(update) + _RMS_EPSILON)
+        update = update * scale.clamp(max=1.0)
+    return update.to(gradient.dtype)
 
 
 def _root_mean_square(
     tensor: Float[Tensor, "batch channels height width"],
-) -> Float[Tensor, ""]:
-    return tensor.square().mean().sqrt()
+) -> Float[Tensor, "batch 1 1 1"]:
+    # Per batch element, keeping the reduction broadcastable back over it: both
+    # step-size contracts — unit-RMS normalisation and the RMS cap — are stated
+    # per image, so one loud element in a batch must not shrink every other
+    # element's step, nor a quiet one let a loud element through above the cap.
+    return tensor.square().mean(dim=(1, 2, 3), keepdim=True).sqrt()
 
 
 def _encode_photo(

@@ -26,6 +26,10 @@ class _Sampled:
 @dataclass(frozen=True)
 class _PreviousSample:
     prev_sample: Tensor
+    # Not part of `SchedulerStepOutput`, and the loop never reads it; diffusers'
+    # own step outputs carry it, and exposing it here is what lets a test hold
+    # the loop's Tweedie x̂₀ against the scheduler's own.
+    pred_original_sample: Tensor
 
 
 @dataclass(frozen=True)
@@ -154,8 +158,14 @@ class FakeScheduler:
         return alpha.sqrt() * original_samples + (1.0 - alpha).sqrt() * noise
 
     def step(
-        self, model_output: Tensor, timestep: Tensor, sample: Tensor
+        self,
+        model_output: Tensor,
+        timestep: Tensor,
+        sample: Tensor,
+        generator: Generator | None = None,
     ) -> _PreviousSample:
+        # `generator` is accepted and ignored, as DDIM at eta=0 does: this step
+        # is deterministic, and taking it keeps the fake honest to the Protocol.
         alpha = self.alphas_cumprod[timestep]
         predicted_original = (
             sample - (1.0 - alpha).sqrt() * model_output
@@ -163,7 +173,8 @@ class FakeScheduler:
         alpha_previous = self._next_alpha_cumprod(timestep)
         return _PreviousSample(
             alpha_previous.sqrt() * predicted_original
-            + (1.0 - alpha_previous).sqrt() * model_output
+            + (1.0 - alpha_previous).sqrt() * model_output,
+            predicted_original,
         )
 
     def _next_alpha_cumprod(self, timestep: Tensor) -> Tensor:

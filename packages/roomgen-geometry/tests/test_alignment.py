@@ -1,10 +1,17 @@
+from itertools import pairwise
+
 import pytest
 import torch
 from jaxtyping import TypeCheckError
 from torch import Generator, Tensor
 
 from roomgen_fakes import assert_gradient_is_finite_and_nonzero
-from roomgen_geometry.alignment import ScaleShift, align_scale_shift, apply_scale_shift
+from roomgen_geometry.alignment import (
+    _MAX_SCALE,
+    ScaleShift,
+    align_scale_shift,
+    apply_scale_shift,
+)
 
 
 def _masked_mean_squared_error(
@@ -67,14 +74,12 @@ def test_masked_error_is_invariant_to_an_affine_rescale_of_the_prediction(
     torch.testing.assert_close(error, rescaled_error)
 
 
-@pytest.mark.parametrize("masked_pixels", [0, 1], ids=["empty mask", "one pixel"])
-def test_an_undetermined_fit_is_the_identity_and_keeps_the_gradient_finite(
-    masked_pixels: int, generator: Generator
+def test_an_empty_mask_determines_nothing_and_gives_the_identity_fit(
+    generator: Generator,
 ) -> None:
     prediction = torch.rand((1, 8, 8), generator=generator, requires_grad=True)
     target = torch.rand((1, 8, 8), generator=generator)
     mask = torch.zeros((1, 8, 8), dtype=torch.bool)
-    mask.view(-1)[:masked_pixels] = True
 
     fit = align_scale_shift(prediction, target, mask)
 
@@ -83,14 +88,72 @@ def test_an_undetermined_fit_is_the_identity_and_keeps_the_gradient_finite(
     assert torch.isfinite(gradient).all()
 
 
-def test_a_flat_masked_region_gives_the_identity_fit_rather_than_a_huge_scale() -> None:
-    prediction = torch.full((1, 8, 8), 0.25)
-    target = torch.full((1, 8, 8), 4.0)
-    mask = torch.ones_like(prediction, dtype=torch.bool)
+@pytest.mark.parametrize("masked_pixels", [1, 64], ids=["one pixel", "flat region"])
+def test_a_mask_with_no_variance_matches_the_means_rather_than_guessing_a_slope(
+    masked_pixels: int, generator: Generator
+) -> None:
+    # No slope is determined over either mask, but the level is: the fit that
+    # says so is the one the capped fit tends to as the prediction flattens,
+    # which is what makes the two regimes meet.
+    prediction = torch.full((1, 8, 8), 0.25, requires_grad=True)
+    target = torch.rand((1, 8, 8), generator=generator)
+    mask = torch.zeros((1, 8, 8), dtype=torch.bool)
+    mask.view(-1)[:masked_pixels] = True
 
     fit = align_scale_shift(prediction, target, mask)
 
-    _assert_is_identity_fit(fit.scale, fit.shift)
+    torch.testing.assert_close(fit.scale, torch.zeros(1))
+    torch.testing.assert_close(fit.shift, target.flatten()[:masked_pixels].mean()[None])
+    (gradient,) = torch.autograd.grad(fit.scale.sum() + fit.shift.sum(), prediction)
+    assert torch.isfinite(gradient).all()
+
+
+def test_the_fitted_scale_is_capped_rather_than_growing_as_the_prediction_flattens(
+    generator: Generator,
+) -> None:
+    structure = torch.rand((1, 16, 16), generator=generator)
+    mask = torch.ones_like(structure, dtype=torch.bool)
+
+    # A prediction 1e-2 of the target's spread needs a scale of ~100 and gets
+    # it; one 1e-6 of it would need ~1e6 and is held at the documented cap.
+    conditioned = align_scale_shift(1e-2 * structure + 5.0, structure, mask)
+    capped = align_scale_shift(1e-6 * structure + 5.0, structure, mask)
+
+    assert float(conditioned.scale) == pytest.approx(100.0, rel=1e-3)
+    assert float(capped.scale) == pytest.approx(_MAX_SCALE, rel=1e-9)
+
+
+def test_the_fit_stays_continuous_across_the_flattening_it_cannot_follow(
+    generator: Generator,
+) -> None:
+    # Either side of the point where the damped solve gives up on a slope, and
+    # far past it. An undamped solve jumps here — the aligned map goes from
+    # tracking the target to not being aligned at all — and the whole point of
+    # the damping is that this sweep has no step in it.
+    target = torch.rand((1, 32, 32), generator=generator)
+    mask = torch.ones_like(target, dtype=torch.bool)
+    flatnesses = [10 ** (-4.0 - tenth / 10) for tenth in range(51)]
+
+    errors = []
+    gradients = []
+    for flatness in flatnesses:
+        prediction = (flatness * target + 5.0).requires_grad_(True)
+        error = _masked_mean_squared_error(prediction, target, mask)
+        (gradient,) = torch.autograd.grad(error, prediction)
+        errors.append(float(error.detach()))
+        gradients.append(float(gradient.abs().max()))
+
+    # No tenth of a decade of flattening moves the error by more than a twentieth
+    # of itself, and the far end lands on the variance of the target, which is
+    # exactly what a fit that has given up on the slope and matched the means
+    # scores. Undamped, this sweep steps from ~0 to that variance in one jump.
+    for previous, current in pairwise(errors):
+        assert abs(current - previous) < 0.05 * max(previous, current)
+    assert errors[-1] == pytest.approx(float(target.var(unbiased=False)), rel=1e-4)
+    # The cap is what bounds the gradient: uncapped it grows like 1/flatness,
+    # so the far end of this sweep would be eight orders above the near end.
+    assert max(gradients) < 2.0
+    assert min(gradients) > 0.0
 
 
 def test_the_aligned_error_gradient_reaches_every_masked_pixel(

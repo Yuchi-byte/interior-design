@@ -10,21 +10,32 @@ from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.guidance.schedule import ConstantStrength
 from roomgen_guide.sampling.guided import (
+    _encode_photo,
     _guided_update,
+    _predict_noise,
     _prompt_embeddings,
+    _renoised_timesteps,
     decode_latent,
     guidance_gradient,
     guidance_gradient_through_unet,
     sample_guided,
 )
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
-from roomgen_guide_fakes import LATENT_CHANNELS, FakePipeline, FakeScheduler
+from roomgen_guide_fakes import (
+    LATENT_CHANNELS,
+    FakePipeline,
+    FakeScheduler,
+    FakeVae,
+)
 
 _PROMPT = "a mid-century living room"
 # The raw step at strength 500 on this stack has an RMS of a few hundredths, so
 # one cap sits well clear of it and the other binds on every step.
 _SLACK_CAP = 1.0
 _BINDING_CAP = 0.01
+# The recorded digest of the reference trajectory; see the test that reads them.
+_GOLDEN_SUM = 2902.737061
+_GOLDEN_PIXEL = [0.25365448, 0.37026709, 0.13712433]
 
 
 def _normalized(gradient: Tensor) -> Tensor:
@@ -81,6 +92,7 @@ class RecordingGuidance:
     energy: Guidance
     scored_on_the_graph: list[bool] = field(default_factory=list)
     walked: list[float] = field(default_factory=list)
+    images: list[Tensor] = field(default_factory=list)
 
     def __call__(
         self,
@@ -92,7 +104,49 @@ class RecordingGuidance:
             predicted_image.requires_grad and predicted_image.grad_fn is not None
         )
         self.walked.append(progress)
+        self.images.append(predicted_image.detach().clone())
         return self.energy(predicted_image, progress=progress)
+
+
+class RecordingVae:
+    """A `FakeVae` that keeps every latent it was asked to decode.
+
+    The guidance only ever sees the decoded image, and this stack's decoder
+    saturates: two very different x̂₀ can land on the same picture. Catching the
+    latent on its way in is what makes an assertion about x̂₀ an assertion about
+    x̂₀ rather than about the decoder.
+    """
+
+    def __init__(self, vae: FakeVae) -> None:
+        self.vae = vae
+        self.config = vae.config
+        self.decoded: list[Tensor] = []
+
+    def encode(self, x: Tensor) -> object:
+        return self.vae.encode(x)
+
+    def decode(self, z: Tensor) -> object:
+        self.decoded.append(z.detach().clone())
+        return self.vae.decode(z)
+
+
+class RecordingScheduler(FakeScheduler):
+    """A `FakeScheduler` that keeps what each step was handed and what it made of it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stepped: list[tuple[Tensor, Tensor]] = []
+
+    def step(
+        self,
+        model_output: Tensor,
+        timestep: Tensor,
+        sample: Tensor,
+        generator: Generator | None = None,
+    ) -> object:
+        output = super().step(model_output, timestep, sample, generator=generator)
+        self.stepped.append((sample.detach().clone(), output.pred_original_sample))
+        return output
 
 
 def _sample(
@@ -662,3 +716,340 @@ def test_a_noise_strength_outside_the_unit_interval_is_rejected(
             strength=1.0,
             noise_strength=noise_strength,
         )
+
+
+def test_each_batch_element_is_normalized_and_capped_on_its_own(
+    generator: Generator,
+) -> None:
+    # Both step-size contracts are per image. Reduced over the whole batch they
+    # are not contracts at all: one loud element sets the divisor, and every
+    # quiet element beside it takes a step orders of magnitude below the size it
+    # was promised — silently, since the batch's own RMS still looks right.
+    gradient = torch.stack(
+        [
+            1000.0 * torch.randn((LATENT_CHANNELS, 8, 8), generator=generator),
+            0.001 * torch.randn((LATENT_CHANNELS, 8, 8), generator=generator),
+            0.001 * torch.randn((LATENT_CHANNELS, 8, 8), generator=generator),
+        ]
+    )
+
+    normalized = _normalized(gradient)
+    clipped = _clipped(gradient, _BINDING_CAP)
+
+    for element in range(3):
+        torch.testing.assert_close(
+            normalized[element].square().mean().sqrt(), torch.ones(())
+        )
+    # The cap binds on the loud element and on nothing else, which is the whole
+    # point of it: the quiet elements pass through as the raw step.
+    torch.testing.assert_close(
+        clipped[0].square().mean().sqrt(), torch.tensor(_BINDING_CAP)
+    )
+    assert torch.equal(clipped[1:], gradient[1:])
+
+
+def test_one_element_of_a_batch_steps_as_it_would_have_stepped_alone(
+    generator: Generator,
+) -> None:
+    quiet = 0.001 * torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
+    loud = 1000.0 * torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
+    batched = torch.cat([loud, quiet])
+
+    torch.testing.assert_close(_normalized(batched)[1:], _normalized(quiet))
+    torch.testing.assert_close(
+        _clipped(batched, _BINDING_CAP)[1:], _clipped(quiet, _BINDING_CAP)
+    )
+
+
+def test_a_half_precision_gradient_is_still_sized_by_a_cap_that_binds() -> None:
+    # A guidance gradient runs around 1e-5 per element. Squared in float16 that
+    # is under the subnormal floor, so its RMS underflows to exactly zero: the
+    # normalisation divides by the epsilon and returns inf, and the cap divides
+    # by it too, gets a factor of 1e6, clamps that to 1 and passes the step
+    # through untouched — a cap that reports success while never binding.
+    gradient = torch.full((1, LATENT_CHANNELS, 8, 8), 1e-5, dtype=torch.float16)
+    cap = 1e-6
+
+    normalized = _normalized(gradient)
+    clipped = _clipped(gradient, cap)
+
+    assert normalized.dtype == torch.float16
+    assert clipped.dtype == torch.float16
+    assert bool(torch.isfinite(normalized).all())
+    torch.testing.assert_close(
+        normalized.float().square().mean().sqrt(), torch.ones(()), rtol=1e-3, atol=1e-3
+    )
+    # Loosely, because a step this small is subnormal in float16 and lands on a
+    # grid about a twentieth of itself: the sizing is exact, the dtype it is
+    # handed back in is what rounds — and the latent it is subtracted from would
+    # round it identically anyway.
+    torch.testing.assert_close(
+        clipped.float().square().mean().sqrt(),
+        torch.tensor(cap),
+        rtol=0.1,
+        atol=0.0,
+    )
+    # Which is a tenth of the raw step it was handed: the cap bound.
+    assert float(clipped.float().abs().max()) < 0.5 * float(
+        gradient.float().abs().max()
+    )
+
+
+@pytest.mark.parametrize("differentiate_through_unet", [False, True])
+def test_the_loops_predicted_original_is_the_one_the_scheduler_would_form(
+    room_photo: Tensor, differentiate_through_unet: bool
+) -> None:
+    # A flat energy steps by exactly zero, so the latent the guidance scored is
+    # the latent the scheduler is then handed, and the two x̂₀ are comparable.
+    # `alphas_cumprod` is indexed by *training* timestep, not by loop step: the
+    # two agree only on the first step of a full-strength schedule, and reading
+    # it by step index is a whole trajectory denoised against the wrong noise
+    # level — which the decoder happily saturates into a plausible image.
+    steps = 4
+    vae = RecordingVae(FakeVae())
+    pipeline = FakePipeline(vae=vae, scheduler=RecordingScheduler())
+
+    _sample(
+        pipeline,
+        room_photo,
+        RecordingGuidance(FlatEnergy()),
+        strength=500.0,
+        steps=steps,
+        noise_strength=1.0,
+        differentiate_through_unet=differentiate_through_unet,
+    )
+
+    scheduler = pipeline.scheduler
+    assert isinstance(scheduler, RecordingScheduler)
+    # One decode per guided step, plus the loop's final one.
+    assert len(vae.decoded) == steps + 1
+    for decoded, (_, predicted_original) in zip(
+        vae.decoded, scheduler.stepped, strict=False
+    ):
+        torch.testing.assert_close(
+            decoded * vae.config.scaling_factor, predicted_original
+        )
+
+
+def test_the_photo_is_renoised_to_the_first_walked_timesteps_noise_level(
+    room_photo: Tensor,
+) -> None:
+    steps, noise_strength, seed = 4, 0.5, 0
+    pipeline = FakePipeline(scheduler=RecordingScheduler())
+
+    _sample(
+        pipeline,
+        room_photo,
+        RecordingGuidance(FlatEnergy()),
+        strength=500.0,
+        steps=steps,
+        noise_strength=noise_strength,
+        seed=seed,
+    )
+
+    # The loop's own draw order, replayed: encode the photo, then the noise.
+    scheduler = pipeline.scheduler
+    assert isinstance(scheduler, RecordingScheduler)
+    generator = torch.Generator().manual_seed(seed)
+    encoded = _encode_photo(pipeline.vae, room_photo, generator=generator)
+    noise = torch.randn(encoded.shape, generator=generator, dtype=encoded.dtype)
+    walked = _renoised_timesteps(scheduler.timesteps, noise_strength=noise_strength)
+
+    def renoised_to(timestep: Tensor) -> Tensor:
+        alpha = scheduler.alphas_cumprod[timestep]
+        return alpha.sqrt() * encoded + (1.0 - alpha).sqrt() * noise
+
+    started_at, _ = scheduler.stepped[0]
+    assert torch.equal(started_at, renoised_to(walked[0]))
+    # Renoising to the *end* of the walk instead would hand the loop a latent
+    # already at the noise level of the step it is meant to finish on.
+    assert not torch.allclose(started_at, renoised_to(walked[-1]))
+
+
+def test_the_walked_timesteps_are_the_least_noisy_tail_of_the_schedule() -> None:
+    scheduler = FakeScheduler()
+    scheduler.set_timesteps(8)
+    timesteps = scheduler.timesteps
+
+    walked = _renoised_timesteps(timesteps, noise_strength=0.25)
+    discarded = timesteps[: len(timesteps) - len(walked)]
+
+    assert len(walked) == 2
+    assert torch.equal(walked, timesteps[-2:])
+    # SDEdit renoises part of the way up and denoises back down, so a partial
+    # strength redoes the *low*-noise end of the schedule. Keeping the head
+    # instead would restart from near-pure noise and forget the photo, while
+    # still running the right number of steps and looking entirely normal.
+    assert int(walked.max()) < int(discarded.min())
+    assert torch.equal(_renoised_timesteps(timesteps, noise_strength=1.0), timesteps)
+
+
+def test_the_guided_step_moves_the_latent_before_the_scheduler_advances_it(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    steps, strength, text_guidance_scale, seed = 3, 500.0, 7.5, 0
+
+    sampled = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=strength,
+        steps=steps,
+        noise_strength=1.0,
+        text_guidance_scale=text_guidance_scale,
+        seed=seed,
+    )
+
+    # The same trajectory composed by hand, in the order it is supposed to run:
+    # the guided update lands on x_t and the scheduler then advances the moved
+    # latent, so the step's own gain carries the nudge with it.
+    scheduler = fake_pipeline.scheduler
+    generator = torch.Generator().manual_seed(seed)
+    scheduler.set_timesteps(steps)
+    timesteps = _renoised_timesteps(scheduler.timesteps, noise_strength=1.0)
+    alphas_cumprod = scheduler.alphas_cumprod.to(dtype=room_photo.dtype)
+    latent = _encode_photo(fake_pipeline.vae, room_photo, generator=generator)
+    noise = torch.randn(latent.shape, generator=generator, dtype=latent.dtype)
+    latent = scheduler.add_noise(latent, noise, timesteps[:1])
+    prompt_embeddings = _prompt_embeddings(
+        fake_pipeline,
+        _PROMPT,
+        device=room_photo.device,
+        images_per_prompt=room_photo.shape[0],
+        apply_text_guidance=True,
+    )
+    first: tuple[Tensor, Tensor, Tensor, Tensor] | None = None
+    for step, timestep in enumerate(timesteps):
+        noise_prediction = _predict_noise(
+            fake_pipeline,
+            latent,
+            timestep,
+            prompt_embeddings,
+            text_guidance_scale=text_guidance_scale,
+            apply_text_guidance=True,
+        )
+        steering = guidance_gradient(
+            fake_pipeline.vae,
+            geometric_guidance,
+            latent=latent,
+            noise_prediction=noise_prediction,
+            alpha_cumprod=alphas_cumprod[timestep],
+            progress=step / (steps - 1),
+        )
+        update = _guided_update(
+            steering,
+            strength=strength,
+            normalize_gradient=False,
+            clip_step_rms=None,
+        )
+        if first is None:
+            first = (noise_prediction, timestep, latent, update)
+        latent = scheduler.step(noise_prediction, timestep, latent - update).prev_sample
+
+    assert torch.equal(sampled, decode_latent(fake_pipeline.vae, latent))
+    # And the order is load-bearing: the scheduler's step is affine with a gain
+    # of sqrt(alpha_prev / alpha_t), so the same nudge applied afterwards lands
+    # somewhere else. Without this the two orderings are indistinguishable by
+    # any test that only checks the loop runs and moves the image.
+    assert first is not None
+    noise_prediction, timestep, before, update = first
+    assert not torch.allclose(
+        scheduler.step(noise_prediction, timestep, before - update).prev_sample,
+        scheduler.step(noise_prediction, timestep, before).prev_sample - update,
+    )
+
+
+def test_classifier_free_guidance_extrapolates_away_from_the_unconditional(
+    fake_pipeline: FakePipeline, generator: Generator
+) -> None:
+    # `uncond + scale * (cond - uncond)`, not the other way round. Swapping the
+    # two halves of the batched embedding leaves a loop that still runs, still
+    # responds to the prompt string and still produces a different image with
+    # and without conditioning — it just walks away from the prompt.
+    latent = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
+    timestep = torch.tensor(500)
+    text_guidance_scale = 7.5
+    prompt_embeddings = _prompt_embeddings(
+        fake_pipeline,
+        _PROMPT,
+        device=latent.device,
+        images_per_prompt=1,
+        apply_text_guidance=True,
+    )
+
+    prediction = _predict_noise(
+        fake_pipeline,
+        latent,
+        timestep,
+        prompt_embeddings,
+        text_guidance_scale=text_guidance_scale,
+        apply_text_guidance=True,
+    )
+
+    conditional, unconditional = fake_pipeline.encode_prompt(
+        _PROMPT, latent.device, 1, True
+    )
+    assert unconditional is not None
+    model_input = fake_pipeline.scheduler.scale_model_input(latent, timestep)
+    conditional_epsilon = fake_pipeline.unet(
+        model_input, timestep, encoder_hidden_states=conditional
+    ).sample
+    unconditional_epsilon = fake_pipeline.unet(
+        model_input, timestep, encoder_hidden_states=unconditional
+    ).sample
+
+    torch.testing.assert_close(
+        prediction,
+        unconditional_epsilon
+        + text_guidance_scale * (conditional_epsilon - unconditional_epsilon),
+    )
+    assert not torch.allclose(
+        prediction,
+        conditional_epsilon
+        + text_guidance_scale * (unconditional_epsilon - conditional_epsilon),
+    )
+
+
+def test_the_encoded_photo_carries_the_autoencoders_scaling_factor(
+    fake_pipeline: FakePipeline, room_photo: Tensor
+) -> None:
+    # Pinned here rather than through a round trip: the decoder undoes the
+    # factor, so dropping it from the encode cancels out end to end on the fake
+    # stack and changes the latent scale — and so every step-size in the loop —
+    # on the real one.
+    scaling_factor = fake_pipeline.vae.config.scaling_factor
+
+    latent = _encode_photo(
+        fake_pipeline.vae, room_photo, generator=torch.Generator().manual_seed(0)
+    )
+
+    distribution = fake_pipeline.vae.encode(room_photo * 2.0 - 1.0).latent_dist
+    sampled = distribution.sample(generator=torch.Generator().manual_seed(0))
+    assert torch.equal(latent, sampled * scaling_factor)
+    assert not torch.allclose(latent, sampled)
+
+
+def test_the_fake_stacks_trajectory_matches_its_recorded_digest(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    # A backstop, not a specification: it pins the whole loop — noise draw,
+    # renoise level, step order, arithmetic — to numbers that any silent change
+    # to any of them moves, including changes that leave every behavioural test
+    # in this file passing. Update these only when the change that moved them is
+    # a deliberate one, and say so in the commit.
+    image = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=500.0,
+        steps=6,
+        noise_strength=0.6,
+        seed=0,
+    )
+
+    assert float(image.sum()) == pytest.approx(_GOLDEN_SUM, abs=1e-3)
+    assert image[0, :, 17, 29].tolist() == pytest.approx(_GOLDEN_PIXEL, abs=1e-6)
