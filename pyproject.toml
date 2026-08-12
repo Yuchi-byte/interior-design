@@ -1,11 +1,14 @@
 [tool.uv.workspace]
 members = ["packages/*"]
-# `packages/mfm` is vendored upstream source (https://github.com/adh1s/mfm, MIT,
-# see its NOTICE.md), not a member: it pins `transformers==4.50.1` against
-# roomgen-geometry's `>=4.54` floor and takes `diffusers` from a git commit, and
-# a workspace resolves one version of each for every member. It is built into
-# its own venv from its own `requirements.txt`, so `uv.lock` never sees it.
-exclude = ["packages/mfm"]
+# Vendored upstream source (each has a NOTICE.md), not members. A workspace
+# resolves one version of each dependency for every member, and neither tree's
+# pins survive that: `mfm` pins `transformers==4.50.1` against
+# roomgen-geometry's `>=4.54` floor and takes `diffusers` from a git commit;
+# `fmrg` ships no `pyproject.toml` at all (a conda `environment.yml` instead),
+# which this glob would otherwise make a hard uv error, and pins
+# `torch==2.5.1+cu121` against the CPU index below. Each is built into its own
+# venv from its own environment file, so `uv.lock` never sees them.
+exclude = ["packages/mfm", "packages/fmrg"]
 
 # CPU-only PyTorch by default. uv 0.12.1 exposes `--torch-backend` on `uv pip
 # install` but not on `uv sync`, so the backend is pinned declaratively instead:
@@ -39,11 +42,12 @@ dev = [
 
 [tool.ruff]
 src = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
-# Vendored upstream source (https://github.com/adh1s/mfm) is held to upstream's
-# style, not ours. The gate's ruff invocations name their paths explicitly, so
-# this only matters for a bare `uv run ruff check` from the repo root — which
-# would otherwise report a few hundred findings nobody may fix.
-extend-exclude = ["packages/mfm"]
+# Vendored upstream source (https://github.com/adh1s/mfm,
+# https://github.com/jrrhuang/fmrg) is held to upstream's style, not ours. The
+# gate's ruff invocations name their paths explicitly, so this only matters for
+# a bare `uv run ruff check` from the repo root — which would otherwise report a
+# few hundred findings nobody may fix.
+extend-exclude = ["packages/mfm", "packages/fmrg"]
 # This root has no `[project]` table to infer a Python floor from, so the 3.12
 # both packages require is stated outright: UP rewrites and the parser follow it.
 target-version = "py312"

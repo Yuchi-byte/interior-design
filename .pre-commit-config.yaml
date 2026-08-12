@@ -5,10 +5,11 @@ default_language_version:
   python: python3.12
 
 # Vendored third-party trees are exempt from the three hooks that *rewrite*
-# files: `packages/mfm` is upstream's code at a recorded commit
-# (https://github.com/adh1s/mfm, see its NOTICE.md), and a whitespace fixup
-# would silently make that provenance claim false. The checks that only read —
-# large files, merge conflicts, yaml/toml validity — still apply to it.
+# files: `packages/mfm` and `packages/fmrg` are upstream's code at recorded
+# commits (https://github.com/adh1s/mfm, https://github.com/jrrhuang/fmrg — see
+# each NOTICE.md), and a whitespace fixup would silently make that provenance
+# claim false. The checks that only read — large files, merge conflicts,
+# yaml/toml validity — still apply to them.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -16,16 +17,16 @@ repos:
       - id: trailing-whitespace
         # Markdown's two-space hard line break is meaningful; docs/ is prose.
         args: [--markdown-linebreak-ext=md]
-        exclude: ^packages/mfm/
+        exclude: ^packages/(mfm|fmrg)/
       - id: end-of-file-fixer
-        exclude: ^packages/mfm/
+        exclude: ^packages/(mfm|fmrg)/
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-toml
       - id: check-yaml
       - id: mixed-line-ending
         args: [--fix=lf]
-        exclude: ^packages/mfm/
+        exclude: ^packages/(mfm|fmrg)/
       # A stray `breakpoint()` in the guidance loop hangs a sampling run with
       # no output; ruff's T20 catches prints, this catches the debugger.
       - id: debug-statements

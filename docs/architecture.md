@@ -20,6 +20,11 @@ py3.12 venv, fully declared in the package `pyproject.toml`s (`uv sync`).
   implementation (MIT, `packages/mfm/NOTICE.md` records upstream and commit),
   read and trained on the GPU pod for the track-2 flow-map direction. Not a
   workspace member, not imported by our packages, outside the gate.
+- `packages/fmrg`: vendored third-party source — the official Flow Map Reward
+  Guidance implementation (Apache-2.0, `packages/fmrg/NOTICE.md` records
+  upstream and commit), read and run on the GPU pod for the track-1 FLUX
+  flow-map direction. Not a workspace member, not imported by our packages,
+  outside the gate.
 
 ## `roomgen-geometry`
 
