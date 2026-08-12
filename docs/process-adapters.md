@@ -147,6 +147,16 @@ Built, in `adapters/flow_map.py` and `adapters/fmrg_flux.py`.
 sampler change. Weights carry unit conversion as well as relative pull: two
 energies in different units are not comparable at weight 1.
 
+`adapters/mfm_composite.py`'s `MfmWeightedReward` is the same idea on the other
+side of the boundary, in MFM's score space where higher is better: the depth
+energy beside one of MFM's own preference models, summed per image so the draw
+weighting still sees the draws apart. A preference term is caption-conditioned
+and a class-conditional sampler has no caption, so the term carries its own
+(`MfmRewardTerm(hpsv2, weight, prompt="a home theater")`). Size the weight with
+`gradient_scale`, not by eye: what reaches the sampler is the gradient, and a
+preference score in `[0, 1]` beside a depth energy in aligned-disparity units
+says nothing about which of the two pulls harder.
+
 ## Proving an adapter
 
 `packages/roomgen-guide/tests/roomgen_guide_fakes/flow_map.py` holds two

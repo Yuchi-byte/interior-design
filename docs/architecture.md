@@ -92,7 +92,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
   endpoint, an Euler step off that same jump) over the four-call
   `FlowMapBackend` behind it; `fmrg_flux.py` is that backend for FMRG's FLUX
   sampler, the one module that reaches the vendored tree — by deferred import
-  only, and never at test time.
+  only, and never at test time. `mfm_composite.py`'s `MfmWeightedReward` sums
+  several of those `score(images, prompts)` rewards per image, so the depth
+  energy rides beside one of MFM's own preference models (HPSv2) as a single
+  reward, with `gradient_scale` for sizing the weight between two terms whose
+  units have nothing to do with each other.
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
   image x̂₀ to one energy per batch element — the reward boundary the process
   package steers by, reducing it with `.mean()` for its single backward.
