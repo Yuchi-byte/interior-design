@@ -1,8 +1,9 @@
-"""Presentation of the per-pixel depth residual: where guidance won the geometry, in colour.
+"""Presentation of the per-pixel depth residual: where each arm bent the room, in colour.
 
 At the noise strengths this benchmark runs, a guided render and its control are
 both plausible rooms and the difference is invisible in RGB. It is not invisible
-in depth, so every pair also leaves these two maps behind.
+in depth, so each arm also leaves one of these maps behind, the two of them on a
+single shared scale so the pair can be read side by side.
 """
 
 from __future__ import annotations
@@ -15,103 +16,61 @@ from jaxtyping import Bool, Float
 from torch import Tensor
 from torchvision.io import write_png
 
-# Both maps are denominated in multiples of the control's mean masked residual,
-# so 1.0 reads as "the control's average error". The saturation points are what
-# make the two panels comparable at a glance; anything beyond them is clipped.
+# Both maps are denominated in multiples of the control's mean absolute masked
+# residual, so 1.0 reads as "the control's average deviation" and the colour at
+# a pixel means the same thing in either map. The scale saturates here.
 RESIDUAL_CLIP: Final = 3.0
-DIFFERENCE_CLIP: Final = 2.0
 
 _OUTSIDE_SHELL: Final = (0.45, 0.45, 0.45)
-_PANEL_SEPARATOR: Final = (1.0, 1.0, 1.0)
-_SEPARATOR_WIDTH: Final = 6
 
-# Piecewise-linear RGB lookups over uniformly spaced stops, in place of a
-# plotting dependency. Sequential runs dark (no error) to bright (saturated).
+# A piecewise-linear RGB lookup over uniformly spaced stops, in place of a
+# plotting dependency. Diverging blue through neutral to red: blue is a surface
+# reading further from the camera than the photo, red is one reading closer,
+# and the pale centre is geometry the render left where it found it.
 _RESIDUAL_STOPS: Final = (
-    (0.00, 0.00, 0.02),
-    (0.24, 0.04, 0.35),
-    (0.58, 0.15, 0.40),
-    (0.87, 0.29, 0.22),
-    (0.99, 0.62, 0.04),
-    (0.99, 0.99, 0.75),
-)
-# Diverging, red through neutral to blue: red is guidance losing to its control,
-# blue is guidance winning, and the pale centre is the two tying.
-_DIFFERENCE_STOPS: Final = (
-    (0.40, 0.00, 0.12),
-    (0.84, 0.38, 0.30),
-    (0.99, 0.80, 0.71),
-    (0.97, 0.97, 0.97),
-    (0.70, 0.87, 0.90),
-    (0.21, 0.55, 0.73),
     (0.02, 0.24, 0.42),
+    (0.21, 0.55, 0.73),
+    (0.70, 0.87, 0.90),
+    (0.97, 0.97, 0.97),
+    (0.99, 0.80, 0.71),
+    (0.84, 0.38, 0.30),
+    (0.40, 0.00, 0.12),
 )
 
 
-def mean_masked_residual(
+def mean_absolute_residual(
     residual: Float[Tensor, "1 height width"], mask: Bool[Tensor, "1 height width"]
 ) -> float:
-    """The scale both maps are read against: the control's average shell error."""
-    return float(residual.sum() / mask.to(residual.dtype).sum().clamp(min=1.0))
+    """The scale a scene's maps are read against: the control's average shell deviation."""
+    return float(residual.abs().sum() / mask.to(residual.dtype).sum().clamp(min=1.0))
 
 
-def write_residual_comparison(
-    control: Float[Tensor, "1 height width"],
-    guided: Float[Tensor, "1 height width"],
+def write_signed_residual_map(
+    residual: Float[Tensor, "1 height width"],
     *,
     mask: Bool[Tensor, "1 height width"],
     normalizer: float,
     path: Path,
 ) -> None:
-    """Control beside guided on one shared scale, in units of `normalizer`.
+    """One arm's signed depth deviation from the photo, in units of `normalizer`.
 
     Args:
-        control, guided: per-pixel squared residuals from
-            `roomgen_guide.eval.depth_residual_map`.
-        normalizer: what 1.0 on the colour scale means, in those residual units.
+        residual: from `roomgen_guide.eval.signed_depth_residual_map` — positive
+            where the render reads closer to the camera than the photo.
+        normalizer: what 1.0 on the colour scale means, in those residual units;
+            pass the same value for both arms of a pair or the maps do not compare.
     """
-    panels = [
-        _colorise(
-            (residual[0] / _safe(normalizer)).clamp(0.0, RESIDUAL_CLIP) / RESIDUAL_CLIP,
-            _RESIDUAL_STOPS,
-            mask[0],
-        )
-        for residual in (control, guided)
-    ]
-    separator = _constant_column(
-        panels[0], width=_SEPARATOR_WIDTH, color=_PANEL_SEPARATOR
-    )
-    _write(torch.cat([panels[0], separator, panels[1]], dim=-1), path)
-
-
-def write_residual_difference(
-    control: Float[Tensor, "1 height width"],
-    guided: Float[Tensor, "1 height width"],
-    *,
-    mask: Bool[Tensor, "1 height width"],
-    normalizer: float,
-    path: Path,
-) -> None:
-    """`(control - guided) / normalizer`, blue where guidance helped and red where it hurt."""
-    difference = ((control[0] - guided[0]) / _safe(normalizer)).clamp(
-        -DIFFERENCE_CLIP, DIFFERENCE_CLIP
-    )
+    scaled = (residual[0] / _safe(normalizer)).clamp(-RESIDUAL_CLIP, RESIDUAL_CLIP)
     _write(
-        _colorise(
-            (difference + DIFFERENCE_CLIP) / (2.0 * DIFFERENCE_CLIP),
-            _DIFFERENCE_STOPS,
-            mask[0],
-        ),
+        _colorise((scaled + RESIDUAL_CLIP) / (2.0 * RESIDUAL_CLIP), mask[0]),
         path,
     )
 
 
 def _colorise(
-    unit: Float[Tensor, "height width"],
-    stops: tuple[tuple[float, float, float], ...],
-    mask: Bool[Tensor, "height width"],
+    unit: Float[Tensor, "height width"], mask: Bool[Tensor, "height width"]
 ) -> Float[Tensor, "3 height width"]:
-    palette = torch.tensor(stops, dtype=torch.float32, device=unit.device)
+    palette = torch.tensor(_RESIDUAL_STOPS, dtype=torch.float32, device=unit.device)
     position = unit.to(torch.float32).clamp(0.0, 1.0) * (palette.shape[0] - 1)
     lower = position.floor().clamp(max=palette.shape[0] - 2)
     weight = (position - lower).unsqueeze(-1)
@@ -119,22 +78,14 @@ def _colorise(
     colour = torch.lerp(palette[index], palette[index + 1], weight)
     # Everything the shell mask excludes is furniture the renovation was allowed
     # to move, and scores nothing: it gets a flat neutral rather than a zero,
-    # which would otherwise read as a perfect region.
+    # which would otherwise read as geometry held perfectly still.
     outside = torch.tensor(_OUTSIDE_SHELL, dtype=colour.dtype, device=colour.device)
     return torch.where(mask.unsqueeze(-1), colour, outside).permute(2, 0, 1)
 
 
-def _constant_column(
-    panel: Float[Tensor, "3 height width"], *, width: int, color: tuple[float, ...]
-) -> Float[Tensor, "3 height width"]:
-    return torch.tensor(color, dtype=panel.dtype, device=panel.device)[
-        :, None, None
-    ].expand(-1, panel.shape[1], width)
-
-
 def _safe(normalizer: float) -> float:
-    # A control that scored zero everywhere has no scale to normalise by; 1.0
-    # leaves the residuals in their own units instead of dividing by nothing.
+    # A control that deviated nowhere has no scale to normalise by; 1.0 leaves
+    # the residuals in their own units instead of dividing by nothing.
     return normalizer if normalizer > 0.0 else 1.0
 
 

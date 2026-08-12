@@ -34,20 +34,22 @@ def depth_error(
     return float(error.mean())
 
 
-def depth_residual_map(
+def signed_depth_residual_map(
     image: Float[Tensor, "batch 3 height width"],
     *,
     reference: GeometricReference,
     depth_estimator: DepthEstimator,
 ) -> Float[Tensor, "batch height width"]:
-    """Where `depth_error` was paid, pixel by pixel: its per-pixel squared residual.
+    """Which way `image` bent the room, pixel by pixel: aligned disparity minus reference.
 
     Args:
         image: NCHW, floating point, values in ``[0, 1]``.
         depth_estimator: the backend `reference` was built with.
 
-    Squared, in the aligned inverse-depth units of `depth_error`, and zero
-    outside the shell mask, so its mean over the masked pixels *is* that score.
+    Positive where the render's inverse depth sits above the photo's — the
+    surface reads closer than it was — negative where it reads further away,
+    and zero outside the shell mask. In the aligned inverse-depth units of
+    `depth_error`, whose score is the mean of this map's square over the mask.
     Taken under ``no_grad``, like every finished-render measurement.
     """
     with torch.no_grad():
@@ -59,4 +61,4 @@ def depth_residual_map(
             align_scale_shift(disparity, reference.disparity, reference.mask),
         )
         weight = reference.mask.to(aligned.dtype)
-        return weight * (aligned - reference.disparity) ** 2
+        return weight * (aligned - reference.disparity)

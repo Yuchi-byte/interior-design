@@ -91,7 +91,7 @@ The guided sampler and the experiment harness shared with `experiments/`.
   sides at once, on the `VerdictGateConfig` its framework declares.
 - `eval/`: the two sides of that gate, measured on a finished render and
   therefore under `no_grad`: `depth.py`'s masked depth error against the
-  reference and the per-pixel residual map it averages, and the
+  reference and the signed per-pixel residual map behind it, and the
   `adherence.py` `PromptAdherence` boundary whose
   `clip.py` implementation scores the render against the prompt — the metric
   that catches the degenerate win where guidance succeeds by not renovating.

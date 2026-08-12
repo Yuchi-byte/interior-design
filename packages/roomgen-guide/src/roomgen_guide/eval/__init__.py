@@ -7,12 +7,12 @@ objective lives in `roomgen_guide.guidance`.
 
 from roomgen_guide.eval.adherence import PromptAdherence
 from roomgen_guide.eval.clip import DEFAULT_CHECKPOINT, ClipPromptAdherence
-from roomgen_guide.eval.depth import depth_error, depth_residual_map
+from roomgen_guide.eval.depth import depth_error, signed_depth_residual_map
 
 __all__ = [
     "DEFAULT_CHECKPOINT",
     "ClipPromptAdherence",
     "PromptAdherence",
     "depth_error",
-    "depth_residual_map",
+    "signed_depth_residual_map",
 ]

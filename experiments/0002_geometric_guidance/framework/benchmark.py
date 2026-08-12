@@ -16,13 +16,9 @@ from framework.backends import Backends, build_backends
 from framework.config import BenchmarkConfig, SceneConfig, build_schedule
 from framework.metrics import build_adherence
 from framework.photos import ensure_photos, load_photo
-from framework.residual_maps import (
-    mean_masked_residual,
-    write_residual_comparison,
-    write_residual_difference,
-)
+from framework.residual_maps import mean_absolute_residual, write_signed_residual_map
 from roomgen_geometry.reference import GeometricReference
-from roomgen_guide.eval import PromptAdherence, depth_error, depth_residual_map
+from roomgen_guide.eval import PromptAdherence, depth_error, signed_depth_residual_map
 from roomgen_guide.guidance.schedule import ConstantStrength, GuidanceSchedule
 from roomgen_guide.renovate import renovate
 from roomgen_guide.sampling.guided import decode_latent
@@ -42,9 +38,9 @@ class PairResult:
     seed: int
     verdict: Verdict
     reconstruction_depth_error: float
-    mean_control_residual: float
-    residual_comparison_map: str
-    residual_difference_map: str
+    mean_abs_control_residual: float
+    depth_map_control: str
+    depth_map_guided: str
     guided_seconds: float
     control_seconds: float
 
@@ -72,9 +68,9 @@ class PairResult:
             "control_depth_error": self.verdict.control_depth_error,
             "reconstruction_depth_error": self.reconstruction_depth_error,
             "depth_error_reduction": self.depth_error_reduction,
-            "mean_control_residual": self.mean_control_residual,
-            "residual_comparison_map": self.residual_comparison_map,
-            "residual_difference_map": self.residual_difference_map,
+            "mean_abs_control_residual": self.mean_abs_control_residual,
+            "depth_map_control": self.depth_map_control,
+            "depth_map_guided": self.depth_map_guided,
             "guided_prompt_adherence": self.verdict.guided_prompt_adherence,
             "control_prompt_adherence": self.verdict.control_prompt_adherence,
             "adherence_ratio": self.adherence_ratio,
@@ -213,29 +209,29 @@ def _run_scene(
         _write_image(guided, image_dir / f"{scene.photo}_seed{seed}_guided.png")
         _write_image(control, image_dir / f"{scene.photo}_seed{seed}_control.png")
 
-        guided_residual = depth_residual_map(
-            guided, reference=reference, depth_estimator=backends.depth_estimator
-        )
-        control_residual = depth_residual_map(
+        control_residual = signed_depth_residual_map(
             control, reference=reference, depth_estimator=backends.depth_estimator
         )
-        mean_control_residual = mean_masked_residual(control_residual, reference.mask)
-        comparison_map = f"{scene.photo}_seed{seed}_deptherr.png"
-        difference_map = f"{scene.photo}_seed{seed}_depthdiff.png"
-        write_residual_comparison(
-            control_residual,
-            guided_residual,
-            mask=reference.mask,
-            normalizer=mean_control_residual,
-            path=image_dir / comparison_map,
+        guided_residual = signed_depth_residual_map(
+            guided, reference=reference, depth_estimator=backends.depth_estimator
         )
-        write_residual_difference(
-            control_residual,
-            guided_residual,
-            mask=reference.mask,
-            normalizer=mean_control_residual,
-            path=image_dir / difference_map,
+        # The control sets the scale for both arms, so a colour means the same
+        # deviation in either map and the pair can be read against each other.
+        mean_abs_control_residual = mean_absolute_residual(
+            control_residual, reference.mask
         )
+        depth_map_control = f"{scene.photo}_seed{seed}_depth_control.png"
+        depth_map_guided = f"{scene.photo}_seed{seed}_depth_guided.png"
+        for residual, name in (
+            (control_residual, depth_map_control),
+            (guided_residual, depth_map_guided),
+        ):
+            write_signed_residual_map(
+                residual,
+                mask=reference.mask,
+                normalizer=mean_abs_control_residual,
+                path=image_dir / name,
+            )
 
         result = PairResult(
             scene=scene.photo,
@@ -261,9 +257,9 @@ def _run_scene(
                 gate=config.gate,
             ),
             reconstruction_depth_error=reconstruction,
-            mean_control_residual=mean_control_residual,
-            residual_comparison_map=comparison_map,
-            residual_difference_map=difference_map,
+            mean_abs_control_residual=mean_abs_control_residual,
+            depth_map_control=depth_map_control,
+            depth_map_guided=depth_map_guided,
             guided_seconds=guided_seconds,
             control_seconds=control_seconds,
         )
