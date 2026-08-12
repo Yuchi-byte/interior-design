@@ -170,6 +170,10 @@ Standing hard case for either track: `bedroom_warm_ensuite` — large excluded
 furniture area, low-drift shell, so there is little for guidance to fix and
 every arm finds it hardest.
 
+**Regime (owner, 2026-08-12): experiments run at σ₀ 0.9 or pure noise, never
+0.6** — at 0.6 the unguided control already sits at the metric's noise floor,
+so nothing measured there can separate methods.
+
 ---
 
 ## 5. Open questions
