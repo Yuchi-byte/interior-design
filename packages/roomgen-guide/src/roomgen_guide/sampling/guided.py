@@ -1,5 +1,6 @@
-"""The denoising loop that steers each step by an energy gradient."""
+"""Stable Diffusion img2img as an endpoint process, and the clipped step that steers it."""
 
+from dataclasses import dataclass
 from typing import Final
 
 import torch
@@ -7,6 +8,9 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from roomgen_guide.guidance.base import Guidance
+from roomgen_guide.process.driver import sample_endpoint_process
+from roomgen_guide.process.endpoint import Endpoint, StepContext
+from roomgen_guide.process.tilt import EnergyGradient
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline, LatentAutoencoder
 
 # Small enough to be invisible against any gradient worth stepping along, and
@@ -64,81 +68,218 @@ def sample_guided(
     gradient of that energy — scaled by `strength` — before the scheduler takes
     its step. No weights are updated.
     """
-    if steps < 1:
-        raise ValueError(f"steps must be at least 1, got {steps}")
-    if strength < 0.0:
-        raise ValueError(f"strength must be non-negative, got {strength}")
-    if not 0.0 < noise_strength <= 1.0:
-        raise ValueError(f"noise_strength must lie in (0, 1], got {noise_strength}")
-    if clip_step_rms is not None and clip_step_rms <= 0.0:
-        raise ValueError(f"clip_step_rms must be positive, got {clip_step_rms}")
+    return sample_endpoint_process(
+        LatentDiffusionProcess(
+            pipeline,
+            photo,
+            prompt,
+            steps=steps,
+            noise_strength=noise_strength,
+            text_guidance_scale=text_guidance_scale,
+            generator=generator,
+            differentiate_through_unet=differentiate_through_unet,
+        ),
+        reward=guidance,
+        tilt=ClippedGradientTilt(strength=strength, clip_step_rms=clip_step_rms),
+    )
 
-    scheduler = pipeline.scheduler
-    prediction_type: str = scheduler.config.prediction_type
-    if prediction_type != "epsilon":
-        raise ValueError(
-            "the guided loop recovers x̂₀ from an epsilon noise prediction, so it "
-            f"cannot drive a scheduler with prediction_type {prediction_type!r}"
+
+class LatentDiffusionProcess:
+    """Stable Diffusion img2img as an `EndpointProcess`, over one photo and one prompt.
+
+    The state is the sampler's latent; the endpoint estimate is Tweedie's x̂₀
+    decoded through the VAE, so the energy is scored in pixel space and its
+    gradient reaches the latent through the decoder; the step is the scheduler's
+    own. One instance drives one sample: it holds that sample's schedule,
+    prompt embeddings and generator.
+
+    Args:
+        photo: NCHW, floating point, values in ``[0, 1]``; renoised to the
+            noisiest walked timestep to start the walk (SDEdit).
+        noise_strength: how far up the trajectory the photo is renoised, in
+            ``(0, 1]``; 1 discards it entirely.
+        text_guidance_scale: classifier-free guidance on the prompt; 1 turns it
+            off.
+        generator: the only source of randomness in the walk.
+        differentiate_through_unet: keep the UNet forward on the gradient path,
+            so the endpoint carries the denoiser's Jacobian (DPS,
+            arXiv:2209.14687) for one UNet backward more per evaluated step.
+    """
+
+    def __init__(
+        self,
+        pipeline: Img2ImgPipeline,
+        photo: Float[Tensor, "batch 3 height width"],
+        prompt: str,
+        *,
+        steps: int,
+        noise_strength: float,
+        text_guidance_scale: float,
+        generator: torch.Generator,
+        differentiate_through_unet: bool = False,
+    ) -> None:
+        if steps < 1:
+            raise ValueError(f"steps must be at least 1, got {steps}")
+        if not 0.0 < noise_strength <= 1.0:
+            raise ValueError(f"noise_strength must lie in (0, 1], got {noise_strength}")
+        scheduler = pipeline.scheduler
+        prediction_type: str = scheduler.config.prediction_type
+        if prediction_type != "epsilon":
+            raise ValueError(
+                "the guided loop recovers x̂₀ from an epsilon noise prediction, so it "
+                f"cannot drive a scheduler with prediction_type {prediction_type!r}"
+            )
+        scheduler.set_timesteps(steps, device=photo.device)
+        self._pipeline = pipeline
+        self._photo = photo
+        self._generator = generator
+        self._differentiate_through_unet = differentiate_through_unet
+        self._timesteps = _renoised_timesteps(
+            scheduler.timesteps, noise_strength=noise_strength
+        )
+        self._alphas_cumprod = scheduler.alphas_cumprod.to(
+            device=photo.device, dtype=photo.dtype
+        )
+        self._text_guidance_scale = text_guidance_scale
+        self._apply_text_guidance = text_guidance_scale > 1.0
+        self._prompt_embeddings = _prompt_embeddings(
+            pipeline,
+            prompt,
+            device=photo.device,
+            images_per_prompt=photo.shape[0],
+            apply_text_guidance=self._apply_text_guidance,
         )
 
-    scheduler.set_timesteps(steps, device=photo.device)
-    timesteps = _renoised_timesteps(scheduler.timesteps, noise_strength=noise_strength)
-    alphas_cumprod = scheduler.alphas_cumprod.to(device=photo.device, dtype=photo.dtype)
+    @property
+    def steps(self) -> int:
+        return len(self._timesteps)
 
-    latent = _encode_photo(pipeline.vae, photo, generator=generator)
-    noise = torch.randn(
-        latent.shape, generator=generator, device=latent.device, dtype=latent.dtype
-    )
-    latent = scheduler.add_noise(latent, noise, timesteps[:1])
+    def initial_state(self) -> Float[Tensor, "batch channels height width"]:
+        latent = _encode_photo(
+            self._pipeline.vae, self._photo, generator=self._generator
+        )
+        noise = torch.randn(
+            latent.shape,
+            generator=self._generator,
+            device=latent.device,
+            dtype=latent.dtype,
+        )
+        return self._pipeline.scheduler.add_noise(latent, noise, self._timesteps[:1])
 
-    apply_text_guidance = text_guidance_scale > 1.0
-    prompt_embeddings = _prompt_embeddings(
-        pipeline,
-        prompt,
-        device=photo.device,
-        images_per_prompt=photo.shape[0],
-        apply_text_guidance=apply_text_guidance,
-    )
-
-    for timestep in timesteps:
-        steering: Tensor | None = None
-        if strength != 0.0 and differentiate_through_unet:
-            noise_prediction, steering = guidance_gradient_through_unet(
-                pipeline,
-                guidance,
-                latent=latent,
+    def endpoint(
+        self,
+        state: Float[Tensor, "batch channels height width"],
+        step: StepContext,
+    ) -> Endpoint[Float[Tensor, "batch channels height width"]]:
+        timestep = self._timesteps[step.index]
+        alpha_cumprod = self._alphas_cumprod[timestep]
+        if self._differentiate_through_unet:
+            return _through_unet_endpoint(
+                self._pipeline,
+                latent=state,
                 timestep=timestep,
-                prompt_embeddings=prompt_embeddings,
-                text_guidance_scale=text_guidance_scale,
-                apply_text_guidance=apply_text_guidance,
-                alpha_cumprod=alphas_cumprod[timestep],
+                prompt_embeddings=self._prompt_embeddings,
+                text_guidance_scale=self._text_guidance_scale,
+                apply_text_guidance=self._apply_text_guidance,
+                alpha_cumprod=alpha_cumprod,
             )
-        else:
-            noise_prediction = _predict_noise(
-                pipeline,
-                latent,
-                timestep,
-                prompt_embeddings,
-                text_guidance_scale=text_guidance_scale,
-                apply_text_guidance=apply_text_guidance,
-            )
-            if strength != 0.0:
-                steering = guidance_gradient(
-                    pipeline.vae,
-                    guidance,
-                    latent=latent,
-                    noise_prediction=noise_prediction,
-                    alpha_cumprod=alphas_cumprod[timestep],
-                )
+        noise_prediction = self._noise_prediction(state, timestep)
+        differentiable_latent = state.detach().requires_grad_(True)
+        return Endpoint(
+            differentiable_latent,
+            _predicted_original_image(
+                self._pipeline.vae,
+                differentiable_latent,
+                noise_prediction,
+                alpha_cumprod,
+            ),
+            noise_prediction,
+        )
+
+    def advance(
+        self,
+        state: Float[Tensor, "batch channels height width"],
+        step: StepContext,
+        *,
+        prediction: Float[Tensor, "batch channels height width"] | None,
+        steering: Float[Tensor, "batch channels height width"] | None,
+    ) -> Float[Tensor, "batch channels height width"]:
+        timestep = self._timesteps[step.index]
+        noise_prediction = (
+            self._noise_prediction(state, timestep)
+            if prediction is None
+            else prediction
+        )
         if steering is not None:
-            latent = latent - _guided_update(
-                steering, strength=strength, clip_step_rms=clip_step_rms
-            )
-        latent = scheduler.step(
-            noise_prediction, timestep, latent, generator=generator
+            state = state + steering
+        return self._pipeline.scheduler.step(
+            noise_prediction, timestep, state, generator=self._generator
         ).prev_sample
 
-    return decode_latent(pipeline.vae, latent)
+    def to_image(
+        self, state: Float[Tensor, "batch channels height width"]
+    ) -> Float[Tensor, "batch 3 height width"]:
+        return decode_latent(self._pipeline.vae, state)
+
+    def _noise_prediction(
+        self,
+        latent: Float[Tensor, "batch channels height width"],
+        timestep: Int[Tensor, ""],
+    ) -> Float[Tensor, "batch channels height width"]:
+        return _predict_noise(
+            self._pipeline,
+            latent,
+            timestep,
+            self._prompt_embeddings,
+            text_guidance_scale=self._text_guidance_scale,
+            apply_text_guidance=self._apply_text_guidance,
+        )
+
+
+@dataclass(frozen=True)
+class ClippedGradientTilt:
+    """The raw energy gradient as the step, capped at a fixed RMS.
+
+    The raw gradient scales with the energy, so the step decays by itself on a
+    sample the energy is already satisfied on; the cap is what stops a large
+    energy running away. One evaluation per step, and none at all at strength 0.
+
+    Args:
+        strength: what the energy gradient is multiplied by; 0 leaves every step
+            unsteered.
+        clip_step_rms: ceiling on the RMS of the step, in the state's own units,
+            sized per batch element. Below it the step passes through
+            bit-for-bit; above it the step is exactly this size and points where
+            the raw one pointed.
+    """
+
+    strength: float
+    clip_step_rms: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.strength < 0.0:
+            raise ValueError(f"strength must be non-negative, got {self.strength}")
+        if self.clip_step_rms is not None and self.clip_step_rms <= 0.0:
+            raise ValueError(
+                f"clip_step_rms must be positive, got {self.clip_step_rms}"
+            )
+
+    def __call__(
+        self,
+        energy_gradient: EnergyGradient,
+        *,
+        state: Float[Tensor, "batch *state"],
+        step: StepContext,
+    ) -> Float[Tensor, "batch *state"] | None:
+        if self.strength == 0.0:
+            return None
+        # Negated because the energy is descended: the steering is the
+        # displacement the state takes, not the direction the energy rises in.
+        return -_guided_update(
+            energy_gradient(state),
+            strength=self.strength,
+            clip_step_rms=self.clip_step_rms,
+        )
 
 
 def guidance_gradient(
@@ -163,10 +304,11 @@ def guidance_gradient(
     # the one place in the loop where that would silently zero the guidance.
     with torch.enable_grad():
         differentiable_latent = latent.detach().requires_grad_(True)
-        predicted_original = (
-            differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
-        ) / alpha_cumprod.sqrt()
-        energy = guidance(decode_latent(vae, predicted_original))
+        energy = guidance(
+            _predicted_original_image(
+                vae, differentiable_latent, noise_prediction, alpha_cumprod
+            )
+        )
         (gradient,) = torch.autograd.grad(energy, differentiable_latent)
     return gradient
 
@@ -198,24 +340,18 @@ def guidance_gradient_through_unet(
     the latent alone, so no parameter accumulates a `.grad`.
     """
     with torch.enable_grad():
-        differentiable_latent = latent.detach().requires_grad_(True)
-        noise_prediction = _predict_noise(
+        endpoint = _through_unet_endpoint(
             pipeline,
-            differentiable_latent,
-            timestep,
-            prompt_embeddings,
+            latent=latent,
+            timestep=timestep,
+            prompt_embeddings=prompt_embeddings,
             text_guidance_scale=text_guidance_scale,
             apply_text_guidance=apply_text_guidance,
-            differentiable=True,
+            alpha_cumprod=alpha_cumprod,
         )
-        # ε̂ stays attached, which is the whole difference from the constant-ε̂
-        # step: x̂₀ then carries dε̂/dx_t and the denoiser damps its own undoing.
-        predicted_original = (
-            differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
-        ) / alpha_cumprod.sqrt()
-        energy = guidance(decode_latent(pipeline.vae, predicted_original))
-        (gradient,) = torch.autograd.grad(energy, differentiable_latent)
-    return noise_prediction.detach(), gradient
+        energy = guidance(endpoint.image)
+        (gradient,) = torch.autograd.grad(energy, endpoint.state)
+    return endpoint.prediction, gradient
 
 
 def decode_latent(
@@ -227,6 +363,49 @@ def decode_latent(
     # the decode is in range; a decode pinned at the rails would zero the
     # guidance instead, which is what the loop's gradient tests are watching for.
     return ((decoded + 1.0) / 2.0).clamp(0.0, 1.0)
+
+
+def _through_unet_endpoint(
+    pipeline: Img2ImgPipeline,
+    *,
+    latent: Float[Tensor, "batch channels height width"],
+    timestep: Tensor,
+    prompt_embeddings: Float[Tensor, "batch sequence embedding"],
+    text_guidance_scale: float,
+    apply_text_guidance: bool,
+    alpha_cumprod: Float[Tensor, ""],
+) -> Endpoint[Float[Tensor, "batch channels height width"]]:
+    differentiable_latent = latent.detach().requires_grad_(True)
+    noise_prediction = _predict_noise(
+        pipeline,
+        differentiable_latent,
+        timestep,
+        prompt_embeddings,
+        text_guidance_scale=text_guidance_scale,
+        apply_text_guidance=apply_text_guidance,
+        differentiable=True,
+    )
+    # ε̂ stays attached, which is the whole difference from the constant-ε̂
+    # step: x̂₀ then carries dε̂/dx_t and the denoiser damps its own undoing.
+    return Endpoint(
+        differentiable_latent,
+        _predicted_original_image(
+            pipeline.vae, differentiable_latent, noise_prediction, alpha_cumprod
+        ),
+        noise_prediction.detach(),
+    )
+
+
+def _predicted_original_image(
+    vae: LatentAutoencoder,
+    latent: Float[Tensor, "batch channels height width"],
+    noise_prediction: Float[Tensor, "batch channels height width"],
+    alpha_cumprod: Float[Tensor, ""],
+) -> Float[Tensor, "batch 3 height width"]:
+    predicted_original = (
+        latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
+    ) / alpha_cumprod.sqrt()
+    return decode_latent(vae, predicted_original)
 
 
 def _guided_update(

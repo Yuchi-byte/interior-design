@@ -72,8 +72,24 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
 
 The guided sampler and the experiment harness shared with `experiments/`.
 
+- `process/`: the backend-agnostic shape of reward-steered sampling, so a
+  sampler swap is a dependency injection rather than a second loop —
+  `endpoint.py`'s `EndpointProcess` (a state, a differentiable pixel-space
+  endpoint estimate of it, a step that advances it) with `Endpoint` and
+  `StepContext`, `tilt.py`'s `TiltPolicy` (reward gradients in, the state's
+  displacement out) and the `EnergyGradient` it evaluates through, and
+  `driver.py`'s `sample_endpoint_process`, the one walk every backend is
+  sampled by. `docs/process-adapters.md` is what a new backend is written
+  against.
+- `adapters/`: the reverse direction of `process/` — roomgen's reward presented
+  to a third-party sampler's own interface, `mfm_reward.py`'s
+  `MfmGeometricReward` being the depth energy as the `score(images, prompts)`
+  Meta Flow Maps ascends. Structural, so nothing here imports the vendored tree.
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
-  image x̂₀ to a scalar energy.
+  image x̂₀ to a scalar energy — the reward boundary the process package steers
+  by.
+- `guidance/composite.py`: `WeightedGuidance`, several energies summed into the
+  one a sampler descends, so an extra reward rides alongside the geometric one.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
   re-runs the depth model, and scores it against a `GeometricReference` over the
   reference's shell — intersected, whenever a segmenter is configured, with the
@@ -84,9 +100,12 @@ The guided sampler and the experiment harness shared with `experiments/`.
 - `sampling/pipeline.py`: `Img2ImgPipeline` and the component Protocols under
   it — the structural view of a diffusers img2img pipeline, so a weightless fake
   can stand in for one.
-- `sampling/guided.py`: the guided denoising loop, stepping the pipeline's UNet,
-  VAE and scheduler itself because a diffusers `__call__` runs under `no_grad`
-  and would strand the guidance gradient.
+- `sampling/guided.py`: Stable Diffusion img2img as an `EndpointProcess` —
+  `LatentDiffusionProcess` (SDEdit renoise, Tweedie x̂₀ through the VAE decode, a
+  scheduler step) with the `ClippedGradientTilt` that steers it and
+  `sample_guided`, their composition over the driver. It steps the pipeline's
+  UNet, VAE and scheduler itself because a diffusers `__call__` runs under
+  `no_grad` and would strand the guidance gradient.
 - `renovate.py`: `renovate`, the end-to-end img2img entry point (photo + prompt
   -> reference -> guided sample -> image; a caller scoring against the same
   geometry hands its own reference in), and `load_pipeline`, which brings up
@@ -135,8 +154,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
   no GPU and no Hub cache.
 - `packages/roomgen-guide/tests/roomgen_guide_fakes/`: the matching doubles for
   the diffusion side — a UNet, VAE and DDIM scheduler satisfying
-  `Img2ImgPipeline` on the SD1.5 latent geometry — kept here rather than beside
-  the geometry doubles, which know nothing about diffusion.
+  `Img2ImgPipeline` on the SD1.5 latent geometry, plus `ToyFlowMapProcess`, a
+  second `EndpointProcess` with no latent space and no epsilon parameterisation,
+  which is what proves the driver takes an injected backend rather than this one
+  — kept here rather than beside the geometry doubles, which know nothing about
+  diffusion.
 - The root `conftest.py` installs jaxtyping's runtime type-check hook over
   `roomgen_geometry`, so every shape annotation in that package is enforced for
   the duration of the suite.
