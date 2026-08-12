@@ -33,37 +33,59 @@ def test_roomgen_variables_override_every_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ROOMGEN_WDIR", str(tmp_path / "runs"))
-    monkeypatch.setenv("ROOMGEN_WANDB_MODE", "offline")
     monkeypatch.setenv("ROOMGEN_HF_HOME", str(tmp_path / "weights"))
 
     settings = RoomgenSettings()
 
     assert settings.wdir == tmp_path / "runs"
-    assert settings.wandb_mode == "offline"
     assert settings.hf_home == tmp_path / "weights"
 
 
-def test_unprefixed_wandb_and_hf_variables_are_not_read(
+def test_the_environment_alone_is_enough_outside_any_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("WANDB_MODE", "online")
+    """Both variables set is a complete configuration: no repo root is consulted."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("ROOMGEN_WDIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("ROOMGEN_HF_HOME", str(tmp_path / "weights"))
+
+    settings = RoomgenSettings()
+
+    assert settings.wdir == tmp_path / "runs"
+    assert settings.hub_cache == tmp_path / "weights" / "hub"
+
+
+def test_a_default_outside_any_repo_raises_naming_its_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alternative is a 10GB weight cache seeded under whatever `cd` was last run."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    with pytest.raises(RuntimeError, match="ROOMGEN_WDIR"):
+        RoomgenSettings()
+
+    monkeypatch.setenv("ROOMGEN_WDIR", str(tmp_path / "runs"))
+    with pytest.raises(RuntimeError, match="ROOMGEN_HF_HOME"):
+        RoomgenSettings()
+
+
+def test_unprefixed_hf_variables_are_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    (root / "uv.lock").touch()
+    monkeypatch.chdir(root)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "weights"))
 
     settings = RoomgenSettings()
 
-    assert settings.wandb_mode == "disabled"
-    assert settings.hf_home == settings.wdir.parent / ".cache" / "huggingface"
+    assert settings.hf_home == root / ".cache" / "huggingface"
 
 
 def test_a_setting_outside_the_contract_is_rejected() -> None:
     with pytest.raises(ValidationError, match="checkpoint_dir"):
         RoomgenSettings.model_validate({"checkpoint_dir": "weights"})
-
-
-def test_wandb_mode_outside_the_documented_set_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ROOMGEN_WANDB_MODE", "enabled")
-
-    with pytest.raises(ValidationError, match="wandb_mode"):
-        RoomgenSettings()

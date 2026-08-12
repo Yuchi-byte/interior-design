@@ -95,10 +95,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
 - `experiment.py`: `ExperimentConfig`, the run config a framework builds from
   its `conf/` (name and the explicit seeds it runs).
 - `settings.py`: `RoomgenSettings`, the one `ROOMGEN_*` env-var contract in the
-  repo (`ROOMGEN_WDIR`, `ROOMGEN_WANDB_MODE`, `ROOMGEN_HF_HOME`).
-- `prefetch.py`: `roomgen-prefetch`, the CLI that seeds (or `--check`-verifies)
-  the Hub cache with the four pretrained checkpoints so later loads are
-  instant and offline.
+  repo (`ROOMGEN_WDIR`, `ROOMGEN_HF_HOME`).
+- `prefetch.py`: `roomgen-prefetch`, the CLI that seeds the Hub cache with the
+  four pretrained checkpoints so later loads are instant and offline; `--check`
+  re-reads it offline and requires each snapshot to hold weights and a config,
+  which is a floor on the cache rather than a proof it is complete.
 - `metrics.py`: `RunMetrics`, one guided run's measurements beside its
   control's at one seed, with the depth-error reduction and adherence ratio
   read off them — `None` rather than 0 where the control scored zero and the
@@ -207,6 +208,6 @@ figures.
 
 ## Outputs
 
-Everything (renders, masked depth maps, config snapshots, wandb runs) defaults
+Everything (renders, masked depth maps, config snapshots) defaults
 under the gitignored `outputs/` at the repo root via
 `RoomgenSettings`/`ROOMGEN_WDIR`.

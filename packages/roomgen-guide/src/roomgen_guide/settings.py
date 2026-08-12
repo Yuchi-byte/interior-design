@@ -1,12 +1,10 @@
 """The repo's whole environment contract: ``ROOMGEN_*`` and nothing else."""
 
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-WandbMode = Literal["online", "offline", "disabled"]
 
 # Files that exist only at the workspace root, so the nearest one at or above
 # the working directory identifies it without any path being written down.
@@ -15,19 +13,32 @@ WandbMode = Literal["online", "offline", "disabled"]
 _REPO_ROOT_MARKERS: Final = ("uv.lock", ".git")
 
 
-def _repo_root() -> Path:
+def _repo_root(*, setting: str) -> Path:
+    """The enclosing repo root, or an error naming the variable that replaces it.
+
+    Only reached for a setting the environment did not supply. Falling back to
+    the working directory instead would silently re-root a cache: a
+    `roomgen-prefetch` run from anywhere outside the repo would quietly seed
+    tens of GB under wherever it happened to be started.
+    """
     working_directory = Path.cwd().resolve()
     for candidate in (working_directory, *working_directory.parents):
         if any((candidate / marker).exists() for marker in _REPO_ROOT_MARKERS):
             return candidate
-    return working_directory
+    raise RuntimeError(
+        f"{working_directory} is not inside the roomgen repo (no "
+        f"{' or '.join(_REPO_ROOT_MARKERS)} at or above it), so `{setting}` has no "
+        f"default. Set {setting} to an explicit path, or run from inside a clone."
+    )
 
 
 class RoomgenSettings(BaseSettings):
-    """Where a run's artifacts, weights and tracking go, read from ``ROOMGEN_*`` alone.
+    """Where a run's artifacts and weights go, read from ``ROOMGEN_*`` alone.
 
-    Nothing in the repo reads a working directory, cache location or wandb mode
-    from anywhere else; plain ``WANDB_MODE`` and ``HF_HOME`` are not consulted.
+    Nothing in the repo reads a working directory or cache location from
+    anywhere else; plain ``HF_HOME`` is not consulted. Both defaults are
+    relative to the enclosing repo root, so a process started outside a clone
+    must name the one it uses rather than inherit a directory by accident.
 
     Args:
         wdir: root of every local artifact a run writes; defaults to
@@ -44,10 +55,13 @@ class RoomgenSettings(BaseSettings):
         env_prefix="ROOMGEN_", extra="forbid", frozen=True
     )
 
-    wdir: Path = Field(default_factory=lambda: _repo_root() / "outputs")
-    wandb_mode: WandbMode = "disabled"
+    wdir: Path = Field(
+        default_factory=lambda: _repo_root(setting="ROOMGEN_WDIR") / "outputs"
+    )
     hf_home: Path = Field(
-        default_factory=lambda: _repo_root() / ".cache" / "huggingface"
+        default_factory=lambda: (
+            _repo_root(setting="ROOMGEN_HF_HOME") / ".cache" / "huggingface"
+        )
     )
 
     @property

@@ -68,13 +68,16 @@ def load_photo(
     squashed: the reward compares the render against a depth map of *this*
     framing, so any distortion is baked into both sides and invisible to it.
     """
-    decoded = read_image(str(path), mode=ImageReadMode.RGB)
+    # torchvision ships no annotations for its IO and v2 functional transforms
+    # (see the mypy overrides), so each result is `Any` until it is named as a
+    # Tensor here; the alternative is an unchecked `Any` reaching the caller.
+    decoded: Tensor = read_image(str(path), mode=ImageReadMode.RGB)
     _, height, width = decoded.shape
     side = min(height, width)
     # Resampling in float, not uint8: the quantisation of an 8-bit intermediate
     # is the sort of thing that shows up in a depth error at the third decimal.
-    square = center_crop(decoded.to(torch.float32) / 255.0, [side, side])
-    resized = resize(square, [resolution, resolution], antialias=True)
+    square: Tensor = center_crop(decoded.to(torch.float32) / 255.0, [side, side])
+    resized: Tensor = resize(square, [resolution, resolution], antialias=True)
     return resized.clamp(0.0, 1.0).unsqueeze(0).to(device=device, dtype=dtype)
 
 

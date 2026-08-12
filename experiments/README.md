@@ -65,15 +65,11 @@ repo root — gitignored, so runs never dirty the tree; override via the
 `ROOMGEN_WDIR` env var) — set it per-machine, not hardcoded in a script. Model
 weights are cached under `ROOMGEN_HF_HOME` and are never committed.
 
-Tracking (config, metrics, media) goes to **Weights & Biases**,
-controlled by `ROOMGEN_WANDB_MODE` (plain `WANDB_MODE` is not honoured —
-`RoomgenSettings` reads only `ROOMGEN_*` variables):
-
-```bash
-ROOMGEN_WANDB_MODE=disabled uv run --no-sync python experiments/NNNN_slug/run.py   # fast plumbing check, no tracking
-ROOMGEN_WANDB_MODE=offline  uv run --no-sync python experiments/NNNN_slug/run.py   # record locally, `wandb sync` later
-ROOMGEN_WANDB_MODE=online   uv run --no-sync python experiments/NNNN_slug/run.py   # requires `wandb login`
-```
+There is no experiment tracker: a framework's record is the `results.json`,
+the rendered gallery and the report beside them, all under `ROOMGEN_WDIR`.
+`ROOMGEN_WDIR` and `ROOMGEN_HF_HOME` are the whole environment contract
+(`RoomgenSettings` reads only `ROOMGEN_*` variables, so plain `HF_HOME` is not
+honoured).
 
 ## JOURNAL.md
 

@@ -109,9 +109,15 @@ ban-relative-imports = "parents"
 [tool.mypy]
 # Both source trees on the path at once — roomgen_guide resolves
 # roomgen_geometry through it — and named as `files` so a bare `uv run mypy`
-# checks exactly what the gate checks.
+# checks exactly what the gate checks. `experiments/` is the whole directory
+# rather than the current framework: a new `NNNN_slug/` must not be able to
+# land outside the gate the way `0002` did.
 mypy_path = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
-files = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
+files = [
+    "packages/roomgen-geometry/src",
+    "packages/roomgen-guide/src",
+    "experiments",
+]
 python_version = "3.12"
 plugins = ["pydantic.mypy"]
 strict = true
@@ -157,15 +163,30 @@ module = [
     "accelerate.*",
     "torchvision.*",
     "PIL.*",
-    "wandb.*",
     "safetensors.*",
     "cv2.*",
 ]
 ignore_missing_imports = true
 
+# The weightless test doubles, imported by the experiment framework's `fake`
+# backend stack. They live under `packages/*/tests`, which is on pytest's
+# `pythonpath` but not on mypy's `files`, so mypy sees no implementation for
+# them. Putting the tests trees on `mypy_path` instead would type-check the
+# doubles against the pipeline Protocols, which they cannot satisfy
+# structurally: `Img2ImgPipeline.scheduler` is a *mutable* attribute and
+# therefore invariant, so a `FakeScheduler`-typed field is an error however
+# faithful the double is. Their real check is the suite that runs them.
+[[tool.mypy.overrides]]
+module = ["roomgen_fakes.*", "roomgen_guide_fakes.*"]
+ignore_missing_imports = true
+
 
 [tool.pytest.ini_options]
-testpaths = ["packages/roomgen-geometry/tests", "packages/roomgen-guide/tests"]
+testpaths = [
+    "packages/roomgen-geometry/tests",
+    "packages/roomgen-guide/tests",
+    "experiments/0002_geometric_guidance/tests",
+]
 # `--strict-markers` turns a misspelled marker into a collection error rather
 # than a test CI silently keeps running: `-m "not models"` only protects the
 # runner if the marker on a weights-hungry test is the one CI deselects.
@@ -176,7 +197,13 @@ addopts = "-q --strict-markers --strict-config"
 # fixtures. The geometry doubles are imported by both suites; the pipeline ones
 # only by the guide suite, since the geometry package knows nothing about
 # diffusion.
-pythonpath = ["packages/roomgen-geometry/tests", "packages/roomgen-guide/tests"]
+pythonpath = [
+    "packages/roomgen-geometry/tests",
+    "packages/roomgen-guide/tests",
+    # `framework` is a package under the experiment directory, not an installed
+    # one: its own suite imports it the same way `run.py` does.
+    "experiments/0002_geometric_guidance",
+]
 markers = [
     "slow: long-running (many diffusion steps, full-resolution renders); excluded from quick local runs on request only, not from CI by default",
     "models: requires downloading pretrained model weights from the Hugging Face Hub; excluded from CI, which has no network or GPU",

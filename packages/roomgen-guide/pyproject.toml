@@ -11,11 +11,10 @@ dependencies = [
     "diffusers>=0.31",
     "accelerate",
     "transformers",
-    "huggingface-hub",
+    "huggingface-hub>=1.0",
     "omegaconf>=2.3",
     "pydantic>=2",
     "pydantic-settings>=2",
-    "wandb>=0.20",
 ]
 
 [project.scripts]

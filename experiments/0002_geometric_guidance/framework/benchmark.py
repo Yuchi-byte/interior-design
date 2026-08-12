@@ -595,7 +595,6 @@ def _write_results(summary: Summary, settings: RoomgenSettings) -> None:
                 "settings": {
                     "wdir": str(settings.wdir),
                     "hub_cache": str(settings.hub_cache),
-                    "wandb_mode": settings.wandb_mode,
                 },
                 "started_at": summary.started_at,
                 "git_commit": summary.git_commit,

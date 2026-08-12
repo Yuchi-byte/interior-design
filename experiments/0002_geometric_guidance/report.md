@@ -295,9 +295,9 @@ What is left under `framework/` is this benchmark's own glue plus the
 checkpoint-free smoke metric; the shared machinery is in `roomgen_guide`.
 
 1. **`roomgen_guide.logging` does not exist**, so there is no `Logger` to pass
-   the verdict through and no wandb tracking: this framework prints and writes
-   `results.json`. `ROOMGEN_WANDB_MODE` is therefore not honoured by 0002 yet,
-   which `experiments/README.md` documents as the tracking contract.
+   the verdict through: this framework prints and writes `results.json`, which
+   with the gallery beside it is the whole record of a run — there is no
+   experiment tracker in the repo to send it to.
 2. **The reward's dtype is the input image's.** `DepthAnythingV2` casts its
    prediction back to `images.dtype`, so a float16 sampler drags the energy, the
    alignment residual and the guidance gradient into float16 with it. The

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Self
 
 from omegaconf import DictConfig, OmegaConf
+from omegaconf.errors import ConfigTypeError
 from pydantic import BaseModel, ConfigDict
 
 
@@ -30,7 +31,38 @@ class Config(BaseModel):
         if not isinstance(cfg, DictConfig):
             raise TypeError(f"Expected a mapping at {path}, got {type(cfg).__name__}")
         if overrides:
-            cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(list(overrides)))
+            try:
+                cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(list(overrides)))
+            except ConfigTypeError as error:
+                raise ValueError(_merge_failure(overrides, error)) from error
             if not isinstance(cfg, DictConfig):  # pragma: no cover - defensive
                 raise TypeError("Merging overrides did not produce a mapping")
         return cls.from_raw(cfg)
+
+
+def _merge_failure(overrides: Sequence[str], error: ConfigTypeError) -> str:
+    """What a dotlist that cannot be merged into this file actually hit.
+
+    Raised in place of OmegaConf's own traceback, which reports the internal
+    "Cannot merge DictConfig with ListConfig" and never names the override that
+    caused it.
+    """
+    indexed = [
+        override
+        for override in overrides
+        if any(segment.isdigit() for segment in _key(override).split("."))
+    ]
+    if indexed:
+        return (
+            f"dotlist overrides cannot address list elements: {', '.join(indexed)}. "
+            "A numeric segment is read as a key, so the merge tries to write a "
+            "mapping over a list. Override the whole list "
+            "(--set scenes='[{photo: a, prompt: b}]') or add a conf/ variant."
+        )
+    return (
+        f"override {', '.join(overrides)} could not be merged into the config: {error}"
+    )
+
+
+def _key(override: str) -> str:
+    return override.split("=", 1)[0]

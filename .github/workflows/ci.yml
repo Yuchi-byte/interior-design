@@ -25,9 +25,6 @@ jobs:
       # checkpoint into an immediate error instead of a multi-GB download that
       # times out the job: such a test is missing its `models` marker.
       HF_HUB_OFFLINE: "1"
-      # wandb reads its own environment; our code only ever sets
-      # ROOMGEN_WANDB_MODE, so pin the client itself away from the network.
-      WANDB_MODE: offline
     steps:
       - uses: actions/checkout@v4
 
@@ -62,15 +59,15 @@ jobs:
       # problem rather than one per round trip; the job still fails overall.
       - name: Ruff check
         if: ${{ !cancelled() }}
-        run: uv run ruff check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
+        run: uv run ruff check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests experiments
 
       - name: Ruff format check
         if: ${{ !cancelled() }}
-        run: uv run ruff format --check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
+        run: uv run ruff format --check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests experiments
 
-      - name: Mypy (geometry + guide src)
+      - name: Mypy (geometry + guide src, experiments)
         if: ${{ !cancelled() }}
-        run: uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
+        run: uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src experiments
 
       # Anything marked `models` downloads pretrained depth/segmentation/diffusion
       # weights from the Hugging Face Hub and wants a GPU to finish in reasonable

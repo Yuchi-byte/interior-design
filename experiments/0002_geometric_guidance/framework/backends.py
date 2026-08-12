@@ -72,7 +72,13 @@ def _real_backends(
         # SD1.5 ships PNDM, whose update carries history across steps; DDIM's is
         # the deterministic closed form over the same epsilon parameterisation
         # that the guided loop's x̂₀ correction is derived from.
-        pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+        #
+        # diffusers ships `py.typed` but leaves `from_config`'s `**kwargs`
+        # unannotated, which makes the constructor an untyped call — the same
+        # gap `load_pipeline` hits on `from_pretrained`.
+        pipeline.scheduler = DDIMScheduler.from_config(  # type: ignore[no-untyped-call]
+            pipeline.scheduler.config
+        )
     elif "generator" not in inspect.signature(pipeline.scheduler.step).parameters:
         raise ValueError(
             f"backends.scheduler='pipeline' keeps {type(pipeline.scheduler).__name__},"

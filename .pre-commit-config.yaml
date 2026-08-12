@@ -41,18 +41,19 @@ repos:
         entry: uv run ruff check --fix
         language: system
         types: [python]
-        files: ^(conftest\.py|packages/(roomgen-geometry|roomgen-guide)/(src|tests)/)
+        files: ^(conftest\.py|packages/(roomgen-geometry|roomgen-guide)/(src|tests)/|experiments/)
       - id: ruff-format
         name: ruff-format
         entry: uv run ruff format
         language: system
         types: [python]
-        files: ^(conftest\.py|packages/(roomgen-geometry|roomgen-guide)/(src|tests)/)
+        files: ^(conftest\.py|packages/(roomgen-geometry|roomgen-guide)/(src|tests)/|experiments/)
       - id: mypy
         name: mypy
         # Whole-package check, not per-file: mypy needs both src trees on the
-        # path at once to resolve roomgen_guide -> roomgen_geometry.
-        entry: uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
+        # path at once to resolve roomgen_guide -> roomgen_geometry, and
+        # experiments/ imports both.
+        entry: uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src experiments
         language: system
         types: [python]
         pass_filenames: false

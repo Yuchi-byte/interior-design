@@ -53,11 +53,15 @@ uv pip install --torch-backend=auto torch torchvision # layer CUDA wheels on top
 ## Checks
 
 ```bash
-uv run ruff check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
-uv run ruff format --check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests
-uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
+uv run ruff check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests experiments
+uv run ruff format --check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests experiments
+uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src experiments
 uv run pytest -q                    # CI runs `-m "not models"`; locally run it unfiltered
 ```
+
+`experiments/` is gated as a whole directory, not per framework: experiment
+code is real code — it loads the checkpoints and computes the numbers a report
+quotes — so a new `NNNN_slug/` is inside the gate the day it is created.
 
 `make check` runs exactly those four (see the `Makefile` for the rest of the
 wrappers). `uv run pre-commit install` wires all four into a pre-commit hook; CI
@@ -134,14 +138,15 @@ owner confirm before editing the file itself.
 
 ## No hardcoded paths
 
-Never hardcode a working directory, output path, checkpoint cache, or wandb
-setting. Use `RoomgenSettings`
-(`packages/roomgen-guide/src/roomgen_guide/settings.py`), overridable via
-`ROOMGEN_*` environment variables — `ROOMGEN_WDIR` (default `outputs/` at the
-repo root, gitignored), `ROOMGEN_WANDB_MODE` (default `disabled`),
-`ROOMGEN_HF_HOME` (default `.cache/huggingface/` at the repo root, also
-gitignored). That is the whole env-var contract; plain `WANDB_MODE` and
-`HF_HOME` are not read by our code.
+Never hardcode a working directory, output path or checkpoint cache. Use
+`RoomgenSettings` (`packages/roomgen-guide/src/roomgen_guide/settings.py`),
+overridable via `ROOMGEN_*` environment variables — `ROOMGEN_WDIR` (default
+`outputs/` at the repo root, gitignored) and `ROOMGEN_HF_HOME` (default
+`.cache/huggingface/` at the repo root, also gitignored). Those two are the
+whole env-var contract; plain `HF_HOME` is not read by our code. Both defaults
+are anchored to the enclosing repo root, and a process started outside a clone
+gets an error naming the variable to set rather than a cache silently rooted at
+its working directory.
 
 ## Parallel sessions
 

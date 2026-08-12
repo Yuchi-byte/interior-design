@@ -5,7 +5,11 @@
 
 SOURCES := packages/roomgen-geometry/src packages/roomgen-guide/src
 TESTS := packages/roomgen-geometry/tests packages/roomgen-guide/tests
-LINT_PATHS := conftest.py $(SOURCES) $(TESTS)
+# The whole directory, not the current framework: a new experiment must not be
+# able to land outside the gate.
+EXPERIMENTS := experiments
+LINT_PATHS := conftest.py $(SOURCES) $(TESTS) $(EXPERIMENTS)
+TYPE_PATHS := $(SOURCES) $(EXPERIMENTS)
 
 .PHONY: help sync lint format-check format typecheck test check hooks
 
@@ -15,7 +19,7 @@ help:
 	@echo "lint         ruff check"
 	@echo "format       ruff format (rewrites)"
 	@echo "format-check ruff format --check"
-	@echo "typecheck    mypy over both src trees"
+	@echo "typecheck    mypy over both src trees and experiments/"
 	@echo "test         pytest, unfiltered (CI deselects the models marker)"
 	@echo "hooks        install the pre-commit hook"
 
@@ -32,7 +36,7 @@ format:
 	uv run ruff format $(LINT_PATHS)
 
 typecheck:
-	uv run mypy $(SOURCES)
+	uv run mypy $(TYPE_PATHS)
 
 # Unfiltered on purpose. CI runs `-m "not models"` because its runner has no
 # weights; a dev machine does, and those tests are the ones that exercise the

@@ -26,15 +26,16 @@ is why `verdict.py`'s gate is two-sided (see `experiments/README.md`).
 ## Settings
 
 `RoomgenSettings` (`settings.py`) is the one env-var contract in the repo. Plain
-`WANDB_MODE` and `HF_HOME` are not read.
+`HF_HOME` is not read.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `ROOMGEN_WDIR` | `outputs/` at the repo root (gitignored) | where every local artifact lands |
-| `ROOMGEN_WANDB_MODE` | `disabled` | `disabled` / `offline` / `online` |
 | `ROOMGEN_HF_HOME` | `.cache/huggingface/` at the repo root (gitignored) | where model weights are cached |
 
-Never hardcode any of these in a script — set them per machine.
+Never hardcode any of these in a script — set them per machine. Both defaults
+are anchored to the enclosing repo root; started outside a clone, a process
+must set the variable it needs rather than inherit the working directory.
 
 ## GPU
 
