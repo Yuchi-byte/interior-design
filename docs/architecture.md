@@ -40,17 +40,25 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   under `no_grad` — preprocessing is tensor ops, so the gradient reaches the
   input image.
 - `segmentation/base.py`: `Segmenter`, the `Protocol` mapping an image to
-  per-pixel ADE20K class ids.
+  per-pixel ADE20K class ids, and `ClassLogitSegmenter`, the one that also
+  exposes the per-class scores those ids are the argmax of — the mask path is a
+  discrete decision and stays a constant, the score path is smooth and is the
+  only thing on the segmentation side a reward can differentiate.
 - `segmentation/eomt.py`: the EoMT backend
-  (`tue-mps/ade20k_semantic_eomt_large_512`, MIT-licensed DINOv2 weights), run
-  once per photo under `no_grad` — segmentation is never on the gradient path —
-  with a tensor-op resize/normalise and ids decoded back onto the input frame
-  from the mask-query logits.
+  (`tue-mps/ade20k_semantic_eomt_large_512`, MIT-licensed DINOv2 weights), with
+  a tensor-op resize/normalise shared by its two paths: `__call__` decodes ids
+  onto the input frame under `no_grad`, and `class_logits` returns the
+  per-class scores behind them *with* gradient, at the cost of a forward and a
+  backward through the encoder per guided step it is evaluated on. Weights are
+  frozen, so that backward accumulates nothing.
 - `segmentation/ade20k.py`: the 150-class label table and the
   `ARCHITECTURAL_CLASSES`/`CONTENTS_CLASSES` partition (wall, floor, ceiling,
   door, column, stairs, ... vs. furniture, furnishings, decor; the glazing
   itself is in neither, since depth behind glass reads the view, not the room)
-  — the domain-knowledge file.
+  — the domain-knowledge file. `STRUCTURAL_CLASSES` is the shell *plus* the
+  glazing: the class term asks a different question of a glazed pixel than the
+  depth term does, and identity behind glass is the room's even though depth
+  behind it is the view's.
 - `masking.py`: `scorable_mask`, the one place a segmentation is turned into the
   pixels a reward may score, under either `MaskMode` polarity —
   `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts
@@ -60,14 +68,21 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   to the kept side in either mode, that drops the few pixels either side of a
   segment edge where monocular depth is unreliable — a max-pool over the
   inverted mask (Chebyshev radius in pixels); the image border is not treated as
-  a segment edge.
+  a segment edge. `structural_mask` is the class term's reference side, read the
+  same way and eroded the same way over `STRUCTURAL_CLASSES`.
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels, at a
   non-negative scale.
 - `reward.py`: `masked_depth_error`, the scale-and-shift-invariant masked
-  objective.
+  objective, and `masked_class_error`, the class-consistency one — a squared
+  hinge on the share of a pixel's class mass the reference's own class holds,
+  bounded and with a dead zone above the margin, rather than a cross-entropy
+  whose `-log p` is unbounded exactly where the term fires and whose gradient is
+  largest where the segmenter is least worth believing.
 - `reference.py`: `GeometricReference`, the frozen (masked depth, mask) pair
-  computed once from the input photo and detached.
+  computed once from the input photo and detached, and `StructuralReference`,
+  the frozen (class map, structural mask) pair beside it — the room may not
+  move, and its surfaces and openings may not become something else.
 
 ## `roomgen-guide`
 
@@ -107,6 +122,12 @@ The guided sampler and the experiment harness shared with `experiments/`.
   `require_per_element` guards the driver and `WeightedGuidance` enforce it with.
 - `guidance/composite.py`: `WeightedGuidance`, several energies summed into the
   one a sampler descends, so an extra reward rides alongside the geometric one.
+- `guidance/structural.py`: `StructuralGuidance`, the class-consistency energy
+  that rides beside the depth one — the reference photo's class held over the
+  structural pixels the prediction has not affirmatively covered with contents,
+  scored through EoMT's `class_logits` and differentiated back to the latent
+  while both masks stay detached constants. It is the term that charges for a
+  window painted over as flat wall, which the depth energy scores as perfect.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
   re-runs the depth model, and scores it against a `GeometricReference` over the
   reference's shell — intersected, whenever a segmenter is configured, with the
@@ -163,9 +184,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
 
 ## Test doubles
 
-- `packages/roomgen-geometry/tests/roomgen_fakes/`: weightless `DepthEstimator`
-  and `Segmenter` implementations (a floor-shaped disparity ramp coupled to
-  pixel content; a ceiling/wall/floor room with a window and a sofa), the
+- `packages/roomgen-geometry/tests/roomgen_fakes/`: weightless `DepthEstimator`,
+  `Segmenter` and `ClassLogitSegmenter` implementations (a floor-shaped
+  disparity ramp coupled to pixel content; a ceiling/wall/floor room with a
+  window and a sofa; a segmenter that reads class off brightness, so its scores
+  are a differentiable function of the pixels and its ids are their argmax), the
   shared gradient assertion, and the fixtures exposing them. Both suites import
   it via the root pytest `pythonpath`, so the default suite needs no network,
   no GPU and no Hub cache.

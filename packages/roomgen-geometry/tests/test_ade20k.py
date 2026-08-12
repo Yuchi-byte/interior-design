@@ -3,6 +3,7 @@ from roomgen_geometry.segmentation.ade20k import (
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
     NUM_CLASSES,
+    STRUCTURAL_CLASSES,
 )
 
 
@@ -49,3 +50,19 @@ def test_the_furniture_a_renovation_replaces_is_named_contents() -> None:
         ADE20K_LABELS.index(name)
         for name in ("sofa", "bed", "table", "chair", "lamp", "rug", "curtain")
     } <= CONTENTS_CLASSES
+
+
+def test_the_structural_classes_hold_the_shell_and_the_glazing_together() -> None:
+    # The class term's set: what a renovation may not turn into something else.
+    # Windowpane is in it and not in the shell, because the two lists answer
+    # different questions — depth behind glass is the view's, identity is not.
+    assert ARCHITECTURAL_CLASSES < STRUCTURAL_CLASSES
+    assert ADE20K_LABELS.index("windowpane") in STRUCTURAL_CLASSES
+    assert ADE20K_LABELS.index("door") in STRUCTURAL_CLASSES
+
+
+def test_nothing_a_renovation_may_replace_is_held_to_its_photographed_class() -> None:
+    # A class that were both would be held to its identity and excused from that
+    # same check by any render that put furniture over it: a term doing nothing.
+    assert not STRUCTURAL_CLASSES & CONTENTS_CLASSES
+    assert not STRUCTURAL_CLASSES - set(range(NUM_CLASSES))

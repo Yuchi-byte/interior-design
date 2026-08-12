@@ -324,3 +324,31 @@ CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
         148,  # clock
     }
 )
+
+
+def _disjoint_from_contents(ids: frozenset[int]) -> frozenset[int]:
+    """The structural set, checked against the contents it must not overlap.
+
+    Asserted where it is stated, like the partition above: a class that was both
+    structural and contents would be held to its photographed identity and
+    excused from that same check by any prediction rendering furniture over it,
+    which reads as a term that quietly does nothing.
+    """
+    both = ids & CONTENTS_CLASSES
+    if both:
+        raise ValueError(f"classes claimed as structural and contents: {sorted(both)}")
+    return ids
+
+
+# The classes whose *identity* a renovation may not change — the shell, plus the
+# glazing. Windowpane is here and deliberately not in `ARCHITECTURAL_CLASSES`,
+# because the two lists answer different questions about the same pixel. Depth
+# behind glass reads the outdoor view, so scoring a glazed pixel's *depth*
+# scores the view rather than the room; its *class* is still the room's, and
+# "there is still a window here" is exactly the constraint depth cannot express
+# and a renovation must not break. A door is the same case in weaker form: depth
+# pins the plane the door sits in, which a flat wall painted over the doorway
+# satisfies exactly, while its class does not.
+STRUCTURAL_CLASSES: Final[frozenset[int]] = _disjoint_from_contents(
+    ARCHITECTURAL_CLASSES | {ADE20K_LABELS.index("windowpane")}
+)

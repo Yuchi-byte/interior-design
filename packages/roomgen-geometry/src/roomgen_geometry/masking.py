@@ -12,6 +12,7 @@ from torch.nn.functional import max_pool2d
 from roomgen_geometry.segmentation.ade20k import (
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
+    STRUCTURAL_CLASSES,
 )
 
 MaskMode = Literal["intersect_shell", "subtract_contents"]
@@ -68,6 +69,27 @@ def architectural_mask(
     """
     return scorable_mask(
         segmentation, mode="intersect_shell", erosion_radius=erosion_radius
+    )
+
+
+def structural_mask(
+    segmentation: Int[Tensor, "batch height width"], *, erosion_radius: int
+) -> Bool[Tensor, "batch height width"]:
+    """The pixels whose class a renovation may not change: the reference side of the class term.
+
+    True on :data:`~roomgen_geometry.segmentation.ade20k.STRUCTURAL_CLASSES` —
+    the shell plus the glazing `architectural_mask` leaves out, since a window's
+    depth is the view's but its identity is the room's — and eroded like every
+    other mask, because a class label flickers in the band either side of a
+    segment edge and a term that chases the flicker is charging for noise.
+
+    Read one way only, from the photo, exactly as `architectural_mask` is: what a
+    *prediction's* segmentation is allowed to excuse is a separate question,
+    which `scorable_mask` answers.
+    """
+    return erode_boundaries(
+        torch.isin(segmentation, _class_ids(STRUCTURAL_CLASSES, segmentation)),
+        radius=erosion_radius,
     )
 
 

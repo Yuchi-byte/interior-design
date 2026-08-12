@@ -2,18 +2,21 @@ import torch
 from torch import Generator, Tensor
 
 from roomgen_fakes import (
+    FakeClassLogitSegmenter,
     FakeDepthEstimator,
     FakeSegmenter,
     assert_gradient_is_finite_and_nonzero,
 )
+from roomgen_fakes.segmentation import BRIGHTNESS_BY_CLASS
 from roomgen_geometry.alignment import align_scale_shift
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.segmentation.ade20k import (
+    ADE20K_LABELS,
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
     NUM_CLASSES,
 )
-from roomgen_geometry.segmentation.base import Segmenter
+from roomgen_geometry.segmentation.base import ClassLogitSegmenter, Segmenter
 
 
 def test_fake_depth_estimator_returns_the_disparity_shape_the_protocol_promises(
@@ -92,3 +95,60 @@ def test_fake_segmenter_output_is_independent_of_pixel_values(
     other_photo = torch.rand(room_photo.shape, generator=generator)
 
     assert torch.equal(fake_segmenter(room_photo), fake_segmenter(other_photo))
+
+
+def _painted(image: Tensor, brightness: float, region: tuple[slice, slice]) -> Tensor:
+    changed = image.clone()
+    changed[:, :, region[0], region[1]] = brightness
+    return changed
+
+
+def test_fake_class_logits_carry_the_shape_and_the_protocol_the_reward_needs(
+    fake_class_logit_segmenter: FakeClassLogitSegmenter, room_photo: Tensor
+) -> None:
+    logits = fake_class_logit_segmenter.class_logits(room_photo)
+
+    assert isinstance(fake_class_logit_segmenter, ClassLogitSegmenter)
+    assert isinstance(fake_class_logit_segmenter, Segmenter)
+    assert logits.shape == (1, NUM_CLASSES, 64, 64)
+    assert float(logits.min()) >= 0.0
+
+
+def test_fake_class_ids_are_the_argmax_of_the_very_scores_they_gate(
+    fake_class_logit_segmenter: FakeClassLogitSegmenter, room_photo: Tensor
+) -> None:
+    # The property EoMT has and this fake must copy: the mask deciding which
+    # pixels are scored cannot disagree with the scores it gates.
+    labels = fake_class_logit_segmenter(room_photo)
+
+    assert labels.dtype == torch.int64
+    assert not labels.requires_grad
+    assert torch.equal(
+        labels, fake_class_logit_segmenter.class_logits(room_photo).argmax(dim=1)
+    )
+
+
+def test_fake_class_logits_label_a_painted_region_by_its_brightness(
+    fake_class_logit_segmenter: FakeClassLogitSegmenter, room_photo: Tensor
+) -> None:
+    region = (slice(8, 24), slice(8, 24))
+
+    for label, brightness in BRIGHTNESS_BY_CLASS.items():
+        painted = _painted(room_photo, brightness, region)
+
+        labels = fake_class_logit_segmenter(painted)
+
+        assert set(labels[:, region[0], region[1]].unique().tolist()) == {label}
+
+
+def test_fake_class_logits_gradient_reaches_the_pixels_that_moved(
+    fake_class_logit_segmenter: FakeClassLogitSegmenter, room_photo: Tensor
+) -> None:
+    photo = room_photo.clone().requires_grad_(True)
+    windowpane = ADE20K_LABELS.index("windowpane")
+
+    gradient = assert_gradient_is_finite_and_nonzero(
+        fake_class_logit_segmenter.class_logits(photo)[:, windowpane].sum(), photo
+    )
+
+    assert gradient.shape == photo.shape

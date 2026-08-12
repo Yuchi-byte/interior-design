@@ -343,7 +343,7 @@ def test_the_class_energy_scores_an_empty_mask_zero_rather_than_dividing_by_it()
 
     error = masked_class_error(scores, _target(), empty, margin=_MARGIN)
 
-    assert float(error) == 0.0
+    assert float(error.detach()) == 0.0
     (gradient,) = torch.autograd.grad(error.sum(), scores)
     assert torch.isfinite(gradient).all()
 

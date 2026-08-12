@@ -4,9 +4,9 @@ from jaxtyping import TypeCheckError
 from torch import Tensor
 
 from roomgen_fakes import FakeDepthEstimator, FakeSegmenter
-from roomgen_geometry.reference import GeometricReference
+from roomgen_geometry.reference import GeometricReference, StructuralReference
 from roomgen_geometry.reward import masked_depth_error
-from roomgen_geometry.segmentation.ade20k import ADE20K_LABELS
+from roomgen_geometry.segmentation.ade20k import ADE20K_LABELS, NUM_CLASSES
 
 
 def test_reference_rejects_tensors_still_on_the_autograd_graph() -> None:
@@ -84,3 +84,42 @@ def test_the_reward_scores_an_affine_rescale_of_the_reference_as_no_drift(
     error = masked_depth_error(rescaled, reference.disparity, reference.mask)
 
     torch.testing.assert_close(error, torch.zeros(1), atol=1e-10, rtol=0.0)
+
+
+def test_the_structural_reference_holds_the_glazing_the_depth_reference_drops(
+    fake_segmenter: FakeSegmenter, room_photo: Tensor
+) -> None:
+    reference = StructuralReference.from_photo(
+        room_photo, segmenter=fake_segmenter, erosion_radius=0
+    )
+
+    glazing = reference.classes == ADE20K_LABELS.index("windowpane")
+    sofa = reference.classes == ADE20K_LABELS.index("sofa")
+    assert reference.classes.shape == (1, 64, 64)
+    assert reference.mask.shape == reference.classes.shape
+    assert not reference.classes.requires_grad
+    assert bool(reference.mask[glazing].all())
+    assert not bool(reference.mask[sofa].any())
+
+
+def test_the_structural_reference_rejects_an_id_off_the_end_of_the_label_table() -> (
+    None
+):
+    # The ids index a `gather` over the class axis every guided step; caught once
+    # here rather than as a device-side assert mid-sample, or by a `.max()` that
+    # would synchronise on the guidance path.
+    classes = torch.zeros((1, 4, 4), dtype=torch.int64)
+    classes[0, 0, 0] = NUM_CLASSES
+
+    with pytest.raises(ValueError, match="ADE20K-150"):
+        StructuralReference(
+            classes=classes, mask=torch.ones((1, 4, 4), dtype=torch.bool)
+        )
+
+
+def test_the_structural_reference_rejects_a_mask_of_a_different_shape() -> None:
+    with pytest.raises((TypeCheckError, ValueError), match="mask"):
+        StructuralReference(
+            classes=torch.zeros((1, 4, 4), dtype=torch.int64),
+            mask=torch.ones((1, 4, 5), dtype=torch.bool),
+        )

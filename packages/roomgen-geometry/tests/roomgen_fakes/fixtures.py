@@ -6,7 +6,7 @@ from jaxtyping import Float
 from torch import Generator, Tensor
 
 from roomgen_fakes.depth import FakeDepthEstimator
-from roomgen_fakes.segmentation import FakeSegmenter
+from roomgen_fakes.segmentation import FakeClassLogitSegmenter, FakeSegmenter
 
 _PHOTO_SIZE = (64, 64)
 
@@ -29,3 +29,8 @@ def fake_depth_estimator() -> FakeDepthEstimator:
 @pytest.fixture
 def fake_segmenter() -> FakeSegmenter:
     return FakeSegmenter()
+
+
+@pytest.fixture
+def fake_class_logit_segmenter() -> FakeClassLogitSegmenter:
+    return FakeClassLogitSegmenter()

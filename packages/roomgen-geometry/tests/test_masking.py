@@ -8,6 +8,7 @@ from roomgen_geometry.masking import (
     architectural_mask,
     erode_boundaries,
     scorable_mask,
+    structural_mask,
 )
 from roomgen_geometry.segmentation.ade20k import (
     ADE20K_LABELS,
@@ -237,3 +238,42 @@ def test_erosion_trims_the_kept_side_against_whatever_the_mode_exempted() -> Non
     # is the point: erosion follows the exemption rather than the label map.
     assert not bool(intersecting[:, 4:12, 4:12].any())
     assert bool(subtracting.all())
+
+
+def test_the_structural_mask_keeps_the_glazing_the_shell_mask_drops(
+    fake_segmenter: FakeSegmenter, room_photo: Tensor
+) -> None:
+    segmentation = fake_segmenter(room_photo)
+
+    structural = structural_mask(segmentation, erosion_radius=0)
+    shell = architectural_mask(segmentation, erosion_radius=0)
+
+    glazing = segmentation == ADE20K_LABELS.index("windowpane")
+    assert bool(glazing.any())
+    assert bool(structural[glazing].all())
+    assert not bool(shell[glazing].any())
+    # Everything the depth mask scores, the class term scores too: the sets
+    # differ by the glazing and nothing else.
+    assert torch.equal(structural, shell | glazing)
+
+
+def test_the_structural_mask_still_drops_the_furniture(
+    fake_segmenter: FakeSegmenter, room_photo: Tensor
+) -> None:
+    segmentation = fake_segmenter(room_photo)
+
+    structural = structural_mask(segmentation, erosion_radius=0)
+
+    assert not bool(structural[segmentation == _SOFA].any())
+
+
+def test_the_structural_mask_erodes_its_boundaries_like_every_other_mask() -> None:
+    # A class label flickers in the band either side of a segment edge, and a
+    # term that chases the flicker is charging the render for noise.
+    segmentation = _room_with_block(_SOFA)
+
+    uneroded = structural_mask(segmentation, erosion_radius=0)
+    eroded = structural_mask(segmentation, erosion_radius=2)
+
+    assert int(uneroded.sum()) == 16 * 16 - 4 * 4
+    assert int(eroded.sum()) == 16 * 16 - 8 * 8

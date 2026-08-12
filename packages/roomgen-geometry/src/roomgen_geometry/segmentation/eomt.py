@@ -30,9 +30,10 @@ class EoMT:
 
     The returned ids index
     :data:`~roomgen_geometry.segmentation.ade20k.ADE20K_LABELS`, and the call
-    runs under ``torch.no_grad``: the segmentation is evaluated once per photo
-    and is a constant for the rest of the run, so nothing here belongs on the
-    guidance gradient path.
+    runs under ``torch.no_grad``: an id map decides which pixels a reward may
+    score, which is a discrete decision that carries no useful gradient. The
+    scores those ids are the argmax of are reachable *with* gradient through
+    :meth:`class_logits`, which is what a class-consistency reward differentiates.
     """
 
     def __init__(
@@ -48,7 +49,11 @@ class EoMT:
         model: Module = EomtForUniversalSegmentation.from_pretrained(
             checkpoint, torch_dtype=dtype, cache_dir=cache_dir
         )
-        self._model = model.to(device).eval()
+        # Frozen like the depth backend, and now load-bearing rather than tidy:
+        # `class_logits` runs a backward through this network at every guided
+        # step, and a trainable parameter would have that backward accumulate a
+        # `.grad` the size of the weights for a gradient nobody reads.
+        self._model = model.to(device).eval().requires_grad_(False)
         # The processor is loaded for its normalisation statistics, its input
         # size, and its mask-logit decoding; the image preprocessing itself is
         # tensor ops below, so no input ever round-trips through PIL.
@@ -74,16 +79,7 @@ class EoMT:
     ) -> Int[Tensor, "batch height width"]:
         batch, _, height, width = images.shape
         with torch.no_grad():
-            resized = interpolate(
-                images.to(device=self._device, dtype=self._dtype),
-                size=self._input_size,
-                mode="bilinear",
-                align_corners=False,
-                antialias=True,
-            )
-            outputs = self._model(
-                pixel_values=(resized - self._image_mean) / self._image_std
-            )
+            outputs = self._model(pixel_values=self._preprocess(images))
             # The ids are decoded at the input resolution from the per-class
             # *logits*, which is what interpolation is defined on: an id map is
             # categorical and would be meaningless resampled bilinearly. The
@@ -95,3 +91,55 @@ class EoMT:
                 ),
             )
         return torch.stack(maps).to(torch.int64)
+
+    def class_logits(
+        self, images: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, "batch classes height width"]:
+        """Per-pixel class scores on the input frame, **carrying gradient into the image**.
+
+        Deliberately not under ``no_grad``, unlike :meth:`__call__`: this is the
+        one path into the segmentation network a reward may differentiate, and
+        it costs a forward *and a backward* through the encoder at every guided
+        step it is evaluated on.
+
+        The values are EoMT's semantic scores — each query's class distribution
+        (null class dropped) weighted by that query's mask probability and summed
+        — so they are non-negative mass rather than log-odds, and
+        :meth:`__call__` returns exactly their argmax.
+        """
+        _, _, height, width = images.shape
+        outputs = self._model(pixel_values=self._preprocess(images))
+        # The processor's `post_process_semantic_segmentation` computes this and
+        # then throws it away: it returns ids, and the keyword that keeps the
+        # scores beside them is newer than the transformers floor this package
+        # declares. The decode itself is four differentiable lines, so it is
+        # spelled out rather than pinned to a keyword that may not be there.
+        queries = outputs.class_queries_logits.softmax(dim=-1)[..., :-1]
+        masks = interpolate(
+            outputs.masks_queries_logits,
+            size=self._input_size,
+            mode="bilinear",
+            align_corners=False,
+        ).sigmoid()
+        scores = torch.einsum("bqc,bqhw->bchw", queries, masks)
+        return interpolate(
+            scores, size=(height, width), mode="bilinear", align_corners=False
+        )
+
+    def _preprocess(
+        self, images: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, "batch 3 _ _"]:
+        """Resize and normalise as tensor ops, so the gradient survives the round trip.
+
+        Shared by both paths: whether the result is differentiated is the
+        caller's business, and the two must see the same pixels or the ids would
+        gate scores taken from a different image.
+        """
+        resized = interpolate(
+            images.to(device=self._device, dtype=self._dtype),
+            size=self._input_size,
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        )
+        return (resized - self._image_mean) / self._image_std
