@@ -262,6 +262,7 @@ def _sample(
         text_guidance_scale=config.sampler.text_guidance_scale,
         generator=generator,
         normalize_gradient=config.guidance.normalize,
+        clip_step_rms=config.guidance.clip,
         reference=reference,
     )
     return image, time.perf_counter() - started

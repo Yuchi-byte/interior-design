@@ -10,6 +10,7 @@ from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.guidance.schedule import ConstantStrength
 from roomgen_guide.sampling.guided import (
+    _clipped,
     _normalized,
     decode_latent,
     guidance_gradient,
@@ -20,6 +21,10 @@ from roomgen_guide_fakes import LATENT_CHANNELS, FakePipeline, FakeScheduler
 
 _PROMPT = "a mid-century living room"
 _NORMALIZATION_EPSILON = 1e-12
+# The raw step at strength 500 on this stack has an RMS of a few hundredths, so
+# one cap sits well clear of it and the other binds on every step.
+_SLACK_CAP = 1.0
+_BINDING_CAP = 0.01
 
 
 class MeanBrightnessEnergy:
@@ -75,6 +80,7 @@ def _sample(
     text_guidance_scale: float = 7.5,
     seed: int = 0,
     normalize_gradient: bool = False,
+    clip_step_rms: float | None = None,
 ) -> Tensor:
     return sample_guided(
         pipeline,
@@ -87,6 +93,7 @@ def _sample(
         text_guidance_scale=text_guidance_scale,
         generator=torch.Generator().manual_seed(seed),
         normalize_gradient=normalize_gradient,
+        clip_step_rms=clip_step_rms,
     )
 
 
@@ -247,6 +254,124 @@ def test_a_zero_gradient_normalizes_to_zero() -> None:
     zero = torch.zeros((1, LATENT_CHANNELS, 8, 8))
 
     assert torch.equal(_normalized(zero, _NORMALIZATION_EPSILON), zero)
+
+
+def test_a_step_under_the_cap_is_the_raw_step_untouched(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    raw = _sample(fake_pipeline, room_photo, geometric_guidance, strength=500.0)
+    clipped = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=500.0,
+        clip_step_rms=_SLACK_CAP,
+    )
+    bound = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=500.0,
+        clip_step_rms=_BINDING_CAP,
+    )
+
+    assert torch.equal(raw, clipped)
+    assert not torch.equal(raw, bound)
+
+
+def test_a_step_over_the_cap_lands_exactly_on_it_without_turning(
+    generator: Generator,
+) -> None:
+    update = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator) * 100.0
+
+    clipped = _clipped(update, _BINDING_CAP, _NORMALIZATION_EPSILON)
+
+    torch.testing.assert_close(
+        clipped.square().mean().sqrt(), torch.tensor(_BINDING_CAP)
+    )
+    torch.testing.assert_close(
+        _normalized(clipped, _NORMALIZATION_EPSILON),
+        _normalized(update, _NORMALIZATION_EPSILON),
+    )
+    assert torch.equal(_clipped(update, 1e6, _NORMALIZATION_EPSILON), update)
+
+
+def test_the_capped_trajectory_stops_growing_with_the_energy(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    amplified = AmplifiedEnergy(geometric_guidance, factor=1000.0)
+
+    capped = _sample(
+        fake_pipeline,
+        room_photo,
+        amplified,
+        strength=500.0,
+        clip_step_rms=_BINDING_CAP,
+    )
+    # A cap that binds on every step *is* a fixed step of that size along the
+    # gradient, which is what normalization spells out directly.
+    at_the_cap = _sample(
+        fake_pipeline,
+        room_photo,
+        geometric_guidance,
+        strength=_BINDING_CAP,
+        normalize_gradient=True,
+    )
+    uncapped = _sample(fake_pipeline, room_photo, amplified, strength=500.0)
+
+    torch.testing.assert_close(capped, at_the_cap, rtol=1e-4, atol=1e-6)
+    assert not torch.allclose(uncapped, at_the_cap, rtol=1e-4, atol=1e-6)
+
+
+def test_a_flat_energy_clips_to_no_step_at_all(
+    fake_pipeline: FakePipeline, room_photo: Tensor
+) -> None:
+    unguided = _sample(fake_pipeline, room_photo, FlatEnergy(), strength=0.0)
+    clipped = _sample(
+        fake_pipeline,
+        room_photo,
+        FlatEnergy(),
+        strength=500.0,
+        clip_step_rms=_BINDING_CAP,
+    )
+
+    assert bool(torch.isfinite(clipped).all())
+    assert torch.equal(clipped, unguided)
+
+
+def test_capping_a_step_that_is_already_fixed_size_is_rejected(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    with pytest.raises(ValueError, match="clip_step_rms"):
+        _sample(
+            fake_pipeline,
+            room_photo,
+            geometric_guidance,
+            strength=500.0,
+            clip_step_rms=_BINDING_CAP,
+            normalize_gradient=True,
+        )
+
+
+def test_a_non_positive_cap_is_rejected(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    with pytest.raises(ValueError, match="clip_step_rms must be positive"):
+        _sample(
+            fake_pipeline,
+            room_photo,
+            geometric_guidance,
+            strength=500.0,
+            clip_step_rms=0.0,
+        )
 
 
 def test_the_guided_step_differentiates_the_energy_through_the_predicted_original(

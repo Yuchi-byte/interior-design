@@ -49,6 +49,9 @@ guidance:
   # safe at noise <= 0.6.
   strength: 0.04
   normalize: true
+  # Caps the RMS of a raw step (normalize: false), keeping the raw step's decay
+  # on scenes whose geometry is already close while bounding the rest.
+  clip: null
   # `decaying` (strength -> final_strength on a cosine) measured strictly
   # worse: it halves the geometric win for no adherence gain.
   schedule: constant

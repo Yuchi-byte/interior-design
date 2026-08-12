@@ -37,6 +37,7 @@ def renovate(
     text_guidance_scale: float,
     generator: torch.Generator,
     normalize_gradient: bool = False,
+    clip_step_rms: float | None = None,
     reference: GeometricReference | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Restyle the room in `photo` under `prompt` while holding its geometry.
@@ -46,6 +47,9 @@ def renovate(
             follows the same convention.
         normalize_gradient: turns `schedule`'s strength into a step size in
             latent-RMS units, invariant to the scale of the geometric energy.
+        clip_step_rms: ceiling on the RMS of the raw step, keeping the step that
+            a well-matched scene earns while bounding the one a large energy
+            asks for; mutually exclusive with `normalize_gradient`.
         reference: the photo's already-frozen geometry, which the caller must
             have built with this same `depth_estimator` and `segmenter` — a
             reference is only meaningful to the backends that produced it — and
@@ -76,6 +80,7 @@ def renovate(
         text_guidance_scale=text_guidance_scale,
         generator=generator,
         normalize_gradient=normalize_gradient,
+        clip_step_rms=clip_step_rms,
     )
 
 

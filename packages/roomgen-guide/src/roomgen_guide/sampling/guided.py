@@ -13,8 +13,8 @@ from roomgen_guide.guidance.schedule import GuidanceSchedule
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline, LatentAutoencoder
 
 # Small enough to be invisible against any gradient worth stepping along, and
-# there only so that an exactly zero gradient normalises to zero rather than NaN.
-_NORMALIZATION_EPSILON: Final = 1e-12
+# there only so that an exactly zero gradient rescales to zero rather than NaN.
+_RMS_EPSILON: Final = 1e-12
 
 
 def sample_guided(
@@ -29,6 +29,7 @@ def sample_guided(
     text_guidance_scale: float,
     generator: torch.Generator,
     normalize_gradient: bool = False,
+    clip_step_rms: float | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Renoise `photo` and denoise it back under `prompt`, steered by `guidance`.
 
@@ -45,6 +46,10 @@ def sample_guided(
             makes the strength `schedule` returns a step size in latent-RMS units
             — bounded per step and invariant to the absolute scale of the energy
             — instead of a multiplier on a gradient whose size the energy sets.
+        clip_step_rms: ceiling on the RMS of the raw step, in latent-RMS units.
+            Below it the step is the raw one, which shrinks as the energy is
+            satisfied; above it the step is exactly this size. Mutually
+            exclusive with `normalize_gradient`, whose step is already fixed-RMS.
 
     A guided step forms the predicted clean image from the current latent,
     decodes it, evaluates `guidance` on it, and shifts the latent along the
@@ -55,6 +60,14 @@ def sample_guided(
         raise ValueError(f"steps must be at least 1, got {steps}")
     if not 0.0 < noise_strength <= 1.0:
         raise ValueError(f"noise_strength must lie in (0, 1], got {noise_strength}")
+    if clip_step_rms is not None:
+        if normalize_gradient:
+            raise ValueError(
+                "clip_step_rms caps the raw step, but normalize_gradient already "
+                "fixes every step at the schedule's strength; pass one or the other"
+            )
+        if clip_step_rms <= 0.0:
+            raise ValueError(f"clip_step_rms must be positive, got {clip_step_rms}")
 
     scheduler = pipeline.scheduler
     prediction_type: str = scheduler.config.prediction_type
@@ -105,8 +118,11 @@ def sample_guided(
                 alpha_cumprod=alphas_cumprod[timestep],
             )
             if normalize_gradient:
-                steering = _normalized(steering, _NORMALIZATION_EPSILON)
-            latent = latent - strength * steering
+                steering = _normalized(steering, _RMS_EPSILON)
+            update = strength * steering
+            if clip_step_rms is not None:
+                update = _clipped(update, clip_step_rms, _RMS_EPSILON)
+            latent = latent - update
         latent = scheduler.step(noise_prediction, timestep, latent).prev_sample
 
     return decode_latent(pipeline.vae, latent)
@@ -156,9 +172,26 @@ def decode_latent(
 def _normalized(
     gradient: Float[Tensor, "batch channels height width"], epsilon: float
 ) -> Float[Tensor, "batch channels height width"]:
-    # ‖g‖₂ / √numel(g): the RMS, so the result has unit RMS whatever the energy's
-    # units are, and a step of `strength` moves the latent by that much per entry.
-    return gradient / (gradient.square().mean().sqrt() + epsilon)
+    # The result has unit RMS whatever the energy's units are, so a step of
+    # `strength` moves the latent by that much per entry.
+    return gradient / (_root_mean_square(gradient) + epsilon)
+
+
+def _clipped(
+    update: Float[Tensor, "batch channels height width"],
+    clip_step_rms: float,
+    epsilon: float,
+) -> Float[Tensor, "batch channels height width"]:
+    # min(1, cap/RMS): a step under the cap is multiplied by exactly 1.0 and so
+    # passes through bit-for-bit, and one over it lands exactly on the cap.
+    scale = clip_step_rms / (_root_mean_square(update) + epsilon)
+    return update * scale.clamp(max=1.0)
+
+
+def _root_mean_square(
+    tensor: Float[Tensor, "batch channels height width"],
+) -> Float[Tensor, ""]:
+    return tensor.square().mean().sqrt()
 
 
 def _encode_photo(

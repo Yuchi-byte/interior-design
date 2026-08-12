@@ -112,6 +112,10 @@ class GuidanceConfig(Config):
         normalize: divide the gradient by its own RMS before the step, bounding
             the per-step push so a large energy cannot run the sampler away into
             a depth-satisfying texture.
+        clip: ceiling on the RMS of the raw step, in latent-RMS units: the raw
+            step keeps shrinking as the geometry is satisfied, and the cap is
+            what stops a large energy from running away. Read only when
+            `normalize` is false, which the sampler enforces.
         schedule: `constant` holds `strength` for the whole trajectory;
             `decaying` falls from it to `final_strength` on a cosine, spending
             the steering on the early steps that decide layout.
@@ -123,6 +127,7 @@ class GuidanceConfig(Config):
 
     strength: Annotated[float, Field(ge=0.0)]
     normalize: bool = False
+    clip: Annotated[float, Field(gt=0.0)] | None = None
     schedule: Literal["constant", "decaying"] = "constant"
     final_strength: Annotated[float, Field(ge=0.0)] = 0.0
     erosion_radius: Annotated[int, Field(ge=0)] = 2
