@@ -39,6 +39,7 @@ def renovate(
     normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
     reference: GeometricReference | None = None,
+    resegment: bool = True,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Restyle the room in `photo` under `prompt` while holding its geometry.
 
@@ -52,9 +53,15 @@ def renovate(
             asks for; mutually exclusive with `normalize_gradient`.
         reference: the photo's already-frozen geometry, which the caller must
             have built with this same `depth_estimator` and `segmenter` — a
-            reference is only meaningful to the backends that produced it — and
-            which leaves `erosion_radius` unused. `None` freezes the photo here,
-            at the cost of a depth and a segmentation pass per call.
+            reference is only meaningful to the backends that produced it.
+            `None` freezes the photo here, at the cost of a depth and a
+            segmentation pass per call.
+        resegment: score on the reference shell *and* the prediction's own,
+            re-segmenting the sample at every guided step — occluding a wall
+            with new furniture is then free, moving that wall is not. `False`
+            scores the reference shell alone, which charges a renovation for
+            every surface it covers up, and leaves `segmenter` unused whenever
+            `reference` is already built.
 
     Samples against the photo's frozen
     :class:`~roomgen_geometry.reference.GeometricReference` with the same
@@ -72,7 +79,10 @@ def renovate(
         photo,
         prompt,
         guidance=GeometricGuidance(
-            depth_estimator=depth_estimator, reference=reference
+            depth_estimator=depth_estimator,
+            reference=reference,
+            segmenter=segmenter if resegment else None,
+            erosion_radius=erosion_radius if resegment else None,
         ),
         schedule=schedule,
         steps=steps,

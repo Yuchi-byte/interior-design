@@ -59,9 +59,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
 
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
   image x̂₀ to a scalar energy.
-- `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes
-  x̂₀, re-runs the depth model, and scores it against a
-  `GeometricReference`.
+- `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
+  re-runs the depth model, and scores it against a `GeometricReference` over the
+  reference's shell intersected with the shell of a configured segmenter's
+  (detached, `no_grad`) view of that same x̂₀ — so furniture the renovation puts
+  in front of a wall is free and a wall that has moved is not.
 - `guidance/schedule.py`: guidance-strength schedules over the timestep — strong
   early while layout is still being decided, decayed late so texture detail is
   not fought.

@@ -24,6 +24,11 @@ _STRENGTH = 500.0
 _STEP_SIZE = 0.1
 # Below the raw step this stack takes at `_STRENGTH`, so the cap binds.
 _CLIP_STEP_RMS = 0.01
+# `FakeSegmenter` labels by frame position and ignores pixel content, so a
+# second layout is how a prediction whose shell no longer matches the photo's is
+# staged: handed a reference frozen from the default layout, this one is the
+# sample's disagreeing view of it.
+_RELAID_OUT_SEGMENTER = FakeSegmenter(floor_fraction=0.5)
 
 
 def _renovate(
@@ -37,6 +42,7 @@ def _renovate(
     normalize_gradient: bool = False,
     clip_step_rms: float | None = None,
     reference: GeometricReference | None = None,
+    resegment: bool = True,
 ) -> Tensor:
     return renovate(
         photo,
@@ -53,6 +59,7 @@ def _renovate(
         normalize_gradient=normalize_gradient,
         clip_step_rms=clip_step_rms,
         reference=reference,
+        resegment=resegment,
     )
 
 
@@ -253,6 +260,80 @@ def test_a_prebuilt_reference_renovates_exactly_as_one_built_in_the_call(
     )
 
     assert torch.equal(handed, built)
+
+
+def test_reference_only_scoring_ignores_the_predictions_own_shell(
+    fake_pipeline: FakePipeline,
+    room_photo: Tensor,
+    fake_depth_estimator: FakeDepthEstimator,
+    fake_segmenter: FakeSegmenter,
+) -> None:
+    reference = GeometricReference.from_photo(
+        room_photo,
+        depth_estimator=fake_depth_estimator,
+        segmenter=fake_segmenter,
+        erosion_radius=_EROSION_RADIUS,
+    )
+    sampled = sample_guided(
+        fake_pipeline,
+        room_photo,
+        _PROMPT,
+        guidance=GeometricGuidance(
+            depth_estimator=fake_depth_estimator, reference=reference
+        ),
+        schedule=ConstantStrength(strength=_STRENGTH),
+        steps=_STEPS,
+        noise_strength=_NOISE_STRENGTH,
+        text_guidance_scale=_TEXT_GUIDANCE_SCALE,
+        generator=torch.Generator().manual_seed(0),
+    )
+
+    reference_only = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment=False,
+    )
+
+    assert torch.equal(reference_only, sampled)
+
+
+def test_resegmenting_scores_a_different_shell_than_the_reference_alone(
+    fake_pipeline: FakePipeline,
+    room_photo: Tensor,
+    fake_depth_estimator: FakeDepthEstimator,
+    fake_segmenter: FakeSegmenter,
+) -> None:
+    reference = GeometricReference.from_photo(
+        room_photo,
+        depth_estimator=fake_depth_estimator,
+        segmenter=fake_segmenter,
+        erosion_radius=_EROSION_RADIUS,
+    )
+
+    reference_only = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment=False,
+    )
+    resegmented = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment=True,
+    )
+
+    assert not torch.equal(resegmented, reference_only)
 
 
 def test_renovating_lowers_the_masked_depth_error_against_the_photo(
