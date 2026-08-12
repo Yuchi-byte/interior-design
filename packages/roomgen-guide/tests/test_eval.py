@@ -9,7 +9,7 @@ from torch import Generator, Tensor
 from roomgen_fakes import FakeDepthEstimator
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.reward import masked_depth_error
-from roomgen_guide.eval import ClipPromptAdherence, depth_error
+from roomgen_guide.eval import ClipPromptAdherence, depth_error, depth_residual_map
 from roomgen_guide.eval import clip as clip_module
 from roomgen_guide.settings import RoomgenSettings
 
@@ -81,6 +81,39 @@ def test_the_depth_error_is_the_masked_reward_the_guidance_is_steered_by(
         fake_depth_estimator(render), reference.disparity, reference.mask
     )
     assert score == pytest.approx(float(expected.mean()))
+
+
+def test_the_photos_residual_against_its_own_geometry_is_zero_everywhere(
+    room_photo: Float[Tensor, "1 3 64 64"],
+    reference: GeometricReference,
+    fake_depth_estimator: FakeDepthEstimator,
+) -> None:
+    residual = depth_residual_map(
+        room_photo, reference=reference, depth_estimator=fake_depth_estimator
+    )
+
+    assert residual.shape == reference.mask.shape
+    assert torch.allclose(residual, torch.zeros_like(residual), atol=1e-12)
+
+
+def test_the_residual_map_averages_over_the_shell_to_the_depth_error(
+    room_photo: Float[Tensor, "1 3 64 64"],
+    reference: GeometricReference,
+    fake_depth_estimator: FakeDepthEstimator,
+    generator: Generator,
+) -> None:
+    render = torch.rand(room_photo.shape, generator=generator)
+
+    residual = depth_residual_map(
+        render, reference=reference, depth_estimator=fake_depth_estimator
+    )
+
+    assert not residual[~reference.mask].any()
+    assert residual[reference.mask].max() > 0.0
+    masked_mean = residual.flatten(1).sum(-1) / reference.mask.flatten(1).sum(-1)
+    assert float(masked_mean.mean()) == pytest.approx(
+        depth_error(render, reference=reference, depth_estimator=fake_depth_estimator)
+    )
 
 
 @dataclass
