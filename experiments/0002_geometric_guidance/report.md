@@ -247,9 +247,10 @@ its one failure is an honest geometry near-miss. The guided lakehouse image
 at 0.8 is a coherent aggressive restyle preserving the window-wall structure
 (verified by eye, `outputs/noise08_inspect/lakehouse_norm003_guided.png`).
 
-**Pinned defaults: `normalize: true, strength: 0.04`** (16/16 at the default
-noise 0.6); use ~0.03 for high-noise work. Raw mode stays available but is
-only safe at noise ≤ 0.6.
+**Pinned defaults at the time: `normalize: true, strength: 0.04`** (16/16 at
+the default noise 0.6). *(Superseded the same day: the held-out seeds below
+exposed the fixed-RMS step's overshoot, the clipped raw step replaced it, and
+the `normalize` flag has since been removed from the code entirely.)*
 
 ### Held-out seeds (2, 3 — never used for tuning) at the pinned default
 
