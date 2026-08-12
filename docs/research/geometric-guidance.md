@@ -54,6 +54,17 @@ gradient). The mask is **eroded** at segment boundaries, because monocular depth
 is unreliable within a few pixels of an edge and those pixels otherwise dominate
 the residual. Derivation and degenerate-`det` guard: `docs/architecture.md`.
 
+**The invariance is to a positive scale only.** `s` is floored at 0, because
+near/far ordering is geometry rather than part of the ambiguity: an
+unconstrained fit was measured (MFM v2 kitchen cells, 2026-08-12) turning
+depth-inverted and featureless-ramp renders into ~95% depth-error reductions by
+fitting them at scales of −0.2 to −0.9, while genuine matches fit at +0.85–0.9.
+Floored, such a render scores the flat fit's `Var(r)` — but flatly, with no
+gradient out of the inversion, so the fit also returns the variance the
+reflection would have explained and the energy charges it: `E ≥ Var(r)` on any
+anti-correlated render, falling monotonically as the render turns back the right
+way round.
+
 ### The model stack
 
 | Role | Checkpoint | Licence |
@@ -132,6 +143,12 @@ The whole knob surface is `strength`, `clip`, `erosion_radius`, `mask_mode`,
   silently excused.
 - **The step arithmetic is float32 by contract**, so a half-precision sampler
   keeps a finite, correctly-directed gradient.
+- **Orientation is not part of the affine freedom.** The alignment's scale is
+  floored at zero and the refused variance is charged back into the energy, so
+  a reversed or anti-correlated render scores above the flat fit instead of
+  being flattered by the sign flip — with a gradient that walks it back rather
+  than a flat score that strands it. Reward and eval fit through the one
+  function, so both inherit it.
 - **Honest eval.** One common mask for both arms, adherence (or a preference
   score) always reported beside depth error: the degenerate ways to win on
   geometry are not renovating, and rendering depth-shaped non-rooms — the

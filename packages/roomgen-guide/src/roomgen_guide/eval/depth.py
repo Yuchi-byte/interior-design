@@ -94,6 +94,13 @@ def signed_depth_residual_map(
     and zero outside the mask. Returned in float32, in the aligned inverse-depth
     units of `depth_error`, whose score is the mean of this map's square over
     the mask. Taken under ``no_grad``, like every finished-render measurement.
+
+    The fit is the same constrained one the reward uses, so a render whose depth
+    ordering is reversed is aligned at scale zero and its map is the photo's own
+    structure about its mean — the reading that a render carrying none of the
+    room's near/far ordering deserves. That is the one case where the score
+    exceeds this map's mean square, by the variance the fit refused to explain
+    by reflecting.
     """
     scored = reference.mask if mask is None else mask
     with torch.no_grad():

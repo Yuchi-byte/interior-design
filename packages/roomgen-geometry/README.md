@@ -22,8 +22,12 @@ meaningless.**
 `align_scale_shift` fixes this by solving the 2x2 weighted least-squares system
 for `(s, t)` minimising `Σ w (s·d + t − r)²` over the masked pixels in closed
 form, and the error is taken on the aligned prediction. The result is invariant
-to any affine rescaling of the prediction — which is exactly the invariance the
-model's output has. The derivation and the degenerate-`det` guard are in
+to any *positive* affine rescaling of the prediction — which is exactly the
+invariance the model's output has. It stops there: `s` is floored at 0, since
+which surfaces are near and which are far is the geometry being scored and not
+an unknown of the backend, and a prediction the fit could only match by
+reflecting is charged for it instead of being credited. The derivation, the
+degenerate-`det` guard and the refused-variance term are in
 `docs/architecture.md`; the rule is in `CLAUDE.md`: nothing compares depth
 without aligning first.
 

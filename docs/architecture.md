@@ -62,7 +62,8 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   inverted mask (Chebyshev radius in pixels); the image border is not treated as
   a segment edge.
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
-  fit of a prediction onto a reference over the masked pixels.
+  fit of a prediction onto a reference over the masked pixels, at a
+  non-negative scale.
 - `reward.py`: `masked_depth_error`, the scale-and-shift-invariant masked
   objective.
 - `reference.py`: `GeometricReference`, the frozen (masked depth, mask) pair
@@ -197,10 +198,12 @@ whose normal equations are the 2x2 system
     [ Σw d    Σw   ] [ t ] = [ Σw r   ]
 
 with the closed-form solution (writing `S_dd = Σ w d²`, `S_d = Σ w d`,
-`S_1 = Σ w`, `S_dr = Σ w d r`, `S_r = Σ w r`, `det = S_dd·S_1 − S_d²`):
+`S_1 = Σ w`, `S_dr = Σ w d r`, `S_r = Σ w r`, `det = S_dd·S_1 − S_d²`,
+`cov = S_1·S_dr − S_d·S_r`):
 
-    s = clamp( (S_1·S_dr − S_d·S_r) / (det + λ·S_1·S_dd),  ±1000 )
+    s = clamp( cov / (det + λ·S_1·S_dd),  0, 1000 )
     t = (S_r − s·S_d) / S_1
+    v = min(cov, 0)² / (S_1² · (det + λ·S_1·S_dd))
 
 `det` degenerates when the masked region is tiny or has near-constant depth.
 The ridge `λ = 1e-12` and the cap on `s` are what carry the solve through that
@@ -211,14 +214,31 @@ conditioned mask. An empty mask alone falls back to the identity `(1, 0)`.
 Pixels outside the mask are *replaced* with zero rather than weighted by it,
 since `0 × NaN` is NaN in both directions. The whole solve runs in float64 and
 the energy in float32, whatever dtype the maps arrive in.
-`masked_depth_error` is then the masked mean squared residual of the aligned
-prediction,
 
-    E = ( Σ_i w_i (s·d_i + t − r_i)² ) / Σ_i w_i
+**`s` is floored at 0: the fit may rescale the prediction but never reflect it.**
+Near/far ordering is geometry, not part of the affine ambiguity the backend
+leaves undetermined — measured, an unconstrained fit gave depth-inverted renders
+negative scales and scored them as near-perfect matches. The floor is the
+constrained optimum (`s = max(0, unconstrained s)`), and `v` — the refused
+variance, `cov²/Var(d)` and so bounded by `Var(r)` — is the residual reduction
+that reflection would have bought, returned beside the fit rather than
+discarded. `masked_depth_error` is then the masked mean squared residual of the
+aligned prediction, plus that:
 
-which is invariant to any affine rescaling of `d` by construction. This is the
-scale-and-shift-invariant loss of MiDaS (arXiv:1907.01341) used as a reward
-rather than a training objective.
+    E = ( Σ_i w_i (s·d_i + t − r_i)² ) / Σ_i w_i  +  v
+
+`v` is identically zero wherever the unconstrained fit was already positive, so
+this is the scale-and-shift-invariant loss of MiDaS (arXiv:1907.01341) — used as
+a reward rather than a training objective — on every prediction that shares the
+room's orientation, and it is invariant to any *positive* affine rescaling of
+`d` by construction. On a reversed one, where the floored fit alone would score
+the flat `Var(r)` with no gradient at all, `v` restores both the size (`E ≥
+Var(r)`, no sign-flip discount) and a descent direction back toward the room's
+own ordering. The two branches meet with matching slope at `cov = 0`, so nothing
+jumps as the optimum crosses the floor. Eval's `signed_depth_residual_map` fits
+through the same function and inherits all of it; being a per-pixel map it
+carries the floored fit's residual only, which is the one case where the score
+exceeds its mean square.
 
 Everything downstream depends on this alignment: it is what makes the reward
 comparable across two different images at all.

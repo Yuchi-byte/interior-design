@@ -311,6 +311,14 @@ excluded from the shell, `backends.deterministic`, seeds 0–3, strength 10 with
 | noise 0.9, subtract_contents | 0.559 → 0.260 | 55.4% | 99.6% | 67% | 9.0 |
 | noise 0.9, DPS (`through_unet`) | 0.543 → 0.272 | 53.3% | 98.7% | 56% | 12.3 (27.5 GiB peak) |
 
+**2026-08-12:** the alignment's scale is now floored at zero (orientation is
+geometry, not affine freedom). The arms in this table are unaffected — every one
+of them fits at a positive scale, and the energy is bit-identical there — but
+the **pre-fix MFM v2 kitchen-cell depth numbers were sign-flip-flattered**:
+those cells fit at negative scales, so their ~95% "reductions" were the
+alignment reflecting a degenerate render, not the render matching the room. Any
+MFM depth number measured before this date needs re-running.
+
 The central claim holds under the honest metric: at noise 0.6 guidance removes
 **~74%** of the control's depth error with adherence at parity, over four seeds
 and eight scenes, on a pixel set both arms segmented for themselves. At 0.9 —

@@ -91,6 +91,37 @@ def test_the_depth_error_is_the_masked_reward_the_guidance_is_steered_by(
     assert score == pytest.approx(float(expected.mean()))
 
 
+def test_eval_inherits_the_rewards_refusal_to_align_a_reversed_room(
+    room_photo: Float[Tensor, "1 3 64 64"],
+    reference: GeometricReference,
+    fake_depth_estimator: FakeDepthEstimator,
+) -> None:
+    # Eval and the reward fit through the same `align_scale_shift`, so a render
+    # whose depth ordering is reversed cannot buy a near-zero score here either
+    # — measured on MFM v2, where a sign-flipped fit read as a ~95% reduction.
+    # Read backwards, the photo is that render: the fit onto it is negative.
+    reversed_room = GeometricReference(
+        disparity=-reference.disparity, mask=reference.mask
+    )
+    shell = reversed_room.disparity[reversed_room.mask]
+    flat_fit = float(shell.var(unbiased=False))
+
+    score = depth_error(
+        room_photo, reference=reversed_room, depth_estimator=fake_depth_estimator
+    )
+    residual = signed_depth_residual_map(
+        room_photo, reference=reversed_room, depth_estimator=fake_depth_estimator
+    )
+
+    assert score > flat_fit
+    # Fitted at scale zero, the map is the reference's own structure about its
+    # mean: the render carries none of the room's near/far ordering, which is
+    # what a flat fit's residual says and what the score charges on top of.
+    torch.testing.assert_close(
+        residual[reversed_room.mask], shell.mean() - shell, atol=1e-6, rtol=0.0
+    )
+
+
 def test_the_photos_residual_against_its_own_geometry_is_zero_everywhere(
     room_photo: Float[Tensor, "1 3 64 64"],
     reference: GeometricReference,

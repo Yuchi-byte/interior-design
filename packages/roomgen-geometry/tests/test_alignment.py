@@ -17,9 +17,16 @@ from roomgen_geometry.alignment import (
 def _masked_mean_squared_error(
     prediction: Tensor, target: Tensor, mask: Tensor
 ) -> Tensor:
-    aligned = apply_scale_shift(prediction, align_scale_shift(prediction, target, mask))
+    # `masked_depth_error` in one line, including the variance the fit refused
+    # to explain by reflecting: a fit floored at zero scores flat and gradient-
+    # free without it, so an alignment test that dropped it would be scoring a
+    # different objective than the reward does.
+    fit = align_scale_shift(prediction, target, mask)
+    aligned = apply_scale_shift(prediction, fit)
     weight = mask.to(prediction.dtype)
-    return (weight * (aligned - target) ** 2).sum() / weight.sum()
+    return (
+        weight * (aligned - target) ** 2
+    ).sum() / weight.sum() + fit.refused_variance.sum()
 
 
 def _assert_is_identity_fit(scale: Tensor, shift: Tensor) -> None:
@@ -156,6 +163,67 @@ def test_the_fit_stays_continuous_across_the_flattening_it_cannot_follow(
     assert min(gradients) > 0.0
 
 
+def test_the_fit_rescales_the_prediction_but_never_reflects_it(
+    generator: Generator,
+) -> None:
+    # A reflected prediction is an affine image of the target, so an
+    # unconstrained fit lands on it exactly and scores a room turned inside out
+    # as a perfect match. Near/far ordering is geometry, not part of the affine
+    # freedom the backend leaves undetermined: the fit floors at zero, which is
+    # the mean-matching fit, and reports the variance it declined to explain.
+    target = torch.rand((1, 16, 16), generator=generator)
+    mask = torch.ones_like(target, dtype=torch.bool)
+
+    fit = align_scale_shift(-2.0 * target + 7.0, target, mask)
+
+    torch.testing.assert_close(fit.scale, torch.zeros(1))
+    torch.testing.assert_close(fit.shift, target.mean()[None])
+    # Reflected, the prediction explains all of the target's variance, so all of
+    # it is refused — and the energy that charges it scores twice the flat fit.
+    torch.testing.assert_close(fit.refused_variance, target.var(unbiased=False)[None])
+
+
+def test_the_energy_meets_the_scale_floor_with_no_step_across_it(
+    generator: Generator,
+) -> None:
+    # The counterpart of the flattening sweep above, for the other end the fit
+    # is constrained at. The prediction is an independent map with its target
+    # component projected out plus `tilt` of the target, so the unconstrained
+    # scale is proportional to `tilt` and crosses zero in the middle of the
+    # sweep rather than somewhere the test would have to hunt for.
+    target = torch.rand((1, 32, 32), generator=generator)
+    mask = torch.ones_like(target, dtype=torch.bool)
+    centred = target - target.mean()
+    noise = torch.rand((1, 32, 32), generator=generator)
+    orthogonal = noise - (noise * centred).sum() / (centred * centred).sum() * centred
+    tilts = [(step - 25) / 250 for step in range(51)]
+
+    errors = []
+    gradients = []
+    for tilt in tilts:
+        prediction = (orthogonal + tilt * centred).requires_grad_(True)
+        error = _masked_mean_squared_error(prediction, target, mask)
+        (gradient,) = torch.autograd.grad(error, prediction)
+        errors.append(float(error.detach()))
+        gradients.append(float(gradient.abs().max()))
+
+    flat_fit = float(target.var(unbiased=False))
+    for previous, current in pairwise(errors):
+        assert abs(current - previous) < 0.05 * flat_fit
+    for previous, current in pairwise(gradients):
+        assert abs(current - previous) < 0.05 * max(gradients)
+    # At the crossing the fit is the flat one and scores its residual exactly;
+    # either side of it the two branches are mirror images about that value, so
+    # the penalty joins the fit with the same slope rather than at a kink.
+    assert errors[25] == pytest.approx(flat_fit, rel=1e-6)
+    for below, above in zip(errors[:25], reversed(errors[26:]), strict=True):
+        assert below + above == pytest.approx(2.0 * flat_fit, rel=1e-6)
+    # Monotone the whole way: more of the target in the prediction always scores
+    # better, and reversing it always scores worse than carrying none of it.
+    for previous, current in pairwise(errors):
+        assert current < previous
+
+
 def test_the_aligned_error_gradient_reaches_every_masked_pixel(
     generator: Generator,
 ) -> None:
@@ -203,5 +271,6 @@ def test_a_shape_annotation_with_no_hand_written_guard_is_still_enforced() -> No
     # jaxtyping import hook — if it stops being installed, this is what says so.
     with pytest.raises(TypeCheckError):
         apply_scale_shift(
-            torch.zeros((8, 8)), ScaleShift(torch.ones(1), torch.zeros(1))
+            torch.zeros((8, 8)),
+            ScaleShift(torch.ones(1), torch.zeros(1), torch.zeros(1)),
         )

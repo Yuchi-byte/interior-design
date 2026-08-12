@@ -33,8 +33,10 @@ def masked_depth_error(
     Both maps are affine-invariant inverse depth, so they share no frame until
     :func:`roomgen_geometry.alignment.align_scale_shift` has fitted the
     prediction onto the target over the masked pixels; the error is the masked
-    mean squared residual of that fit, and is therefore unchanged by any affine
-    rescaling of `prediction`.
+    mean squared residual of that fit, and is therefore unchanged by any
+    *positive* affine rescaling of `prediction`. A negative one is not a change
+    of frame but a change of geometry — it swaps near for far — and scores
+    above the flat fit rather than the same as the unreflected map.
 
     The energy is float32 by contract whatever dtype the two maps arrive in, so
     that a half-precision sampling run scores against a reduction that cannot
@@ -50,9 +52,8 @@ def masked_depth_error(
     zero = torch.zeros((), dtype=_ENERGY_DTYPE, device=prediction.device)
     predicted = torch.where(mask, prediction.to(_ENERGY_DTYPE), zero)
     reference = torch.where(mask, target.to(_ENERGY_DTYPE), zero)
-    aligned = apply_scale_shift(
-        predicted, align_scale_shift(predicted, reference, mask)
-    )
+    fit = align_scale_shift(predicted, reference, mask)
+    aligned = apply_scale_shift(predicted, fit)
     weight = mask.to(_ENERGY_DTYPE)
     squared_residual = (
         (torch.where(mask, aligned - reference, zero) ** 2).flatten(1).sum(-1)
@@ -63,4 +64,13 @@ def masked_depth_error(
     # fit `align_scale_shift` falls back to on an empty mask, which is the one
     # case it leaves the maps unaligned — every non-empty mask, however
     # degenerate, is scored against a fit that has at least matched their means.
-    return squared_residual / weight.flatten(1).sum(-1).clamp(min=1.0)
+    mean_squared_residual = squared_residual / weight.flatten(1).sum(-1).clamp(min=1.0)
+    # A prediction whose depth ordering is reversed is fitted at scale zero, so
+    # the residual above is the flat fit's — the reference's own masked variance
+    # — and it is flat in the prediction: no gradient, and nothing telling a
+    # sampler which way out of an inverted render. Adding back the variance only
+    # a reflection could have explained restores both, at the cost of an energy
+    # that exceeds the flat fit exactly where the geometry is inside out. It is
+    # identically zero, and so bit-for-bit inert, on any fit the constraint did
+    # not bind on.
+    return mean_squared_residual + fit.refused_variance

@@ -1,4 +1,4 @@
-"""Closed-form least-squares removal of the affine freedom in inverse depth."""
+"""Closed-form least-squares removal of the positive-affine freedom in inverse depth."""
 
 from typing import Final, NamedTuple
 
@@ -34,8 +34,18 @@ _MAX_SCALE: Final = 1e3
 
 
 class ScaleShift(NamedTuple):
+    """An affine fit per batch element, and what constraining its sign cost.
+
+    `refused_variance` is the share of the target's masked variance that only a
+    *reflected* fit could have explained — zero wherever the unconstrained
+    optimum was already positive, and otherwise exactly the residual reduction a
+    negative scale would have bought. It is in the squared units of the target,
+    so a caller scoring a mean squared residual charges it by adding it on.
+    """
+
     scale: Float[Tensor, "batch"]
     shift: Float[Tensor, "batch"]
+    refused_variance: Float[Tensor, "batch"]
 
 
 def align_scale_shift(
@@ -45,15 +55,25 @@ def align_scale_shift(
 ) -> ScaleShift:
     """Per-batch-element least-squares fit of `prediction` onto `target`.
 
-    Minimises ``sum_i mask_i * (scale * prediction_i + shift - target_i)^2``,
-    lightly ridge-damped and with ``|scale|`` capped at 1000. Both are slack by
-    many orders on any pair of depth maps that share structure — the fit
-    returned there is the plain least-squares one to eleven figures — and both
-    exist for the ill-conditioned end, where an undamped fit blows up like
-    ``1 / prediction_std``. Damped and capped, it instead falls continuously to
-    the mean-matching ``(0, masked mean of target)``: whatever the masked pixels
-    determine is determined, and a mask over which the prediction carries no
-    variance (one pixel, a flat region) determines the level but not the slope.
+    Minimises ``sum_i mask_i * (scale * prediction_i + shift - target_i)^2``
+    **subject to a non-negative scale**, lightly ridge-damped and with `scale`
+    capped at 1000. The damping and the cap are slack by many orders on any pair
+    of depth maps that share structure — the fit returned there is the plain
+    least-squares one to eleven figures — and both exist for the ill-conditioned
+    end, where an undamped fit blows up like ``1 / prediction_std``. Damped and
+    capped, it instead falls continuously to the mean-matching ``(0, masked mean
+    of target)``: whatever the masked pixels determine is determined, and a mask
+    over which the prediction carries no variance (one pixel, a flat region)
+    determines the level but not the slope.
+
+    The scale floor is not a numerical guard but the geometry: near/far ordering
+    is a fact about the depth maps, not part of the affine freedom the backend
+    leaves undetermined, so a prediction the fit could only match by reflecting
+    it is one that has the room's depth ordering backwards. The floor is a
+    projection — ``scale = max(0, unconstrained scale)``, which is the
+    constrained optimum — and the reduction the reflection would have bought is
+    reported as `refused_variance` rather than discarded, since a caller that
+    only saw the projected fit would be looking at a flat one with no gradient.
 
     Only an *empty* mask, which determines nothing at all, falls back to the
     identity ``(1, 0)``. Differentiable in both maps throughout, with the
@@ -92,8 +112,21 @@ def align_scale_shift(
     # [sum_cross, sum_target], for the scale only. Its numerator carries the
     # masked covariance, which vanishes with the variance the damping is holding
     # the denominator up by, so the slope tends to zero rather than diverging.
-    slope = (count * sum_cross - sum_prediction * sum_target) / safe_damped
-    scale = slope.clamp(-_MAX_SCALE, _MAX_SCALE)
+    covariance = count * sum_cross - sum_prediction * sum_target
+    slope = covariance / safe_damped
+    scale = slope.clamp(0.0, _MAX_SCALE)
+    # What the floor threw away: `min(slope, 0)^2 * masked variance of the
+    # prediction`, written over the numerator so a slope past the cap is charged
+    # at its uncapped size. Algebraically it is `covariance^2 / variance`, the
+    # target variance a reflected fit would have explained, which is bounded by
+    # the target's own variance however anti-correlated the prediction is — so
+    # charging it doubles the flat fit's residual at worst and cannot swamp the
+    # energy. It leaves the floor continuously: quadratic in a slope that is
+    # itself continuous, so it and its gradient reach zero together as the
+    # unconstrained optimum crosses into positive territory.
+    refused_variance = covariance.clamp(max=0.0) ** 2 / (
+        safe_count * safe_count * safe_damped
+    )
     # The shift is back-substituted from the *capped* scale rather than solved
     # from its own cofactor: it is what makes the capped fit still match the two
     # masked means, and so what makes the fit continuous in the prediction where
@@ -102,11 +135,16 @@ def align_scale_shift(
 
     # An empty mask determines neither, and unlike a flat one it has no mean to
     # match; the identity fit leaves the maps as they are for the caller's own
-    # empty-mask handling to score.
+    # empty-mask handling to score. It refuses nothing either — every sum above
+    # is zero over it, so the penalty already is.
     empty = count == 0
     scale = torch.where(empty, torch.ones_like(scale), scale)
     shift = torch.where(empty, torch.zeros_like(shift), shift)
-    return ScaleShift(scale.to(prediction.dtype), shift.to(prediction.dtype))
+    return ScaleShift(
+        scale.to(prediction.dtype),
+        shift.to(prediction.dtype),
+        refused_variance.to(prediction.dtype),
+    )
 
 
 def apply_scale_shift(

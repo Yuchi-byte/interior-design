@@ -108,7 +108,9 @@ different images. A raw MSE between two depth maps is meaningless. **Every
 depth comparison goes through `align_scale_shift` first** (`reward.py` is the
 only place that should need to; see `docs/architecture.md` for the closed form).
 This is a hard rule — a PR comparing unaligned depth is wrong regardless of the
-numbers it produces.
+numbers it produces. The invariance stops at a *positive* scale: the fit is
+floored at zero because near/far ordering is the geometry being scored, and
+un-flooring it scores a depth-inverted render as a perfect match.
 
 ## Determinism
 

@@ -10,6 +10,32 @@ def _disparity(generator: Generator) -> Tensor:
     return torch.rand((2, 8, 8), generator=generator)
 
 
+def _room_disparity(size: int = 32) -> Tensor:
+    """A room-shaped reference: a dominant floor ramp with wall structure on it."""
+    rows, columns = torch.meshgrid(
+        torch.linspace(0.0, 1.0, size), torch.linspace(0.0, 1.0, size), indexing="ij"
+    )
+    return (1.4 - rows + 0.15 * torch.sin(7.0 * columns) * (rows < 0.5))[None]
+
+
+def _featureless_ramp(size: int = 32) -> Tensor:
+    """The degenerate render: a smooth ramp running the other way, no structure."""
+    rows, _ = torch.meshgrid(
+        torch.linspace(0.0, 1.0, size), torch.linspace(0.0, 1.0, size), indexing="ij"
+    )
+    return (0.9 * rows + 0.05)[None]
+
+
+def _flat_fit_residual(target: Tensor) -> float:
+    """What a fit that has given up on a slope and matched the means scores."""
+    return float(target.var(unbiased=False))
+
+
+def _correlation(prediction: Tensor, target: Tensor) -> float:
+    pair = torch.stack([prediction.flatten(), target.flatten()])
+    return float(torch.corrcoef(pair)[0, 1])
+
+
 def test_error_vanishes_for_an_affine_rescaling_of_the_target(
     generator: Generator,
 ) -> None:
@@ -66,6 +92,86 @@ def test_the_error_gradient_reaches_the_prediction(generator: Generator) -> None
     )
 
     assert gradient.shape == prediction.shape
+
+
+def test_a_reversed_depth_ordering_scores_above_the_flat_fit() -> None:
+    # The measured failure, in miniature. On MFM v2's kitchen cells the fit came
+    # back with scales of -0.2 to -0.9 on renders whose depth read inside out or
+    # was a featureless ramp, and the sign flip let them score ~95% below the
+    # control — the reduction was the alignment's, not the render's. A ramp
+    # running the wrong way scored 5.5% of the flat fit here before the scale
+    # was floored; every anti-correlated prediction now scores above it.
+    target = _room_disparity()
+    mask = torch.ones_like(target, dtype=torch.bool)
+    flat_fit = _flat_fit_residual(target)
+    ramp = _featureless_ramp()
+
+    reversed_error = float(masked_depth_error(ramp, target, mask))
+    aligned_error = float(masked_depth_error(-ramp, target, mask))
+
+    assert _correlation(ramp, target) < -0.9
+    assert reversed_error > flat_fit
+    # The same ramp the right way up is what the objective is for: it carries
+    # the room's near/far ordering, and keeps every bit of credit it did before.
+    assert aligned_error == pytest.approx(0.055 * flat_fit, rel=0.1)
+
+
+@pytest.mark.parametrize(
+    "reflection", [-1.0, -0.2, -7.0], ids=["mirror", "shallow", "steep"]
+)
+def test_the_energy_is_invariant_to_a_positive_rescale_but_not_to_a_reflection(
+    reflection: float, generator: Generator
+) -> None:
+    # The affine freedom the depth backend leaves undetermined is a positive
+    # scale and a shift. A negative scale is not a change of frame but a
+    # different room, and the energy has to be able to say so.
+    target = _room_disparity()
+    mask = torch.ones_like(target, dtype=torch.bool)
+    prediction = target + 0.05 * torch.rand(target.shape, generator=generator)
+
+    error = masked_depth_error(prediction, target, mask)
+
+    torch.testing.assert_close(
+        masked_depth_error(7.0 * prediction - 5.0, target, mask), error
+    )
+    assert float(masked_depth_error(reflection * prediction, target, mask)) > float(
+        error
+    ) + _flat_fit_residual(target)
+
+
+def test_an_inverted_prediction_is_pushed_back_toward_the_rooms_own_ordering(
+    generator: Generator,
+) -> None:
+    # A floored scale on its own would leave the energy flat in the prediction —
+    # correctly high, and with no direction out of the state that earned it.
+    # What the refused variance buys is this: the gradient at an inverted
+    # prediction points at un-inverting it, and following it does.
+    target = _room_disparity()
+    mask = torch.ones_like(target, dtype=torch.bool)
+    inverted = -target + 0.1 * torch.rand(target.shape, generator=generator)
+    assert _correlation(inverted, target) < -0.99
+
+    source = inverted.clone().requires_grad_(True)
+    error = masked_depth_error(source, target, mask)
+    gradient = assert_gradient_is_finite_and_nonzero(error.sum(), source)
+
+    stepped = inverted - 0.1 * gradient / gradient.square().mean().sqrt()
+    assert float(masked_depth_error(stepped, target, mask)) < float(error.detach())
+    assert _correlation(stepped, target) > _correlation(inverted, target)
+
+    # And it is an escape, not a nudge: a plain normalised descent on the energy
+    # walks the prediction from inside out to aligned within a few dozen steps.
+    state = inverted.clone()
+    for _ in range(60):
+        source = state.clone().requires_grad_(True)
+        (step,) = torch.autograd.grad(
+            masked_depth_error(source, target, mask).sum(), source
+        )
+        state = state - 0.02 * step / step.square().mean().sqrt()
+    assert _correlation(state, target) > 0.9
+    assert float(masked_depth_error(state, target, mask)) < 0.1 * _flat_fit_residual(
+        target
+    )
 
 
 @pytest.mark.parametrize(
