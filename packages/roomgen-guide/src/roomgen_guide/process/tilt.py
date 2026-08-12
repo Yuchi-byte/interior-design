@@ -1,11 +1,24 @@
 """The tilt contract: what a reward gradient is turned into before it moves the state."""
 
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Final, Protocol, runtime_checkable
 
+import torch
 from jaxtyping import Float
 from torch import Tensor
 
 from roomgen_guide.process.endpoint import StepContext
+
+# Small enough to be invisible against any gradient worth stepping along, and
+# there only so that an exactly zero gradient rescales to zero rather than NaN.
+_RMS_EPSILON: Final = 1e-12
+
+# The step is sized in float32 whatever the state's dtype. A guidance gradient
+# runs around 1e-5 per element, and squaring that in float16 lands under the
+# 6e-8 subnormal floor: the RMS underflows to exactly zero, which turns
+# `clip_step_rms` into a cap that never binds. Only the sizing arithmetic is
+# lifted; the update is handed back in the state's own dtype.
+_UPDATE_DTYPE: Final = torch.float32
 
 
 @runtime_checkable
@@ -50,3 +63,106 @@ class TiltPolicy(Protocol):
         state: Float[Tensor, "batch *state"],
         step: StepContext,
     ) -> Float[Tensor, "batch *state"] | None: ...
+
+
+@dataclass(frozen=True)
+class ClippedGradientTilt:
+    """The raw energy gradient as the step, capped at a fixed RMS.
+
+    The raw gradient scales with the energy, so the step decays by itself on a
+    sample the energy is already satisfied on; the cap is what stops a large
+    energy running away into texture that satisfies the judge without being a
+    room. Nothing here is diffusion-specific: the state is whatever the process
+    walks.
+
+    Args:
+        strength: what the energy gradient is multiplied by; 0 leaves every step
+            unsteered and evaluates the reward not at all.
+        clip_step_rms: ceiling on the RMS of **each** applied update, in the
+            state's own units, sized per batch element. Below it the update
+            passes through bit-for-bit; above it the update is exactly this size
+            and points where the raw one pointed.
+        iterations: how many gradient steps are taken on the endpoint before the
+            state moves — FMRG's `n_opt`, whose inner loop is otherwise
+            unconstrained ascent against a frozen judge. Each iteration
+            re-evaluates the reward at the state the previous ones displaced and
+            is capped in its own right, so `iterations` bounds the step at
+            `iterations * clip_step_rms` rather than uncapping it.
+        guided_steps: guide only the first this many steps of the walk and leave
+            the rest alone — the flow-map prescription of steering in the
+            high-noise window and stopping early, which leaves the trailing
+            steps free to re-project the sample onto the model's own manifold.
+            `None` guides every step.
+    """
+
+    strength: float
+    clip_step_rms: float | None = None
+    iterations: int = 1
+    guided_steps: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.strength < 0.0:
+            raise ValueError(f"strength must be non-negative, got {self.strength}")
+        if self.clip_step_rms is not None and self.clip_step_rms <= 0.0:
+            raise ValueError(
+                f"clip_step_rms must be positive, got {self.clip_step_rms}"
+            )
+        if self.iterations < 1:
+            raise ValueError(f"iterations must be at least 1, got {self.iterations}")
+        if self.guided_steps is not None and self.guided_steps < 0:
+            raise ValueError(
+                f"guided_steps must be non-negative, got {self.guided_steps}"
+            )
+
+    def __call__(
+        self,
+        energy_gradient: EnergyGradient,
+        *,
+        state: Float[Tensor, "batch *state"],
+        step: StepContext,
+    ) -> Float[Tensor, "batch *state"] | None:
+        if self.strength == 0.0:
+            return None
+        if self.guided_steps is not None and step.index >= self.guided_steps:
+            return None
+        steering: Tensor | None = None
+        for _ in range(self.iterations):
+            # The step's own state first, so the model output `advance` reuses is
+            # the one this step actually predicted from.
+            candidate = state if steering is None else state + steering
+            # Negated because the energy is descended: the steering is the
+            # displacement the state takes, not the direction the energy rises in.
+            update = -clipped_update(
+                energy_gradient(candidate),
+                strength=self.strength,
+                clip_step_rms=self.clip_step_rms,
+            )
+            steering = update if steering is None else steering + update
+        return steering
+
+
+def clipped_update(
+    gradient: Float[Tensor, "batch *state"],
+    *,
+    strength: float,
+    clip_step_rms: float | None,
+) -> Float[Tensor, "batch *state"]:
+    """The gradient scaled by `strength`, held to `clip_step_rms`, in its own dtype."""
+    update = strength * gradient.to(_UPDATE_DTYPE)
+    if clip_step_rms is not None:
+        # min(1, cap/RMS): a step under the cap is multiplied by exactly 1.0 and
+        # so passes through bit-for-bit, and one over it lands exactly on the cap.
+        scale = clip_step_rms / (_root_mean_square(update) + _RMS_EPSILON)
+        update = update * scale.clamp(max=1.0)
+    return update.to(gradient.dtype)
+
+
+def _root_mean_square(
+    tensor: Float[Tensor, "batch *state"],
+) -> Float[Tensor, "batch *ones"]:
+    # Per batch element, keeping the reduction broadcastable back over it: the
+    # cap is stated per image, so one loud element in a batch must not shrink
+    # every other element's step, nor a quiet one let a loud element through
+    # above the cap.
+    dimensions = tuple(range(1, tensor.ndim))
+    return tensor.square().mean(dim=dimensions, keepdim=True).sqrt()

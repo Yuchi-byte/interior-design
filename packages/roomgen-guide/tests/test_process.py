@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 
+import pytest
 import torch
 from jaxtyping import Float
 from torch import Generator, Tensor
@@ -7,13 +8,14 @@ from torch import Generator, Tensor
 from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.process import (
+    ClippedGradientTilt,
     EndpointProcess,
     EnergyGradient,
     StepContext,
     TiltPolicy,
     sample_endpoint_process,
 )
-from roomgen_guide.sampling.guided import ClippedGradientTilt, LatentDiffusionProcess
+from roomgen_guide.sampling.guided import LatentDiffusionProcess
 from roomgen_guide_fakes import FakePipeline, ToyFlowMapProcess
 
 _CLASS_LABEL = 7
@@ -33,45 +35,6 @@ class CountingGuidance:
     ) -> Float[Tensor, "batch"]:
         self.calls += 1
         return self.energy(predicted_image)
-
-
-@dataclass(frozen=True)
-class InnerIterationTilt:
-    """FMRG's shape: `iterations` gradient steps on the endpoint before the state moves."""
-
-    strength: float
-    iterations: int
-
-    def __call__(
-        self,
-        energy_gradient: EnergyGradient,
-        *,
-        state: Float[Tensor, "batch 3 height width"],
-        step: StepContext,
-    ) -> Float[Tensor, "batch 3 height width"]:
-        steering = torch.zeros_like(state)
-        for _ in range(self.iterations):
-            steering = steering - self.strength * energy_gradient(state + steering)
-        return steering
-
-
-@dataclass(frozen=True)
-class WindowedTilt:
-    """A high-noise guidance window with an early stop, in step-index units."""
-
-    tilt: ClippedGradientTilt
-    guided_fraction: float
-
-    def __call__(
-        self,
-        energy_gradient: EnergyGradient,
-        *,
-        state: Float[Tensor, "batch 3 height width"],
-        step: StepContext,
-    ) -> Float[Tensor, "batch 3 height width"] | None:
-        if step.index >= self.guided_fraction * step.total:
-            return None
-        return self.tilt(energy_gradient, state=state, step=step)
 
 
 @dataclass(frozen=True)
@@ -222,12 +185,12 @@ def test_an_inner_iteration_costs_one_endpoint_and_reuses_the_first(
     once = _walk(
         room_photo,
         geometric_guidance,
-        tilt=InnerIterationTilt(strength=_STRENGTH, iterations=1),
+        tilt=ClippedGradientTilt(strength=_STRENGTH, iterations=1),
     )
     twice = _walk(
         room_photo,
         geometric_guidance,
-        tilt=InnerIterationTilt(strength=_STRENGTH, iterations=2),
+        tilt=ClippedGradientTilt(strength=_STRENGTH, iterations=2),
     )
 
     # One model call per evaluated endpoint and none in `advance`: the step
@@ -246,9 +209,15 @@ def test_a_guidance_window_leaves_the_steps_outside_it_alone(
 
     everywhere = _walk(room_photo, geometric_guidance, tilt=tilt)
     whole_walk = _walk(
-        room_photo, geometric_guidance, tilt=WindowedTilt(tilt, guided_fraction=1.0)
+        room_photo,
+        geometric_guidance,
+        tilt=ClippedGradientTilt(strength=_STRENGTH, guided_steps=_STEPS),
     )
-    early = _walk(room_photo, counted, tilt=WindowedTilt(tilt, guided_fraction=0.5))
+    early = _walk(
+        room_photo,
+        counted,
+        tilt=ClippedGradientTilt(strength=_STRENGTH, guided_steps=_STEPS // 2),
+    )
     unguided = _walk(
         room_photo, geometric_guidance, tilt=ClippedGradientTilt(strength=0.0)
     )
@@ -272,3 +241,62 @@ def test_the_same_seed_reproduces_the_toy_walk_and_a_new_one_does_not(
     assert float(walked.image.min()) >= 0.0
     assert float(walked.image.max()) <= 1.0
     assert not torch.equal(walked.image, reseeded.image)
+
+
+@dataclass
+class _ConstantGradient:
+    """A fixed ∂energy/∂state, and a record of every state it was asked at."""
+
+    gradient: Tensor
+    states: list[Tensor] = field(default_factory=list)
+
+    def __call__(
+        self, state: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, "batch 3 height width"]:
+        self.states.append(state.detach().clone())
+        return self.gradient
+
+
+def _rms(tensor: Tensor) -> float:
+    return float(tensor.square().mean().sqrt())
+
+
+def test_the_cap_binds_on_every_inner_iteration(room_photo: Tensor) -> None:
+    # The failure this exists for: FMRG's inner loop is n_opt unconstrained
+    # ascent steps on the endpoint against a frozen judge, which is projected
+    # gradient descent — an adversarial attack by construction. Capping the
+    # applied update once per *step* would leave the iterations inside it
+    # uncapped, so the cap is applied to each one and the whole step is bounded
+    # by `iterations * clip_step_rms` rather than by nothing.
+    cap = 0.01
+    energy_gradient = _ConstantGradient(torch.full_like(room_photo, 1000.0))
+    tilt = ClippedGradientTilt(strength=_STRENGTH, clip_step_rms=cap, iterations=3)
+
+    steering = tilt(
+        energy_gradient, state=room_photo, step=StepContext(index=0, total=_STEPS)
+    )
+
+    assert steering is not None
+    assert _rms(steering) == pytest.approx(3 * cap, rel=1e-6)
+    # And each iteration re-evaluates at the state the previous ones displaced,
+    # which is what makes the loop an optimisation rather than three copies of
+    # one step. The first evaluation is at the step's own state, because its
+    # model output is the one `advance` reuses.
+    assert torch.equal(energy_gradient.states[0], room_photo)
+    assert _rms(energy_gradient.states[1] - room_photo) == pytest.approx(cap, rel=1e-6)
+
+
+def test_an_uncapped_inner_loop_is_what_the_cap_is_holding_back(
+    room_photo: Tensor,
+) -> None:
+    energy_gradient = _ConstantGradient(torch.full_like(room_photo, 1000.0))
+    uncapped = ClippedGradientTilt(strength=_STRENGTH, iterations=3)
+    capped = ClippedGradientTilt(strength=_STRENGTH, clip_step_rms=0.01, iterations=3)
+    step = StepContext(index=0, total=_STEPS)
+
+    loose = uncapped(energy_gradient, state=room_photo, step=step)
+    held = capped(energy_gradient, state=room_photo, step=step)
+
+    assert loose is not None
+    assert held is not None
+    assert _rms(loose) > 1000.0 * _rms(held)

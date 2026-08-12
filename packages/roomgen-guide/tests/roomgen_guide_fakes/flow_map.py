@@ -20,6 +20,10 @@ from roomgen_guide.process.endpoint import Endpoint, StepContext
 # flow-map samplers roomgen guides are parameterised.
 START_TIME: Final = 0.2
 
+# Divisor floor for the toy flow map's velocity, which is an endpoint jump
+# divided by the time it spans.
+_MINIMUM_SIGMA: Final = 1e-3
+
 
 class ToyFlowMapProcess:
     """A few-step flow map over a photo, conditioned on a class id.
@@ -97,6 +101,78 @@ class ToyFlowMapProcess:
         time = self._times[step.index]
         velocity = torch.tanh(state + self._class_label / 1000.0)
         return state + (1.0 - time) * velocity
+
+
+class ToyFlowMapBackend:
+    """A weightless `FlowMapBackend`, so the real adapter can be walked without FLUX.
+
+    The latent is the image in the VAE's ``[-1, 1]`` convention, the velocity
+    field is a smooth function of it, and the schedule is a plain descent to 0 —
+    everything the real backend does that a fake cannot (packed latents, a
+    resolution-dependent shift, a transformer) is exactly what
+    `FlowMapProcess` is not allowed to know about.
+
+    Args:
+        class_label: stands for the conditioning the process never sees.
+        encode_jitter: how much of the encode is the generator's, so a test can
+            tell whether the walk's seed reaches the initial state.
+    """
+
+    def __init__(self, *, class_label: int = 7, encode_jitter: float = 0.05) -> None:
+        self._class_label = class_label
+        self._encode_jitter = encode_jitter
+        self.velocity_calls = 0
+
+    def schedule(
+        self,
+        *,
+        steps: int,
+        start_sigma: float,
+        latent: Float[Tensor, "batch 3 height width"],
+    ) -> list[float]:
+        del latent
+        return torch.linspace(start_sigma, 0.0, steps + 1).tolist()
+
+    def encode(
+        self,
+        image: Float[Tensor, "batch 3 height width"],
+        *,
+        generator: torch.Generator,
+    ) -> Float[Tensor, "batch 3 height width"]:
+        posterior = torch.randn(
+            image.shape, generator=generator, device=image.device, dtype=image.dtype
+        )
+        return image * 2.0 - 1.0 + self._encode_jitter * posterior
+
+    def decode(
+        self, latent: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, "batch 3 height width"]:
+        return _to_image(latent)
+
+    @jaxtyped(typechecker=beartype)
+    def velocity(
+        self,
+        latent: Float[Tensor, "batch 3 height width"],
+        *,
+        sigma: float,
+        target_sigma: float,
+    ) -> Float[Tensor, "batch 3 height width"]:
+        self.velocity_calls += 1
+        # The velocity a flow map reports is the one whose jump lands on data:
+        # `state - sigma * velocity` is this toy's endpoint estimate, and its
+        # notion of data is "smooth", so the estimate is the state blurred. That
+        # is enough to make the walk a denoiser — the arm that starts from the
+        # renoised photo keeps the photo's structure and the arm that starts
+        # from noise cannot recover it, which is the whole img2img claim.
+        endpoint = _smoothed(latent) + self._class_label / 1000.0
+        return (latent - endpoint) / max(sigma - target_sigma, _MINIMUM_SIGMA)
+
+
+def _smoothed(
+    latent: Float[Tensor, "batch 3 height width"],
+) -> Float[Tensor, "batch 3 height width"]:
+    # A 3x3 box blur: the toy's entire model of what data looks like.
+    return torch.nn.functional.avg_pool2d(latent, 3, stride=1, padding=1)
 
 
 def _to_image(

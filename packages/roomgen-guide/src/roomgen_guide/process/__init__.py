@@ -10,13 +10,20 @@ the three. `docs/process-adapters.md` is what a new backend is written against.
 
 from roomgen_guide.process.driver import sample_endpoint_process
 from roomgen_guide.process.endpoint import Endpoint, EndpointProcess, StepContext
-from roomgen_guide.process.tilt import EnergyGradient, TiltPolicy
+from roomgen_guide.process.tilt import (
+    ClippedGradientTilt,
+    EnergyGradient,
+    TiltPolicy,
+    clipped_update,
+)
 
 __all__ = [
+    "ClippedGradientTilt",
     "Endpoint",
     "EndpointProcess",
     "EnergyGradient",
     "StepContext",
     "TiltPolicy",
+    "clipped_update",
     "sample_endpoint_process",
 ]

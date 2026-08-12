@@ -7,7 +7,11 @@ about diffusion. Both reach their suite through `pythonpath` in the root pytest
 configuration.
 """
 
-from roomgen_guide_fakes.flow_map import START_TIME, ToyFlowMapProcess
+from roomgen_guide_fakes.flow_map import (
+    START_TIME,
+    ToyFlowMapBackend,
+    ToyFlowMapProcess,
+)
 from roomgen_guide_fakes.pipeline import (
     LATENT_CHANNELS,
     FakePipeline,
@@ -21,5 +25,6 @@ __all__ = [
     "FakePipeline",
     "FakeScheduler",
     "FakeVae",
+    "ToyFlowMapBackend",
     "ToyFlowMapProcess",
 ]

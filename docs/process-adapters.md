@@ -7,9 +7,10 @@ no change to the reward, the mask, or the eval.
 
 Everything lives in `packages/roomgen-guide/src/roomgen_guide/process/`;
 `roomgen_guide.sampling.guided.LatentDiffusionProcess` is the worked example.
-The reverse direction — roomgen's reward presented to a third-party sampler's
-own interface, rather than a third-party sampler brought under this driver —
-lives in `roomgen_guide/adapters/`.
+`roomgen_guide/adapters/` is where a third-party sampler meets this contract in
+either direction: `flow_map.FlowMapProcess` is a few-step flow map brought under
+the driver, and `mfm_reward.MfmGeometricReward` is the opposite direction, the
+reward presented to a sampler that keeps its own loop.
 
 ## The four pieces
 
@@ -86,27 +87,39 @@ flow map. The driver only carries it from `endpoint` to `advance`.
 | Few-step schedules, sigma/timestep spacing, `t_start` | the process's constructor |
 | Text prompt, class id, CFG scale, negative prompts | the process's constructor, opaque to the protocol |
 | Guidance window, early stop, per-step strength schedule | the tilt policy, off `StepContext.index` / `.total` |
-| Inner optimisation (FMRG's `n_opt`) | the tilt policy, by calling `energy_gradient` more than once |
+| Inner optimisation (FMRG's `n_opt`) | the tilt policy, by calling `energy_gradient` more than once — `ClippedGradientTilt(iterations=n)`, which caps each of the n applied updates rather than the step they sum to |
 | Jacobian of the map in the pullback | the process's `endpoint`: keep the model output attached to the leaf and autograd carries it; detach it and you get the cheap pullback (this is exactly SD1.5's `differentiate_through_unet` knob) |
-| Step clipping / renormalisation | the tilt policy — `ClippedGradientTilt` is the raw step with an RMS cap and is not SD-specific |
+| Step clipping / renormalisation | the tilt policy — `process/tilt.py`'s `ClippedGradientTilt` is the raw step with an RMS cap and is not SD-specific |
 | Latent-space models | the process: decode inside `endpoint`, since the reward is always scored in pixel space |
 
 A policy that evaluates candidate states must evaluate the step's own `state`
 **first**: the first evaluation's model output is the one `advance` reuses.
 
-## An FMRG adapter, concretely
+## The FMRG adapter, concretely
 
-- Constructor: the FLUX transformer and its VAE, the packed-latent geometry, the
-  prompt embeddings, the sigma schedule and the generator.
-- `initial_state`: the photo encoded and renoised to the first sigma, or pure
-  noise.
-- `endpoint`: the two-time flow map's jump to t=1 from the leaf, VAE-decoded.
-  The endpoint is sharp at every noise level, which is the whole reason for the
-  move — no `(1-t)/t` blow-up in the high-noise window.
-- `advance`: the interpolation off that same endpoint at the next sigma.
-- Tilt: a policy with `n_opt` inner iterations and a high-noise window
-  (`step.index < window * step.total`), which is FMRG's headline prescription —
-  guide early, stop early.
+Built, in `adapters/flow_map.py` and `adapters/fmrg_flux.py`.
+
+- `FlowMapProcess` holds the photo, the schedule and the generator; everything
+  FLUX-shaped — the transformer and its LoRA, the packed-latent geometry, the
+  prompt embeddings, the resolution-dependent sigma shift — is behind the
+  four-call `FlowMapBackend`, which `FluxFlowMapBackend` implements over FMRG's
+  sampler.
+- `initial_state`: the photo encoded and renoised to the first sigma,
+  `sigma * noise + (1 - sigma) * photo`. `start_sigma` 1 discards the photo and
+  is the text-to-image control, not the renovation arm — **matching a specific
+  room's depth from noise is reachable mainly by texture the depth network
+  misreads, which is an attack on the judge rather than a renovation.**
+- `endpoint`: the two-time flow map's jump to sigma 0 from the leaf,
+  VAE-decoded. The endpoint is sharp at every noise level, which is the whole
+  reason for the move — no `(1-t)/t` blow-up in the high-noise window. The
+  velocity enters as a constant, so a guided step costs one transformer call
+  however many inner iterations the policy takes.
+- `advance`: the Euler step off that same velocity to the next sigma.
+- Tilt: `ClippedGradientTilt(strength, clip_step_rms, iterations, guided_steps)`
+  — FMRG's `n_opt` inner loop under v1's RMS cap, inside FMRG's headline
+  window: guide early, stop early. Upstream's loop has no cap at all, and its
+  inner iterations are unconstrained ascent on a frozen judge; the cap is what
+  separates guidance from a PGD attack on the depth network.
 
 ## An MFM adapter, concretely
 
@@ -136,9 +149,11 @@ energies in different units are not comparable at weight 1.
 
 ## Proving an adapter
 
-`packages/roomgen-guide/tests/roomgen_guide_fakes/flow_map.py` is a weightless
-second implementation — pixel-space state, flow-map endpoint, interpolated step,
-no VAE — and `tests/test_process.py` runs it through the driver with the real
-geometric reward. A new adapter's first test is the same one: the energy of the
-guided sample is materially below the unguided sample's at the same seed. If it
-is not, the gradient is detached somewhere.
+`packages/roomgen-guide/tests/roomgen_guide_fakes/flow_map.py` holds two
+weightless doubles — `ToyFlowMapProcess`, a second `EndpointProcess` in pixel
+space, and `ToyFlowMapBackend`, a `FlowMapBackend` whose model of data is a
+blur, which is enough to walk the *real* `FlowMapProcess` with no FLUX in the
+room. `tests/test_process.py` and `tests/test_flow_map.py` run both through the
+driver with the real geometric reward. A new adapter's first test is the same
+one: the energy of the guided sample is materially below the unguided sample's
+at the same seed. If it is not, the gradient is detached somewhere.

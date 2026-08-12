@@ -8,9 +8,9 @@ from torch import Generator, Tensor
 from roomgen_fakes import assert_gradient_is_finite_and_nonzero
 from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
+from roomgen_guide.process.tilt import clipped_update
 from roomgen_guide.sampling.guided import (
     _encode_photo,
-    _guided_update,
     _predict_noise,
     _prompt_embeddings,
     _renoised_timesteps,
@@ -38,7 +38,7 @@ _GOLDEN_PIXEL = [0.25365448, 0.37026709, 0.13712433]
 
 
 def _clipped(update: Tensor, cap: float) -> Tensor:
-    return _guided_update(update, strength=1.0, clip_step_rms=cap)
+    return clipped_update(update, strength=1.0, clip_step_rms=cap)
 
 
 def _direction(update: Tensor) -> Tensor:
@@ -735,7 +735,7 @@ def test_the_guided_step_moves_the_latent_before_the_scheduler_advances_it(
             noise_prediction=noise_prediction,
             alpha_cumprod=alphas_cumprod[timestep],
         )
-        update = _guided_update(steering, strength=strength, clip_step_rms=None)
+        update = clipped_update(steering, strength=strength, clip_step_rms=None)
         if first is None:
             first = (noise_prediction, timestep, latent, update)
         latent = scheduler.step(noise_prediction, timestep, latent - update).prev_sample

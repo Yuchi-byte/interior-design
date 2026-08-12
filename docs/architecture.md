@@ -77,14 +77,22 @@ The guided sampler and the experiment harness shared with `experiments/`.
   `endpoint.py`'s `EndpointProcess` (a state, a differentiable pixel-space
   endpoint estimate of it, a step that advances it) with `Endpoint` and
   `StepContext`, `tilt.py`'s `TiltPolicy` (reward gradients in, the state's
-  displacement out) and the `EnergyGradient` it evaluates through, and
+  displacement out) with the `EnergyGradient` it evaluates through and
+  `ClippedGradientTilt`, the raw step under an RMS cap — applied to every inner
+  iteration, since an uncapped inner loop against a frozen judge is projected
+  gradient descent on it — inside an optional early-stopping window, and
   `driver.py`'s `sample_endpoint_process`, the one walk every backend is
   sampled by. `docs/process-adapters.md` is what a new backend is written
   against.
-- `adapters/`: the reverse direction of `process/` — roomgen's reward presented
-  to a third-party sampler's own interface, `mfm_reward.py`'s
-  `MfmGeometricReward` being the depth energy as the `score(images, prompts)`
-  Meta Flow Maps ascends. Structural, so nothing here imports the vendored tree.
+- `adapters/`: where a third-party sampler and roomgen meet, in both
+  directions. `mfm_reward.py`'s `MfmGeometricReward` is the depth energy as the
+  `score(images, prompts)` Meta Flow Maps ascends; `flow_map.py`'s
+  `FlowMapProcess` is a few-step flow map as an `EndpointProcess` (the photo
+  encoded and renoised to a partial sigma, the map's jump to sigma 0 as the
+  endpoint, an Euler step off that same jump) over the four-call
+  `FlowMapBackend` behind it; `fmrg_flux.py` is that backend for FMRG's FLUX
+  sampler, the one module that reaches the vendored tree — by deferred import
+  only, and never at test time.
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
   image x̂₀ to one energy per batch element — the reward boundary the process
   package steers by, reducing it with `.mean()` for its single backward.
@@ -102,8 +110,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
   can stand in for one.
 - `sampling/guided.py`: Stable Diffusion img2img as an `EndpointProcess` —
   `LatentDiffusionProcess` (SDEdit renoise, Tweedie x̂₀ through the VAE decode, a
-  scheduler step) with the `ClippedGradientTilt` that steers it and
-  `sample_guided`, their composition over the driver. It steps the pipeline's
+  scheduler step) and `sample_guided`, its composition with the process
+  package's `ClippedGradientTilt` over the driver. It steps the pipeline's
   UNet, VAE and scheduler itself because a diffusers `__call__` runs under
   `no_grad` and would strand the guidance gradient.
 - `renovate.py`: `renovate`, the end-to-end img2img entry point (photo + prompt
