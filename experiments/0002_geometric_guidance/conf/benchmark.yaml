@@ -5,17 +5,8 @@
 # `roomgen-prefetch` seeds.
 name: 0002_geometric_guidance
 
-# Listed, not drawn, and the gate must hold on every one of them.
+# Listed, not drawn, so any number reported here can be reproduced exactly.
 seeds: [0, 1]
-
-# Provisional: 0001_unguided_baseline has not been run, so these are not yet the
-# calibrated constants its report is supposed to deliver. The margin is the
-# smallest depth-error reduction that is clearly not noise; the floor is the
-# adherence loss that would still be called "renovated". Re-derive both from
-# 0001's numbers before this framework's verdict is quoted as a finding.
-gate:
-  depth_error_margin: 0.2
-  prompt_adherence_floor: 0.9
 
 # 512 is SD1.5's training resolution and a multiple of 64; photos are
 # centre-cropped square first, so no room is anamorphically squashed.
@@ -68,7 +59,7 @@ guidance:
   mask_mode: intersect_shell
 
 adherence:
-  # The real gate-(b) metric, on the fourth checkpoint `roomgen-prefetch` seeds
+  # The prompt-adherence metric, on the fourth checkpoint `roomgen-prefetch` seeds
   # (~600MB in ROOMGEN_HF_HOME).
   kind: clip
   checkpoint: openai/clip-vit-base-patch32

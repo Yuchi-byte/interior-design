@@ -24,7 +24,7 @@ packages/
       sampling/guided.py    #   the guided denoising loop over a diffusers pipeline
       renovate.py           #   end-to-end img2img renovation entry point (SD1.5)
       settings.py           #   RoomgenSettings (ROOMGEN_* env vars)
-      verdict.py            #   per-run score frameworks gate on
+      metrics.py            #   per-run measurements a framework reports
 experiments/              # numbered experiment frameworks (see experiments/README.md)
 docs/
   architecture.md         # package/module map (kept current)

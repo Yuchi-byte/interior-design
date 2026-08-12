@@ -15,6 +15,7 @@ from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.depth.depth_anything import DepthAnythingV2
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_geometry.segmentation.eomt import EoMT
+from roomgen_guide.determinism import enable_determinism
 from roomgen_guide.renovate import load_pipeline
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
 
@@ -40,6 +41,11 @@ class Backends:
 
 def build_backends(config: BackendConfig, *, cache_dir: Path) -> Backends:
     """The stack `config` selects, loaded from `cache_dir` when it needs weights."""
+    if config.deterministic:
+        # Before the weights land on the device: `CUBLAS_WORKSPACE_CONFIG` is
+        # read when the cuBLAS handle is created, and building the stack is the
+        # first thing in the process that touches CUDA.
+        enable_determinism()
     device = torch.device(config.device)
     dtype = TORCH_DTYPES[config.dtype]
     match config.kind:

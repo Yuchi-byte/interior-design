@@ -12,10 +12,10 @@ py3.12 venv, fully declared in the package `pyproject.toml`s (`uv sync`).
   semantic segmentation, the architectural mask, the affine alignment, and the
   reward; torch + transformers only, no diffusers.
 - `packages/roomgen-guide`: guided sampling over a `diffusers` img2img pipeline
-  plus the experiment harness (config base, `ROOMGEN_*` settings, verdict
-  scoring, eval).
+  plus the experiment harness (config base, `ROOMGEN_*` settings, run
+  metrics, eval).
 - `experiments/`: numbered frameworks (not single runs) that orchestrate the
-  packages and assert pass/fail verdicts in code.
+  packages and report what they measured.
 
 ## `roomgen-geometry`
 
@@ -92,22 +92,27 @@ The guided sampler and the experiment harness shared with `experiments/`.
 - `config.py`: `Config`, the pydantic v2 `extra="forbid"` base every typed
   experiment config extends, with OmegaConf-backed YAML + dotlist loading.
 - `experiment.py`: `ExperimentConfig`, the run config a framework builds from
-  its `conf/` (name, explicit seeds, and the two-sided gate's thresholds).
+  its `conf/` (name and the explicit seeds it runs).
 - `settings.py`: `RoomgenSettings`, the one `ROOMGEN_*` env-var contract in the
   repo (`ROOMGEN_WDIR`, `ROOMGEN_WANDB_MODE`, `ROOMGEN_HF_HOME`).
 - `prefetch.py`: `roomgen-prefetch`, the CLI that seeds (or `--check`-verifies)
   the Hub cache with the four pretrained checkpoints so later loads are
   instant and offline.
-- `verdict.py`: `score_run` and the `Verdict` it returns — one guided run's
-  depth error and prompt adherence judged against its unguided control's, both
-  sides at once, on the `VerdictGateConfig` its framework declares.
-- `eval/`: the two sides of that gate, measured on a finished render and
-  therefore under `no_grad`: `depth.py`'s masked depth error against the
-  reference and the signed per-pixel residual map behind it — both take the
-  arm's own evaluation mask, the reference shell narrowed by a segmentation of
-  that very render, so a run is judged the way it was steered, with
-  `shell_coverage` reporting how much of the shell that left to score because a
-  render scored on nothing scores zero — and the
+- `metrics.py`: `RunMetrics`, one guided run's measurements beside its
+  control's at one seed, with the depth-error reduction and adherence ratio
+  read off them — `None` rather than 0 where the control scored zero and the
+  ratio is undefined. It records numbers; nothing here passes or fails a run.
+- `determinism.py`: `enable_determinism`, the best-effort narrowing of
+  run-to-run variance (deterministic algorithms `warn_only`, cuDNN
+  deterministic, `CUBLAS_WORKSPACE_CONFIG`), called before the first CUDA
+  allocation.
+- `eval/`: what a finished render is measured on, therefore under `no_grad`:
+  `depth.py`'s masked depth error against the reference and the signed
+  per-pixel residual map behind it — both take an evaluation mask, the
+  reference shell narrowed by a segmentation of a finished render, and a
+  framework comparing two arms narrows by *both* so the pair is scored on one
+  pixel set, with `shell_coverage` reporting how much of the shell that left to
+  score because a render scored on nothing scores zero — and the
   `adherence.py` `PromptAdherence` boundary whose
   `clip.py` implementation scores the render against the prompt — the metric
   that catches the degenerate win where guidance succeeds by not renovating.

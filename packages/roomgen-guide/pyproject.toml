@@ -1,7 +1,7 @@
 [project]
 name = "roomgen-guide"
 version = "0.1.0"
-description = "Guided diffusion sampling and the experiment harness (config/settings/eval/verdict)."
+description = "Guided diffusion sampling and the experiment harness (config/settings/eval/metrics)."
 authors = [
     { name = "Yuchi-byte", email = "lyra.love.guo@gmail.com" }
 ]

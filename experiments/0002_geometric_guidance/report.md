@@ -94,23 +94,18 @@ gradients are one to two orders larger than the fake stack's (whose energies run
 as the **starting point**, with the sweep
 `--set guidance.strength=50|150|500|1500` as this framework's first job.
 
-### Verdict gate
+### Verdict gate (retired 2026-08-12)
 
-Asserted in code (`roomgen_guide.verdict.score_run`), on every (scene, seed),
-both sides at once:
-
-- **(a)** `guided_depth_error <= (1 - depth_error_margin) * control_depth_error`
-- **(b)** `guided_prompt_adherence >= prompt_adherence_floor * control_prompt_adherence`
-
-`conf/benchmark.yaml` sets `depth_error_margin=0.2` and
-`prompt_adherence_floor=0.9`. **These are provisional.** 0001 has not run, so
-the constants it is supposed to deliver do not exist yet; re-derive both from
-its numbers before this framework's verdict is quoted as a finding.
+The framework asserted a two-sided gate in code
+(`depth_error_margin=0.2`, `prompt_adherence_floor=0.9`) and every "PASS"/"FAIL"
+below is that gate's. It has since been removed: a run now reports its metrics
+and its gallery, and judging them is the owner's. The Results sections stand as
+the record of what was measured under it.
 
 ### Running it
 
 ```bash
-# plumbing, CPU, offline, ~10s — weightless doubles, real photos, real gate
+# plumbing, CPU, offline, ~10s — weightless doubles, real photos, real metrics
 uv run --no-sync python experiments/0002_geometric_guidance/run.py --config smoke
 
 # one scene, one seed, 10 steps on the real stack: does this pod run it, at what cost
@@ -122,9 +117,9 @@ ROOMGEN_HF_HOME=/workspace/hf-cache uv run --no-sync \
   python experiments/0002_geometric_guidance/run.py --config benchmark
 ```
 
-`run.py` exits non-zero if any run fails either side of the gate. Artifacts land
-under `$ROOMGEN_WDIR/<config name>/`: `results.json` (config snapshot, per-run
-numbers, verdict) and `images/`.
+`run.py` exits non-zero only on an error. Artifacts land under
+`$ROOMGEN_WDIR/<config name>/`: `results.json` (config snapshot, provenance,
+per-run numbers), `qualitative.html` and `images/`.
 
 ## Results
 

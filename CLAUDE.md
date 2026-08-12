@@ -31,7 +31,7 @@ only on user-facing API or genuine *why*.
   `packages/roomgen-geometry` is the geometric grounding stack (depth,
   segmentation, masking, alignment, reward); `packages/roomgen-guide` is guided
   sampling plus the experiment harness
-  (`config`/`experiment`/`settings`/`verdict`/`eval`).
+  (`config`/`experiment`/`settings`/`metrics`/`eval`).
   The geometry package never imports the guide package.
 - All config objects are pydantic v2 (`extra="forbid"`) via the `Config` base
   in `packages/roomgen-guide/src/roomgen_guide/config.py` — a typo'd field is a
@@ -108,16 +108,20 @@ numbers it produces.
 Seeds are explicit and configured, never implicit. Pass a `torch.Generator`
 through the call chain; never rely on the global RNG, and never call
 `torch.manual_seed` inside library code. Two runs at one seed on one device
-must produce the same image and the same verdict.
+must produce the same image and the same numbers.
 
 ## Experiments
 
 ML experiments live in `experiments/` (contract: `experiments/README.md`).
-Numbered `NNNN_slug/` directories are frameworks, not single runs; verdicts
-are asserted in code, and the gate is two-sided (depth error down **and**
-prompt adherence not regressed — winning on depth by not renovating is the
-degenerate failure). `experiments/JOURNAL.md` is **owner-managed**: the owner
-writes entries or dictates them verbatim — never append to it unprompted.
+Numbered `NNNN_slug/` directories are frameworks, not single runs. A
+framework **measures and reports** — the rendered comparisons plus the numbers
+behind them (both arms' depth error and its reduction, both arms' prompt
+adherence and its ratio, and how much shell the pair was scored over) — and
+asserts no pass/fail: there are no thresholds in the code, and judging the
+evidence is the owner's. Depth error still never travels alone; winning it by
+not renovating is the degenerate outcome the adherence and coverage numbers
+expose. `experiments/JOURNAL.md` is **owner-managed**: the owner writes entries
+or dictates them verbatim — never append to it unprompted.
 
 ## Plans are temporary; docs/research is owner-reviewed
 

@@ -9,10 +9,6 @@ name: 0002_geometric_guidance_pilot
 
 seeds: [0]
 
-gate:
-  depth_error_margin: 0.2
-  prompt_adherence_floor: 0.9
-
 resolution: 512
 
 backends:

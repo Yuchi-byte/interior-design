@@ -67,6 +67,11 @@ class BackendConfig(Config):
             `dtype`: a float32 depth network can sit above a float16 sampler.
         segmentation_dtype: parameter dtype of the segmenter, which is off the
             gradient path entirely and only decides the mask.
+        deterministic: ask torch for deterministic kernels before the stack is
+            built (`roomgen_guide.determinism`). Best effort: it narrows
+            run-to-run variance on CUDA, it does not guarantee it away, and it
+            must be set before the process's first CUDA allocation to take
+            effect on cuBLAS.
         scheduler: `ddim` replaces the checkpoint's PNDM scheduler with the DDIM
             whose update is exactly the x̂₀ closed form the guided loop assumes;
             `pipeline` keeps whatever scheduler the pipeline was built with,
@@ -75,6 +80,7 @@ class BackendConfig(Config):
 
     kind: Literal["real", "fake"]
     device: Annotated[str, Field(min_length=1)] = "cpu"
+    deterministic: bool = False
     dtype: DTypeName = "float32"
     depth_dtype: DTypeName = "float32"
     segmentation_dtype: DTypeName = "float32"
@@ -129,7 +135,7 @@ class GuidanceConfig(Config):
             adds may occlude the shell for free; false scores the reference
             mask alone (pre-occlusion semantics, the control arm for A/B).
         mask_mode: how a prediction's segmentation narrows the reference shell,
-            in guidance *and* in the eval that judges the run.
+            in guidance *and* in the eval that scores the run.
             `intersect_shell` scores only what the render also calls shell;
             `subtract_contents` scores everything it does not affirmatively call
             contents, so an id outside the ADE20K shell/contents partition stays
@@ -168,14 +174,14 @@ def build_schedule(config: GuidanceConfig) -> GuidanceSchedule:
 
 
 class AdherenceConfig(Config):
-    """Which metric stands on the second side of the gate.
+    """Which metric reports how much of the renovation survived the guidance.
 
     Args:
-        kind: `clip` is the CLIP prompt score — the metric gate (b) is meant to
-            be. `contents_change` is checkpoint-free: it measures how far the
-            render moved from the photo *outside* the shell mask, which is
-            weaker (it cannot read the prompt) but still fails the degenerate
-            run that renovates nothing, and is what the smoke variant uses.
+        kind: `clip` is the CLIP prompt score, read against the prompt itself.
+            `contents_change` is checkpoint-free: it measures how far the render
+            moved from the photo *outside* the shell mask, which is weaker (it
+            cannot read the prompt) but still separates a renovated room from an
+            untouched one, and is what the smoke variant uses.
         checkpoint: Hugging Face Hub id, read only by `clip`.
     """
 
@@ -184,10 +190,10 @@ class AdherenceConfig(Config):
 
 
 class BenchmarkConfig(ExperimentConfig):
-    """One variant of 0002: a scene set, a sampler budget, and the gate it is judged on.
+    """One variant of 0002: a scene set, a sampler budget, and what is measured on them.
 
     Args:
-        scenes: the (photo, prompt) pairs, every one of which the gate must hold on.
+        scenes: the (photo, prompt) pairs the run measures, each at every seed.
         resolution: side of the square the photos are centre-cropped and resized
             to, a multiple of 64.
     """

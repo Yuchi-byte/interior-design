@@ -1,19 +1,11 @@
 # Plumbing, not a claim: the whole benchmark flow on the weightless test doubles,
 # CPU-only, offline, in seconds. Real photos off disk, real config, real
-# reference, real reward, real gate — only the three checkpoints are faked.
+# reference, real reward, real metrics — only the three checkpoints are faked.
 #
 #   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config smoke
 name: 0002_geometric_guidance_smoke
 
 seeds: [0, 1]
-
-# Deliberately not the benchmark's thresholds. The fake stack's energy has its
-# own scale, so these numbers assert only that the two sides of the gate are
-# wired up and that guidance moves both of them the right way — nothing about
-# Stable Diffusion or Depth Anything.
-gate:
-  depth_error_margin: 0.1
-  prompt_adherence_floor: 0.5
 
 resolution: 128
 

@@ -60,24 +60,21 @@ _DEPTH_MAP_CAPTIONS: Final = (
     "Unguided \N{MINUS SIGN} reference",
     "Guided \N{MINUS SIGN} reference",
 )
-# Directly under the depth map of the same arm, in the same column order: what
-# that arm's finished render was scored on at all.
-_EVAL_MASK_CAPTIONS: Final = (
-    "Unguided: pixels scored",
-    "Guided: pixels scored",
+# One mask under the depth pair, because there is one: both arms are scored on
+# the shell both of them left visible.
+_COMMON_MASK_CAPTION: Final = "Pixels scored, both arms"
+# Beside the shell mask in the detail pane: what each arm alone left visible,
+# whose intersection the common mask is.
+_ARM_MASK_CAPTIONS: Final = (
+    "Unguided: shell left visible",
+    "Guided: shell left visible",
 )
 
 # Top-level keys of results.json that are structure rather than run parameters,
 # and so are rendered by name elsewhere on the page instead of echoed.
 _STRUCTURAL_KEYS: Final = frozenset(
-    {"config", "runs", "results", "verdict", "settings"}
+    {"config", "runs", "results", "settings", "git_commit"}
 )
-
-
-@dataclass(frozen=True)
-class _Gate:
-    depth_error_margin: float | None
-    prompt_adherence_floor: float | None
 
 
 @dataclass(frozen=True)
@@ -87,28 +84,19 @@ class _Run:
     seed: int
     guided_depth_error: float
     control_depth_error: float
-    depth_error_reduction: float
-    adherence_ratio: float
+    depth_error_reduction: float | None
+    adherence_ratio: float | None
     reconstruction_depth_error: float | None
     mean_abs_control_residual: float | None
     depth_map_control: str | None
     depth_map_guided: str | None
+    eval_mask_common: str | None
     eval_mask_control: str | None
     eval_mask_guided: str | None
+    common_coverage: float | None
     guided_shell_coverage: float | None
     control_shell_coverage: float | None
     mask_snapshots: tuple[str | None, ...]
-
-    def geometry_passed(self, gate: _Gate) -> bool:
-        margin = gate.depth_error_margin
-        return margin is None or self.depth_error_reduction >= margin
-
-    def adherence_passed(self, gate: _Gate) -> bool:
-        floor = gate.prompt_adherence_floor
-        return floor is None or self.adherence_ratio >= floor
-
-    def passed(self, gate: _Gate) -> bool:
-        return self.geometry_passed(gate) and self.adherence_passed(gate)
 
 
 def write_gallery(results_path: Path, output_path: Path | None = None) -> Path:
@@ -150,23 +138,28 @@ def _page(
     runs: tuple[_Run, ...],
     image_dir: Path,
 ) -> str:
-    gate = _gate(config)
     name = _text(config.get("name")) or image_dir.parent.name
     scenes = _by_scene(runs)
     sections = "".join(
-        _scene_section(scene_runs, image_dir=image_dir, gate=gate)
+        _scene_section(scene_runs, image_dir=image_dir)
         for scene_runs in scenes.values()
+    )
+    commit = _text(document.get("git_commit"))
+    provenance = (
+        f" &middot; commit {escape(commit[:8])}"
+        if commit and commit != "unknown"
+        else ""
     )
     return (
         f"<title>{escape(name)} — qualitative comparisons</title>\n"
         f"<style>\n{_STYLE}</style>\n"
         "<main>\n"
         f'  <p class="eyebrow">roomgen &middot; {escape(name)} &middot; '
-        f"{len(scenes)} scenes &times; {len(_seeds(runs))} seeds</p>\n"
+        f"{len(scenes)} scenes &times; {len(_seeds(runs))} seeds{provenance}</p>\n"
         "  <h1>Same room, different furniture: qualitative comparisons</h1>\n"
         f'  <p class="lede">{_LEDE}</p>\n'
         f"{_pinned(document, config=config)}"
-        f"{_verdict_note(runs, gate=gate)}"
+        f"{_summary_note(runs)}"
         f"{sections}"
         f"{_FOOTER}"
         "</main>\n"
@@ -197,31 +190,34 @@ def _pinned_row(label: str, values: dict[str, object]) -> str:
     return f'<span class="pinned-row"><i>{escape(label)}</i>{fields}</span>'
 
 
-def _verdict_note(runs: tuple[_Run, ...], *, gate: _Gate) -> str:
-    passing = sum(1 for run in runs if run.passed(gate))
+def _summary_note(runs: tuple[_Run, ...]) -> str:
     reduction = _mean(run.depth_error_reduction for run in runs)
     adherence = _mean(run.adherence_ratio for run in runs)
-    worst = min(runs, key=lambda run: run.depth_error_reduction)
-    gate_text = (
-        "depth error down at least "
-        f"{_percent(gate.depth_error_margin)} against the control with adherence at "
-        f"{_percent(gate.prompt_adherence_floor)} of control or better"
-        if gate.depth_error_margin is not None
-        else "the run's two-sided gate"
+    coverage = _mean(run.common_coverage for run in runs)
+    measured = [run for run in runs if run.depth_error_reduction is not None]
+    weakest = (
+        min(measured, key=lambda run: run.depth_error_reduction or 0.0)
+        if measured
+        else None
+    )
+    weakest_text = (
+        f", weakest scene {escape(_title(weakest.scene))} at "
+        f"{_signed_percent(_negated(weakest.depth_error_reduction))}"
+        if weakest is not None
+        else ""
     )
     return (
         "  <h2>The benchmark rooms</h2>\n"
-        f'  <p class="section-note">Every strip is the lowest seed of the grid; '
-        f"across all {len(runs)} (scene, seed) pairs "
-        f"<b>{passing}/{len(runs)}</b> pass {gate_text}. "
-        f"Mean depth error {_signed_percent(-reduction)}, mean adherence "
-        f"{_percent(adherence, decimals=1)} of control, weakest scene "
-        f"{escape(_title(worst.scene))} at "
-        f"{_signed_percent(-worst.depth_error_reduction)}.</p>\n"
+        f'  <p class="section-note">Every strip is the lowest seed of the grid. '
+        f"Across all {len(runs)} (scene, seed) pairs, mean depth error "
+        f"{_signed_percent(_negated(reduction))} against the unguided control, "
+        f"mean adherence {_percent(adherence, decimals=1)} of control, scored "
+        f"over {_percent(coverage)} of the photographed shell{weakest_text}. "
+        f"{_JUDGEMENT_NOTE}</p>\n"
     )
 
 
-def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> str:
+def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path) -> str:
     shown = runs[0]
     cells = [
         _figure(
@@ -239,6 +235,12 @@ def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> s
             caption=_SHELL_MASK_CAPTION,
             scene=shown.scene,
         ),
+        *_duo(
+            shown,
+            image_dir=image_dir,
+            names=(shown.eval_mask_control, shown.eval_mask_guided),
+            captions=_ARM_MASK_CAPTIONS,
+        ),
         *(
             _figure(image_dir / Path(name).name, caption=caption, scene=shown.scene)
             for name, caption in zip(
@@ -255,7 +257,7 @@ def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> s
         "    </header>\n"
         f'    <div class="strip" style="--columns: {len(strip)}">{"".join(strip)}</div>\n'
         f"{_depth_row(shown, image_dir=image_dir)}"
-        f"{_stats(runs, gate=gate)}"
+        f"{_stats(runs)}"
         f"{_detail_block(masks)}"
         "  </section>\n"
     )
@@ -270,13 +272,16 @@ def _depth_row(run: _Run, *, image_dir: Path) -> str:
     )
     if not figures:
         return ""
-    masks = _duo(
-        run,
-        image_dir=image_dir,
-        names=(run.eval_mask_control, run.eval_mask_guided),
-        captions=_EVAL_MASK_CAPTIONS,
+    common = (
+        _figure(
+            image_dir / Path(run.eval_mask_common).name,
+            caption=_COMMON_MASK_CAPTION,
+            scene=run.scene,
+        )
+        if run.eval_mask_common
+        else ""
     )
-    mask_row = f'      <div class="duo">{"".join(masks)}</div>\n' if masks else ""
+    mask_row = f'      <div class="duo">{common}</div>\n' if common else ""
     return (
         '    <div class="depth-row">\n'
         '      <p class="row-label">Depth vs reference</p>\n'
@@ -315,10 +320,11 @@ def _map_note(run: _Run) -> str:
         f"scale saturating at &plusmn;{RESIDUAL_CLIP:g}&times; the control's mean "
         f"absolute masked residual{scale}: blue reads further from the camera "
         "than the photo, red reads closer, pale is geometry left where it was. "
-        "Grey is outside that arm\u2019s own evaluation mask \u2014 the "
-        "photograph\u2019s shell narrowed by a segmentation of that very render, "
-        "so furniture it legitimately stood in front of a wall is not charged as "
-        "moved architecture \u2014 and scores nothing."
+        "Grey is outside the common evaluation mask \u2014 the photograph\u2019s "
+        "shell narrowed by a segmentation of *both* finished renders, so "
+        "furniture either arm legitimately stood in front of a wall is not "
+        "charged as moved architecture, and both arms are scored on one pixel "
+        "set so their two errors mean the same thing \u2014 and scores nothing."
     )
 
 
@@ -350,22 +356,23 @@ def _figure(path: Path, *, caption: str, scene: str, hero: bool = False) -> str:
     )
 
 
-def _stats(runs: tuple[_Run, ...], *, gate: _Gate) -> str:
+def _stats(runs: tuple[_Run, ...]) -> str:
+    # Measurements, not judgements: the only colour is the direction the depth
+    # error moved, which is data about the sign and not a claim about the run.
     shown = runs[0]
     fields = [
         (
             f"depth error {_energy(shown.control_depth_error)} &rarr; "
             f"{_energy(shown.guided_depth_error)} "
-            f'<b class="{_verdict_class(shown.geometry_passed(gate))}">'
-            f"{_signed_percent(-shown.depth_error_reduction)}</b>"
+            f'<b class="{_direction_class(shown.depth_error_reduction)}">'
+            f"{_signed_percent(_negated(shown.depth_error_reduction))}</b>"
         ),
-        (
-            f'adherence <b class="{_verdict_class(shown.adherence_passed(gate))}">'
-            f"{_percent(shown.adherence_ratio)}</b> of control"
-        ),
+        f"adherence <b>{_percent(shown.adherence_ratio)}</b> of control",
     ]
     if len(runs) > 1:
-        per_seed = "/".join(_signed_percent(-run.depth_error_reduction) for run in runs)
+        per_seed = "/".join(
+            _signed_percent(_negated(run.depth_error_reduction)) for run in runs
+        )
         fields.append(f"{_seed_label(runs)}: {per_seed}")
     else:
         fields.append(f"seed {shown.seed}")
@@ -375,12 +382,13 @@ def _stats(runs: tuple[_Run, ...], *, gate: _Gate) -> str:
         fields.append(
             f"control mean |deviation| {_energy(shown.mean_abs_control_residual)}"
         )
-    if shown.guided_shell_coverage is not None:
-        # A near-zero coverage is the degenerate win: a render scored on nothing
-        # has no depth error to report, however far it moved the room.
+    if shown.common_coverage is not None:
+        # How much of the room the two arms were compared over at all: a depth
+        # error read on a sliver of shell says little about the shell.
         fields.append(
-            f"shell scored {_percent(shown.control_shell_coverage)} &rarr; "
-            f"{_percent(shown.guided_shell_coverage)}"
+            f"shell scored {_percent(shown.common_coverage)} in common "
+            f"(unguided {_percent(shown.control_shell_coverage)}, guided "
+            f"{_percent(shown.guided_shell_coverage)})"
         )
     spans = "".join(f'<span class="metric">{field}</span>' for field in fields)
     return f'    <p class="stats">{spans}</p>\n'
@@ -418,28 +426,25 @@ def _runs(document: dict[str, object]) -> tuple[_Run, ...]:
 
 
 def _run(row: dict[str, object]) -> _Run:
-    control = _number(row.get("control_depth_error")) or 0.0
-    guided = _number(row.get("guided_depth_error")) or 0.0
-    reduction = _number(row.get("depth_error_reduction"))
-    adherence = _number(row.get("adherence_ratio"))
+    # Every number is read from the row, never recomputed: the page reports what
+    # the run measured, so a ratio the run could not report stays unreported
+    # here rather than being reconstructed into a plausible-looking figure.
     return _Run(
         scene=_text(row.get("scene")) or "scene",
         prompt=_text(row.get("prompt")) or "",
         seed=int(_number(row.get("seed")) or 0),
-        guided_depth_error=guided,
-        control_depth_error=control,
-        depth_error_reduction=(
-            reduction
-            if reduction is not None
-            else (1.0 - guided / control if control else 0.0)
-        ),
-        adherence_ratio=adherence if adherence is not None else 0.0,
+        guided_depth_error=_number(row.get("guided_depth_error")) or 0.0,
+        control_depth_error=_number(row.get("control_depth_error")) or 0.0,
+        depth_error_reduction=_number(row.get("depth_error_reduction")),
+        adherence_ratio=_number(row.get("adherence_ratio")),
         reconstruction_depth_error=_number(row.get("reconstruction_depth_error")),
         mean_abs_control_residual=_number(row.get("mean_abs_control_residual")),
         depth_map_control=_text(row.get("depth_map_control")),
         depth_map_guided=_text(row.get("depth_map_guided")),
+        eval_mask_common=_text(row.get("eval_mask_common")),
         eval_mask_control=_text(row.get("eval_mask_control")),
         eval_mask_guided=_text(row.get("eval_mask_guided")),
+        common_coverage=_number(row.get("common_coverage")),
         guided_shell_coverage=_number(row.get("guided_shell_coverage")),
         control_shell_coverage=_number(row.get("control_shell_coverage")),
         mask_snapshots=tuple(
@@ -460,14 +465,6 @@ def _by_scene(runs: tuple[_Run, ...]) -> dict[str, tuple[_Run, ...]]:
 
 def _seeds(runs: tuple[_Run, ...]) -> set[int]:
     return {run.seed for run in runs}
-
-
-def _gate(config: dict[str, object]) -> _Gate:
-    gate = _mapping(config.get("gate"))
-    return _Gate(
-        depth_error_margin=_number(gate.get("depth_error_margin")),
-        prompt_adherence_floor=_number(gate.get("prompt_adherence_floor")),
-    )
 
 
 def _mapping(value: object) -> dict[str, object]:
@@ -501,9 +498,14 @@ def _number(value: object) -> float | None:
     return float(value)
 
 
-def _mean(values: Iterable[float]) -> float:
-    collected = list(values)
-    return sum(collected) / len(collected) if collected else 0.0
+def _mean(values: Iterable[float | None]) -> float | None:
+    """The mean over the runs that reported the figure at all; `None` if none did."""
+    collected = [value for value in values if value is not None]
+    return sum(collected) / len(collected) if collected else None
+
+
+def _negated(value: float | None) -> float | None:
+    return None if value is None else -value
 
 
 def _scalar(value: object) -> str:
@@ -526,12 +528,17 @@ def _percent(value: float | None, *, decimals: int = 0) -> str:
     return "n/a" if value is None else f"{value * 100:.{decimals}f}%"
 
 
-def _signed_percent(value: float) -> str:
+def _signed_percent(value: float | None) -> str:
+    if value is None:
+        return "n/a"
     return f"{'&minus;' if value < 0 else '+'}{abs(value) * 100:.0f}%"
 
 
-def _verdict_class(passed: bool) -> str:
-    return "pass" if passed else "fail"
+def _direction_class(reduction: float | None) -> str:
+    """Which way the depth error moved — the sign of the measurement, not a verdict on it."""
+    if reduction is None or reduction == 0.0:
+        return "flat"
+    return "down" if reduction > 0.0 else "up"
 
 
 def _title(scene: str) -> str:
@@ -545,8 +552,15 @@ _LEDE: Final = (
     "steered by a differentiable masked depth error against the photo's "
     "architectural shell &mdash; walls, floor, ceiling, windows, doors &mdash; "
     "and blind to the furniture, which the renovation is allowed to change. "
-    "Depth error is scale/shift-aligned inverse depth MSE on the shell; "
-    "adherence is the prompt metric relative to the control."
+    "Depth error is scale/shift-aligned inverse depth MSE on the shell, read "
+    "for both arms over the one pixel set both renders left visible; adherence "
+    "is the prompt metric relative to the control."
+)
+
+_JUDGEMENT_NOTE: Final = (
+    "The page reports what the run measured and asserts nothing about it: there "
+    "is no threshold here, and the colour on a depth figure is the direction it "
+    "moved, not a mark."
 )
 
 _FOOTER: Final = (
@@ -559,17 +573,17 @@ _FOOTER: Final = (
 
 _STYLE: Final = """:root {
   --bg: #fafaf8; --ink: #1d1f21; --ink-2: #55595e; --line: #e3e2dc;
-  --accent: #3a6b9b; --pass: #2e7d5b; --fail: #b0492f; --card: #ffffff;
+  --accent: #3a6b9b; --down: #2e7d5b; --up: #b0492f; --card: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #141619; --ink: #e8e6e1; --ink-2: #9aa0a6; --line: #2a2d31;
-    --accent: #7aa7d0; --pass: #5cb890; --fail: #d97b62; --card: #1b1e22; }
+    --accent: #7aa7d0; --down: #5cb890; --up: #d97b62; --card: #1b1e22; }
 }
 :root[data-theme="dark"] { --bg: #141619; --ink: #e8e6e1; --ink-2: #9aa0a6;
-  --line: #2a2d31; --accent: #7aa7d0; --pass: #5cb890; --fail: #d97b62;
+  --line: #2a2d31; --accent: #7aa7d0; --down: #5cb890; --up: #d97b62;
   --card: #1b1e22; }
 :root[data-theme="light"] { --bg: #fafaf8; --ink: #1d1f21; --ink-2: #55595e;
-  --line: #e3e2dc; --accent: #3a6b9b; --pass: #2e7d5b; --fail: #b0492f;
+  --line: #e3e2dc; --accent: #3a6b9b; --down: #2e7d5b; --up: #b0492f;
   --card: #ffffff; }
 * { box-sizing: border-box; }
 body {
@@ -633,8 +647,9 @@ figcaption {
   margin: 0.55rem 0 0; display: flex; flex-wrap: wrap; gap: 0.3rem 1.4rem;
 }
 .stats b { font-weight: 600; }
-.pass { color: var(--pass); }
-.fail { color: var(--fail); }
+.down { color: var(--down); }
+.up { color: var(--up); }
+.flat { color: var(--ink); }
 .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .depth-row { margin-top: 0.9rem; }
 .row-label {
