@@ -31,8 +31,11 @@ only on user-facing API or genuine *why*.
   `packages/roomgen-geometry` is the geometric grounding stack (depth,
   segmentation, masking, alignment, reward); `packages/roomgen-guide` is guided
   sampling plus the experiment harness
-  (`config`/`experiment`/`settings`/`metrics`/`eval`).
-  The geometry package never imports the guide package.
+  (`config`/`experiment`/`settings`/`metrics`/`eval`/`determinism`).
+  The geometry package never imports the guide package. `packages/mfm` is
+  vendored third-party source (`packages/mfm/NOTICE.md`): not a workspace
+  member, not imported by our packages, outside every gate — never edit or
+  reformat it.
 - All config objects are pydantic v2 (`extra="forbid"`) via the `Config` base
   in `packages/roomgen-guide/src/roomgen_guide/config.py` — a typo'd field is a
   `ValidationError`, not a silent no-op.

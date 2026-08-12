@@ -1,4 +1,4 @@
-"""Both sides of the gate, measured on a finished image.
+"""Both axes a finished image is measured on.
 
 Scoring is not guidance: everything here reads a render that is already
 finished, so it runs under `no_grad`. The differentiable form of the same depth

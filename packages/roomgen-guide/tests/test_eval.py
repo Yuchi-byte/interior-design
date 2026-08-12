@@ -229,7 +229,7 @@ def test_a_render_scored_on_nothing_reports_no_depth_error_at_all(
     fake_depth_estimator: FakeDepthEstimator,
     generator: Generator,
 ) -> None:
-    # The degenerate way to win gate (a): cover the room in furniture until the
+    # The degenerate way to lower depth error: cover the room in furniture until the
     # evaluation mask is empty. The error is a perfect zero and only the coverage
     # says so, which is why the runs record it.
     render = torch.rand(room_photo.shape, generator=generator)

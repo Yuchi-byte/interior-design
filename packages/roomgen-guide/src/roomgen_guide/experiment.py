@@ -11,8 +11,8 @@ class ExperimentConfig(Config):
     """Base config of an experiment framework; a framework extends it with what it varies.
 
     Args:
-        name: identifies this config wherever a run is recorded — its directory
-            under `RoomgenSettings.wdir` and its tracking run.
+        name: identifies this config wherever a run is recorded — the directory
+            its artifacts land in under `RoomgenSettings.wdir`.
         seeds: every seed the framework runs, listed rather than drawn, so a
             reported number can be reproduced exactly.
     """

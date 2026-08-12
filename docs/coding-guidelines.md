@@ -55,8 +55,8 @@ Binding for all code in `src/`, `tests/`, and `experiments/`.
 
 - Clear, small, single-purpose modules; one concept per file.
 - Depend on interfaces (`Protocol`) at boundaries; concrete classes inside.
-  `DepthEstimator`, `Segmenter`, `Guidance` and `Logger` are the boundaries —
-  a backend swap must never reach past them.
+  `DepthEstimator`, `Segmenter`, `Guidance` and `PromptAdherence` are the
+  boundaries — a backend swap must never reach past them.
 - No speculative generality: build the abstraction when the second consumer
   exists, not before.
 - No dummy/placeholder configs, no hardcoded paths, no dead code.

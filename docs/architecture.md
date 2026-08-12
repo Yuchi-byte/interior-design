@@ -99,9 +99,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
   re-reads it offline and requires each snapshot to hold weights and a config,
   which is a floor on the cache rather than a proof it is complete.
 - `metrics.py`: `RunMetrics`, one guided run's measurements beside its
-  control's at one seed, with the depth-error reduction and adherence ratio
-  read off them — `None` rather than 0 where the control scored zero and the
-  ratio is undefined. It records numbers; nothing here passes or fails a run.
+  control's at one seed — both depth errors on the common mask, both adherence
+  scores, the reconstruction floor, the common and per-arm shell coverages —
+  with the depth-error reduction and adherence ratio read off them, `None`
+  rather than 0 where the control scored zero and the ratio is undefined. It
+  records numbers; nothing here passes or fails a run.
 - `determinism.py`: `enable_determinism`, the best-effort narrowing of
   run-to-run variance (deterministic algorithms `warn_only`, cuDNN
   deterministic, `CUBLAS_WORKSPACE_CONFIG`), called before the first CUDA
@@ -196,11 +198,9 @@ the step then also carries the denoiser's Jacobian (DPS), which damps a push the
 denoiser would only undo, for one UNet backward more per guided step. The VAE
 decode dominates memory: its decoder activations at full sample
 resolution must be retained for the backward pass, and this cost is paid once
-per guided step. Gradient checkpointing on the decoder, computing the energy at a
-reduced depth-input resolution, and guiding on a subset of steps are the three
-levers; expect guided sampling to cost several times the VRAM of the same
-unguided pipeline. See `packages/roomgen-guide/README.md` for the practical
-figures.
+per guided step, so guided sampling costs several times the VRAM of the same
+unguided pipeline. See `packages/roomgen-guide/README.md` for the measured
+wall-clock and VRAM, and for the levers that would buy headroom above 512px.
 
 ## Outputs
 

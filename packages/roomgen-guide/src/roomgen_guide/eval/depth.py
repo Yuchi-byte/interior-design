@@ -1,4 +1,4 @@
-"""Gate (a): how far a finished render's geometry has drifted from the photo's."""
+"""How far a finished render's geometry has drifted from the photo's."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def shell_coverage(
     """The share of the reference's shell that an arm's evaluation mask still scores.
 
     1 is the whole photographed shell; 0 is a render whose segmentation excused
-    all of it. The degenerate way to win gate (a) is to cover the room in
+    all of it. The degenerate way to lower depth error is to cover the room in
     furniture and be scored on nothing, which costs no depth error at all — this
     is the number that shows it happened.
     """

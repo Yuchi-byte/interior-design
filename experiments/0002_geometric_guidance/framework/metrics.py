@@ -1,4 +1,4 @@
-"""The gate-(b) metric a variant selects, and the checkpoint-free stand-in for it."""
+"""The prompt-adherence metric a variant selects, and the checkpoint-free stand-in for it."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ class ContentsChangeAdherence:
     """How far the render moved from the photo outside the shell.
 
     It cannot tell a scandinavian sofa from a baroque one, so it is not a prompt
-    score — but it is the half of gate (b) that has teeth mechanically: a
-    sampler that wins on depth error by returning the photo unchanged scores
-    zero here and fails. Used by the smoke variant, which must run offline.
+    score — but it still catches the degenerate win mechanically: a sampler that
+    lowers depth error by returning the photo unchanged scores zero here. Used
+    by the smoke variant, which must run offline.
     """
 
     def __call__(
@@ -45,7 +45,7 @@ class ContentsChangeAdherence:
 def build_adherence(
     config: AdherenceConfig, *, device: torch.device, cache_dir: Path | None
 ) -> PromptAdherence:
-    """The gate-(b) metric `config` selects."""
+    """The prompt-adherence metric `config` selects."""
     match config.kind:
         case "clip":
             return ClipPromptAdherence(

@@ -1,4 +1,4 @@
-"""The CLIP prompt score: gate (b) read against the prompt itself."""
+"""The CLIP prompt score: adherence read against the prompt itself."""
 
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ class ClipPromptAdherence:
             into (`RoomgenSettings.hub_cache`); `None` follows the Hub client's
             own environment.
 
-    Reading the prompt is what gives gate (b) its teeth: a render that changed a
-    great deal in the wrong direction scores no better than one that changed
-    nothing.
+    Reading the prompt is what gives this metric its teeth: a render that
+    changed a great deal in the wrong direction scores no better than one that
+    changed nothing.
     """
 
     def __init__(
@@ -93,8 +93,8 @@ class ClipPromptAdherence:
             text_features = _projected(self._model.get_text_features(**tokens))
             similarity = cosine_similarity(image_features, text_features)
         # Clamped at zero the way CLIPScore defines it: a negative cosine is
-        # "unrelated", and the gate reads adherence as a ratio against the
-        # control, which a sign flip would make nonsense of.
+        # "unrelated", and adherence is read as a ratio against the control,
+        # which a sign flip would make nonsense of.
         return float(similarity.clamp(min=0.0).mean())
 
 

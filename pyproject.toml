@@ -93,8 +93,8 @@ ignore = [
 # Tests build fakes with the same jaxtyping annotations, and a print in a test
 # is a debugging aid whose output pytest captures anyway.
 "packages/*/tests/**" = ["F722", "F821", "T20"]
-# Experiment entry points are scripts: printing a verdict to the terminal is
-# their job.
+# Experiment entry points are scripts: printing what a run measured to the
+# terminal is their job.
 "experiments/**" = ["F722", "F821", "T20"]
 
 [tool.ruff.lint.isort]

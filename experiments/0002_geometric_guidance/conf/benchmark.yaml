@@ -15,12 +15,11 @@ resolution: 512
 backends:
   kind: real
   device: cuda
-  # float32 throughout, but no longer because half precision breaks the energy:
-  # the reward's reduction and the guided step's RMS sizing are float32 by
-  # contract whatever dtype the maps arrive in, so a float16 sampler keeps a
-  # finite, correctly-directed gradient (cosine 0.99998 against float32 at
-  # 512x512). This stays float32 for comparability of the recorded numbers
-  # across runs; set dtype=float16 if VRAM forces it.
+  # float32 for comparability of the recorded numbers across runs, not out of
+  # necessity: the reward's reduction and the guided step's RMS sizing are
+  # float32 by contract whatever dtype the maps arrive in, so a float16 sampler
+  # keeps a finite, correctly-directed gradient (cosine 0.99998 against float32
+  # at 512x512). Set dtype=float16 if VRAM forces it.
   dtype: float32
   depth_dtype: float32
   segmentation_dtype: float32
@@ -36,8 +35,9 @@ sampler:
 guidance:
   # Clipped raw step, the arm that dominates every other measured (report.md):
   # the raw step's energy-adaptivity handles scenes whose geometry is already
-  # close, the cap prevents the high-noise adversarial runaway. 32/32 at noise
-  # 0.6 and 30/32 at 0.8 on seeds 0-3. Uncapped raw (clip: null) collapses at
+  # close, the cap prevents the high-noise adversarial runaway. Over seeds 0-3
+  # it removes ~74% of the control's depth error at noise 0.6 and ~54% at 0.9,
+  # both at unchanged adherence. Uncapped raw (clip: null) collapses at
   # noise >= 0.8.
   strength: 10.0
   clip: 0.02
@@ -45,8 +45,9 @@ guidance:
   # Both sides of the run read a prediction's segmentation this way: the
   # guidance while sampling, and the eval that judges the render afterwards.
   # `subtract_contents` exempts only what the segmenter affirmatively calls
-  # contents, which under the current ADE20K partition differs from this only
-  # on ids outside its 150 labelled classes.
+  # contents, so it keeps every id the ADE20K partition does not name; it ties
+  # this at noise 0.6 and beats it at 0.9 while scoring more of the room
+  # (report.md), and is the candidate default.
   mask_mode: intersect_shell
 
 adherence:

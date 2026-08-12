@@ -81,6 +81,7 @@ finding: framework, one-line conclusion, pointer to the run/report. Don't journa
 in package docs (`CLAUDE.md` cites experiment numbers instead) and don't
 rewrite past entries.
 
-## Planned frameworks
+## Where the frameworks come from
 
-See `docs/research/2026-08-11-geometric-guidance.md` for the staged path.
+`docs/research/geometric-guidance.md` is the research direction: what the
+method is, what it has measured, and what the next framework is for.

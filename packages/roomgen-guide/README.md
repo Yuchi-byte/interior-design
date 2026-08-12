@@ -18,10 +18,12 @@ step may move the latent. No weights are updated.
 `renovate.py` is the end-to-end entry point: photo + prompt in, reference built
 once, guided sample out under `ROOMGEN_WDIR`.
 
-`eval/` scores a run on two axes, because they trade off: masked depth error
-against the reference, and a prompt-adherence / perceptual metric. A sampler
-that simply returns the input photo wins the first and fails the second, which
-is why a framework reads the two together (see `experiments/README.md`).
+`eval/` scores a finished render on two axes, because they trade off: masked
+depth error against the reference, and a prompt-adherence metric. A sampler that
+simply returns the input photo wins the first and fails the second, which is why
+a framework reads the two together — with `shell_coverage` beside them, since a
+render whose own segmentation excuses the whole shell is scored on nothing (see
+`experiments/README.md`).
 
 ## Settings
 
@@ -43,12 +45,15 @@ This is a torch project and guidance is expensive. The gradient backpropagates
 through the depth network **and** the VAE decoder, whose activations at sample
 resolution must be retained for the backward pass at every guided step, so a
 guided run costs several times the VRAM of the same pipeline sampled unguided.
-Budget accordingly at SD1.5's native 512px; the levers below are what buy
-headroom above it.
 
-- Gradient-checkpoint the VAE decoder.
-- Evaluate the energy at a reduced depth-input resolution.
-- Guide on a subset of steps.
+Measured at SD1.5's native 512px, fp32, 18 walked steps, on an RTX PRO 4500
+Blackwell: **~6 s per guided sample against ~1.4 s unguided**, ~23 GiB peak
+allocated with all four checkpoints resident. `differentiate_through_unet` adds
+a UNet backward per guided step on top of that.
+
+Three levers buy headroom above 512px, none of them wired to a config knob yet:
+gradient-checkpoint the VAE decoder, evaluate the energy at a reduced
+depth-input resolution, or guide on a subset of steps.
 
 CPU torch is the default install, which is enough for the fake-backed tests but
 not for real sampling. Layer CUDA wheels over a synced venv:

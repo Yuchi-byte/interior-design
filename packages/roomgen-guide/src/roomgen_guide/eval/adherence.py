@@ -1,4 +1,4 @@
-"""Gate (b): the boundary every prompt-adherence metric sits behind."""
+"""The boundary every prompt-adherence metric sits behind."""
 
 from __future__ import annotations
 
