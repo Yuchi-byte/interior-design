@@ -6,7 +6,8 @@
 name: 0002_geometric_guidance
 
 # Listed, not drawn, so any number reported here can be reproduced exactly.
-seeds: [0, 1]
+# The current reference numbers were measured over exactly these four.
+seeds: [0, 1, 2, 3]
 
 # 512 is SD1.5's training resolution and a multiple of 64; photos are
 # centre-cropped square first, so no room is anamorphically squashed.
@@ -15,6 +16,9 @@ resolution: 512
 backends:
   kind: real
   device: cuda
+  # The reference numbers were measured with this on; the one op it cannot pin
+  # is the memory-efficient attention backward (warn-only).
+  deterministic: true
   # float32 for comparability of the recorded numbers across runs, not out of
   # necessity: the reward's reduction and the guided step's RMS sizing are
   # float32 by contract whatever dtype the maps arrive in, so a float16 sampler
@@ -46,9 +50,9 @@ guidance:
   # guidance while sampling, and the eval that judges the render afterwards.
   # `subtract_contents` exempts only what the segmenter affirmatively calls
   # contents, so it keeps every id the ADE20K partition does not name; it ties
-  # this at noise 0.6 and beats it at 0.9 while scoring more of the room
-  # (report.md), and is the candidate default.
-  mask_mode: intersect_shell
+  # intersect_shell at noise 0.6 and beats it at 0.9 while scoring more of
+  # the room (report.md).
+  mask_mode: subtract_contents
 
 adherence:
   # The prompt-adherence metric, on the fourth checkpoint `roomgen-prefetch` seeds
