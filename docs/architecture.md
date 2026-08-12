@@ -41,10 +41,16 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   `ARCHITECTURAL_CLASSES`/`CONTENTS_CLASSES` partition (wall, floor, ceiling,
   window, door, column, stairs, ... vs. furniture, furnishings, decor) — the
   domain-knowledge file.
-- `masking.py`: `architectural_mask`, the boolean shell mask, plus the boundary
-  erosion that drops the few pixels either side of a segment edge where
-  monocular depth is unreliable — a max-pool over the inverted mask (Chebyshev
-  radius in pixels); the image border is not treated as a segment edge.
+- `masking.py`: `scorable_mask`, the one place a segmentation is turned into the
+  pixels a reward may score, under either `MaskMode` polarity —
+  `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts
+  only affirmative contents, so an id the partition does not name stays scored;
+  `architectural_mask` is that function at its default polarity, which is how
+  the reference photo's shell is always read. Plus the boundary erosion, applied
+  to the kept side in either mode, that drops the few pixels either side of a
+  segment edge where monocular depth is unreliable — a max-pool over the
+  inverted mask (Chebyshev radius in pixels); the image border is not treated as
+  a segment edge.
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels.
 - `reward.py`: `masked_depth_error`, the scale-and-shift-invariant masked
@@ -97,7 +103,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
   sides at once, on the `VerdictGateConfig` its framework declares.
 - `eval/`: the two sides of that gate, measured on a finished render and
   therefore under `no_grad`: `depth.py`'s masked depth error against the
-  reference and the signed per-pixel residual map behind it, and the
+  reference and the signed per-pixel residual map behind it — both take the
+  arm's own evaluation mask, the reference shell narrowed by a segmentation of
+  that very render, so a run is judged the way it was steered, with
+  `shell_coverage` reporting how much of the shell that left to score because a
+  render scored on nothing scores zero — and the
   `adherence.py` `PromptAdherence` boundary whose
   `clip.py` implementation scores the render against the prompt — the metric
   that catches the degenerate win where guidance succeeds by not renovating.

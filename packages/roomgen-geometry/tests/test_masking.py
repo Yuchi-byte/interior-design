@@ -3,12 +3,30 @@ import torch
 from torch import Tensor
 
 from roomgen_fakes import FakeSegmenter
-from roomgen_geometry.masking import architectural_mask, erode_boundaries
+from roomgen_geometry.masking import (
+    MaskMode,
+    architectural_mask,
+    erode_boundaries,
+    scorable_mask,
+)
 from roomgen_geometry.segmentation.ade20k import (
     ADE20K_LABELS,
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
+    NUM_CLASSES,
 )
+
+_WALL = ADE20K_LABELS.index("wall")
+_SOFA = ADE20K_LABELS.index("sofa")
+# An id past the end of the 150-class table: neither shell nor contents, which
+# is what a backend emits where it declines to commit to a class at all.
+_UNNAMED = NUM_CLASSES
+
+
+def _room_with_block(block: int, *, size: int = 16) -> Tensor:
+    segmentation = torch.full((1, size, size), _WALL)
+    segmentation[:, 6:10, 6:10] = block
+    return segmentation
 
 
 def _square_mask(size: int, side: int) -> Tensor:
@@ -90,3 +108,71 @@ def test_eroding_the_room_mask_drops_the_band_around_the_furniture(
     below_sofa = (int(sofa_rows.max()) + 1, int(sofa_columns.max()))
     assert bool(uneroded[0][below_sofa])
     assert not bool(eroded[0][below_sofa])
+
+
+def test_the_shell_mask_is_the_default_polarity_of_the_scorable_mask() -> None:
+    segmentation = _room_with_block(_SOFA)
+
+    assert torch.equal(
+        architectural_mask(segmentation, erosion_radius=2),
+        scorable_mask(segmentation, mode="intersect_shell", erosion_radius=2),
+    )
+
+
+def test_the_two_modes_agree_on_every_id_the_partition_covers() -> None:
+    # The whole label table, which the partition covers exactly: contents is
+    # defined as the complement of shell over it, so keeping what is shell and
+    # dropping what is contents are the same statement here.
+    segmentation = torch.arange(NUM_CLASSES).reshape(1, 10, 15)
+
+    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
+    subtracting = scorable_mask(
+        segmentation, mode="subtract_contents", erosion_radius=0
+    )
+
+    assert torch.equal(intersecting, subtracting)
+    assert int(intersecting.sum()) == len(ARCHITECTURAL_CLASSES)
+
+
+def test_the_modes_part_company_on_an_id_neither_set_names() -> None:
+    segmentation = _room_with_block(_UNNAMED)
+
+    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
+    subtracting = scorable_mask(
+        segmentation, mode="subtract_contents", erosion_radius=0
+    )
+
+    # Intersecting exempts everything it cannot confirm is shell; subtracting
+    # exempts only what it can confirm is contents, so an unnamed id stays scored.
+    assert not bool(intersecting[:, 6:10, 6:10].any())
+    assert bool(subtracting.all())
+
+
+@pytest.mark.parametrize("mode", ["intersect_shell", "subtract_contents"])
+def test_erosion_grows_the_region_a_mode_exempts_whichever_mode_it_is(
+    mode: MaskMode,
+) -> None:
+    # Both modes exempt an affirmative contents block, and erosion is applied to
+    # the kept side in either: the exemption spreads by the radius, never shrinks.
+    segmentation = _room_with_block(_SOFA)
+
+    uneroded = scorable_mask(segmentation, mode=mode, erosion_radius=0)
+    eroded = scorable_mask(segmentation, mode=mode, erosion_radius=2)
+
+    assert int(uneroded.sum()) == 16 * 16 - 4 * 4
+    assert bool((eroded <= uneroded).all())
+    assert int(eroded.sum()) == 16 * 16 - 8 * 8
+
+
+def test_erosion_trims_the_kept_side_against_whatever_the_mode_exempted() -> None:
+    segmentation = _room_with_block(_UNNAMED)
+
+    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=2)
+    subtracting = scorable_mask(
+        segmentation, mode="subtract_contents", erosion_radius=2
+    )
+
+    # One mode has an edge to erode against here and the other has none, which
+    # is the point: erosion follows the exemption rather than the label map.
+    assert not bool(intersecting[:, 4:12, 4:12].any())
+    assert bool(subtracting.all())

@@ -51,7 +51,7 @@ _MASK_NOTE: Final = (
     "White is what the reward actually scored at that step. Early in the walk "
     "the predicted clean image is still blur, so the shell of a segmentation of "
     "it would swallow the frame and the reference's own mask is scored alone; "
-    "from <span class=\"mono\">resegment_after</span> of the walked trajectory "
+    'from <span class="mono">resegment_after</span> of the walked trajectory '
     "on, the sample is re-segmented every step and the score falls on the "
     "reference shell intersected with the prediction's, which is what stops the "
     "furniture a renovation adds from being charged as moved architecture."
@@ -59,6 +59,12 @@ _MASK_NOTE: Final = (
 _DEPTH_MAP_CAPTIONS: Final = (
     "Unguided \N{MINUS SIGN} reference",
     "Guided \N{MINUS SIGN} reference",
+)
+# Directly under the depth map of the same arm, in the same column order: what
+# that arm's finished render was scored on at all.
+_EVAL_MASK_CAPTIONS: Final = (
+    "Unguided: pixels scored",
+    "Guided: pixels scored",
 )
 
 # Top-level keys of results.json that are structure rather than run parameters,
@@ -87,6 +93,10 @@ class _Run:
     mean_abs_control_residual: float | None
     depth_map_control: str | None
     depth_map_guided: str | None
+    eval_mask_control: str | None
+    eval_mask_guided: str | None
+    guided_shell_coverage: float | None
+    control_shell_coverage: float | None
     mask_snapshots: tuple[str | None, ...]
 
     def geometry_passed(self, gate: _Gate) -> bool:
@@ -252,24 +262,44 @@ def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> s
 
 
 def _depth_row(run: _Run, *, image_dir: Path) -> str:
-    figures = [
-        _figure(image_dir / Path(name).name, caption=caption, scene=run.scene)
-        for name, caption in zip(
-            (run.depth_map_control, run.depth_map_guided),
-            _DEPTH_MAP_CAPTIONS,
-            strict=True,
-        )
-        if name
-    ]
-    if not any(figures):
+    figures = _duo(
+        run,
+        image_dir=image_dir,
+        names=(run.depth_map_control, run.depth_map_guided),
+        captions=_DEPTH_MAP_CAPTIONS,
+    )
+    if not figures:
         return ""
+    masks = _duo(
+        run,
+        image_dir=image_dir,
+        names=(run.eval_mask_control, run.eval_mask_guided),
+        captions=_EVAL_MASK_CAPTIONS,
+    )
+    mask_row = f'      <div class="duo">{"".join(masks)}</div>\n' if masks else ""
     return (
         '    <div class="depth-row">\n'
         '      <p class="row-label">Depth vs reference</p>\n'
         f'      <div class="duo">{"".join(figures)}</div>\n'
+        f"{mask_row}"
         f'      <p class="map-note">{_map_note(run)}</p>\n'
         "    </div>\n"
     )
+
+
+def _duo(
+    run: _Run,
+    *,
+    image_dir: Path,
+    names: tuple[str | None, str | None],
+    captions: tuple[str, str],
+) -> list[str]:
+    figures = [
+        _figure(image_dir / Path(name).name, caption=caption, scene=run.scene)
+        for name, caption in zip(names, captions, strict=True)
+        if name
+    ]
+    return [figure for figure in figures if figure]
 
 
 def _map_note(run: _Run) -> str:
@@ -285,7 +315,10 @@ def _map_note(run: _Run) -> str:
         f"scale saturating at &plusmn;{RESIDUAL_CLIP:g}&times; the control's mean "
         f"absolute masked residual{scale}: blue reads further from the camera "
         "than the photo, red reads closer, pale is geometry left where it was. "
-        "Grey is outside the shell mask, which scores nothing."
+        "Grey is outside that arm\u2019s own evaluation mask \u2014 the "
+        "photograph\u2019s shell narrowed by a segmentation of that very render, "
+        "so furniture it legitimately stood in front of a wall is not charged as "
+        "moved architecture \u2014 and scores nothing."
     )
 
 
@@ -341,6 +374,13 @@ def _stats(runs: tuple[_Run, ...], *, gate: _Gate) -> str:
     if shown.mean_abs_control_residual is not None:
         fields.append(
             f"control mean |deviation| {_energy(shown.mean_abs_control_residual)}"
+        )
+    if shown.guided_shell_coverage is not None:
+        # A near-zero coverage is the degenerate win: a render scored on nothing
+        # has no depth error to report, however far it moved the room.
+        fields.append(
+            f"shell scored {_percent(shown.control_shell_coverage)} &rarr; "
+            f"{_percent(shown.guided_shell_coverage)}"
         )
     spans = "".join(f'<span class="metric">{field}</span>' for field in fields)
     return f'    <p class="stats">{spans}</p>\n'
@@ -398,6 +438,10 @@ def _run(row: dict[str, object]) -> _Run:
         mean_abs_control_residual=_number(row.get("mean_abs_control_residual")),
         depth_map_control=_text(row.get("depth_map_control")),
         depth_map_guided=_text(row.get("depth_map_guided")),
+        eval_mask_control=_text(row.get("eval_mask_control")),
+        eval_mask_guided=_text(row.get("eval_mask_guided")),
+        guided_shell_coverage=_number(row.get("guided_shell_coverage")),
+        control_shell_coverage=_number(row.get("control_shell_coverage")),
         mask_snapshots=tuple(
             _text(row.get(key)) for key in ("mask_first", "mask_mid", "mask_last")
         ),

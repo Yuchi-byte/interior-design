@@ -15,7 +15,7 @@ from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.masking import architectural_mask
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.reward import masked_depth_error
-from roomgen_geometry.segmentation.ade20k import ADE20K_LABELS
+from roomgen_geometry.segmentation.ade20k import ADE20K_LABELS, NUM_CLASSES
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
@@ -30,11 +30,20 @@ _EROSION_RADIUS: Final = 2
 _SOFA_REGION: Final = (slice(48, 54), slice(40, 52))
 _WALL: Final = ADE20K_LABELS.index("wall")
 _SOFA: Final = ADE20K_LABELS.index("sofa")
+# Past the end of the label table: an id the shell/contents partition does not
+# name, which is the only place the two mask modes can disagree.
+_UNNAMED: Final = NUM_CLASSES
 
 
 def _brightened(image: Tensor, amount: float, region: tuple[slice, slice]) -> Tensor:
     changed = image.clone()
     changed[:, :, region[0], region[1]] += amount
+    return changed
+
+
+def _flooded(image: Tensor, region: tuple[slice, slice]) -> Tensor:
+    changed = image.clone()
+    changed[:, :, region[0], region[1]] = 1.0
     return changed
 
 
@@ -49,6 +58,24 @@ class _CornerShellSegmenter:
         ids = torch.full((batch, height, width), _SOFA, dtype=torch.int64)
         ids[:, -8:, -8:] = _WALL
         return ids
+
+
+@dataclass(frozen=True)
+class _UnsureWhereFlooded:
+    """Wall, except where the prediction came out saturated: an id neither set names.
+
+    Content-sensitive on purpose. `FakeSegmenter` labels by frame position, so it
+    cannot stage a prediction whose own segmentation depends on what was
+    rendered into it, which is what a mask-mode difference is made of.
+    """
+
+    def __call__(
+        self, images: Float[Tensor, "batch 3 height width"]
+    ) -> Int[Tensor, "batch height width"]:
+        unsure = images.amin(dim=1) >= 1.0
+        return torch.where(unsure, torch.tensor(_UNNAMED), torch.tensor(_WALL)).expand(
+            images.shape[0], *images.shape[-2:]
+        )
 
 
 @dataclass(frozen=True)
@@ -423,3 +450,40 @@ def test_a_threshold_outside_the_walked_trajectory_is_rejected(
             erosion_radius=_EROSION_RADIUS,
             resegment_after=resegment_after,
         )
+
+
+def test_the_mask_modes_score_a_different_shell_of_the_same_prediction(
+    geometric_guidance: GeometricGuidance, room_photo: Tensor
+) -> None:
+    intersecting = replace(
+        geometric_guidance,
+        segmenter=_UnsureWhereFlooded(),
+        erosion_radius=_EROSION_RADIUS,
+        resegment_after=0.0,
+    )
+    subtracting = replace(intersecting, mask_mode="subtract_contents")
+    flooded = _flooded(room_photo, _SOFA_REGION)
+
+    # Where the segmenter declines to commit, intersecting stops scoring and
+    # subtracting keeps going: only an affirmative contents label excuses a pixel.
+    assert float(intersecting(flooded, progress=1.0)) < 1e-10
+    assert float(subtracting(flooded, progress=1.0)) > 0.0
+
+
+def test_the_mask_modes_agree_when_the_segmenter_names_every_pixel(
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+    fake_segmenter: FakeSegmenter,
+) -> None:
+    intersecting = replace(
+        geometric_guidance,
+        segmenter=fake_segmenter,
+        erosion_radius=_EROSION_RADIUS,
+        resegment_after=0.0,
+    )
+    subtracting = replace(intersecting, mask_mode="subtract_contents")
+    drifted = _brightened(room_photo, 0.2, (slice(0, 32), slice(0, 32)))
+
+    torch.testing.assert_close(
+        subtracting(drifted, progress=1.0), intersecting(drifted, progress=1.0)
+    )

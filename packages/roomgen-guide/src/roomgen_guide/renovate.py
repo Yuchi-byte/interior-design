@@ -11,6 +11,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from roomgen_geometry.depth.base import DepthEstimator
+from roomgen_geometry.masking import MaskMode
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.guidance.geometric import GeometricGuidance, MaskObserver
@@ -42,6 +43,7 @@ def renovate(
     reference: GeometricReference | None = None,
     resegment: bool = True,
     resegment_after: float = 0.5,
+    mask_mode: MaskMode = "intersect_shell",
     on_mask: MaskObserver | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Restyle the room in `photo` under `prompt` while holding its geometry.
@@ -69,6 +71,12 @@ def renovate(
             trajectory, which charges a renovation for every surface it covers
             up, and leaves `segmenter` unused whenever `reference` is already
             built.
+        mask_mode: which way a prediction's segmentation is read when it
+            narrows the reference shell — `intersect_shell` keeps what the
+            prediction also calls shell, `subtract_contents` keeps everything it
+            does not affirmatively call contents. Whatever judges the render
+            afterwards must read it the same way or the two disagree about what
+            was ever being scored.
         resegment_after: fraction of the walked trajectory before which the
             reference shell is scored alone even when `resegment` is set, since
             an early x̂₀ is too blurred to segment and its shell would swallow
@@ -96,6 +104,7 @@ def renovate(
             reference=reference,
             segmenter=segmenter if resegment else None,
             erosion_radius=erosion_radius if resegment else None,
+            mask_mode=mask_mode,
             resegment_after=resegment_after,
             on_mask=on_mask,
         ),

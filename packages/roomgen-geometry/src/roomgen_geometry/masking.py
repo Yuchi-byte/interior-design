@@ -2,35 +2,77 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.nn.functional import max_pool2d
 
-from roomgen_geometry.segmentation.ade20k import ARCHITECTURAL_CLASSES
+from roomgen_geometry.segmentation.ade20k import (
+    ARCHITECTURAL_CLASSES,
+    CONTENTS_CLASSES,
+)
+
+MaskMode = Literal["intersect_shell", "subtract_contents"]
+"""Which way round a segmentation is read when it decides what may be scored."""
+
+
+def scorable_mask(
+    segmentation: Int[Tensor, "batch height width"],
+    *,
+    mode: MaskMode = "intersect_shell",
+    erosion_radius: int,
+) -> Bool[Tensor, "batch height width"]:
+    """The pixels one segmentation leaves available to the reward, under either polarity.
+
+    Args:
+        segmentation: ADE20K-150 model output ids, as
+            :class:`~roomgen_geometry.segmentation.base.Segmenter` returns them.
+        mode: `intersect_shell` exempts everything that is not affirmatively
+            shell (:data:`~roomgen_geometry.segmentation.ade20k.ARCHITECTURAL_CLASSES`);
+            `subtract_contents` exempts only what is affirmatively contents
+            (:data:`~roomgen_geometry.segmentation.ade20k.CONTENTS_CLASSES`), so
+            an id the partition does not cover — a void or ignore index a backend
+            may emit where it is unsure — stays scored rather than excused.
+        erosion_radius: in pixels, passed on to :func:`erode_boundaries`.
+
+    Erosion is applied to the kept side in both modes, never to the exemption:
+    the unreliable band either side of a segment edge is dropped from the score
+    rather than trusted, so the region a mode exempts grows by the radius.
+
+    The two modes agree wherever every id is one the partition covers, since
+    `CONTENTS_CLASSES` is its complement over the 150 labelled ids; they part
+    company on ids outside it and on the eroded band around them. The result is a
+    constant either way: it is derived from a segmentation that never carries
+    gradient.
+    """
+    exempt = (
+        torch.isin(segmentation, _class_ids(CONTENTS_CLASSES, segmentation))
+        if mode == "subtract_contents"
+        else ~torch.isin(segmentation, _class_ids(ARCHITECTURAL_CLASSES, segmentation))
+    )
+    return erode_boundaries(~exempt, radius=erosion_radius)
 
 
 def architectural_mask(
     segmentation: Int[Tensor, "batch height width"], *, erosion_radius: int
 ) -> Bool[Tensor, "batch height width"]:
-    """The pixels the geometric reward is allowed to score.
-
-    Args:
-        segmentation: ADE20K-150 model output ids, as
-            :class:`~roomgen_geometry.segmentation.base.Segmenter` returns them.
-        erosion_radius: in pixels, passed on to :func:`erode_boundaries`.
+    """The pixels the geometric reward is allowed to score: `scorable_mask` at its default polarity.
 
     True on the shell classes
     (:data:`~roomgen_geometry.segmentation.ade20k.ARCHITECTURAL_CLASSES`) and
-    False on everything a renovation may change. The result is a constant: it is
-    derived from a segmentation that never carries gradient.
+    False on everything a renovation may change. This is the reference photo's
+    side of the reward, which is read one way only — the modes are a statement
+    about a *prediction's* segmentation, not about the room as photographed.
     """
-    shell = torch.tensor(
-        sorted(ARCHITECTURAL_CLASSES),
-        dtype=segmentation.dtype,
-        device=segmentation.device,
+    return scorable_mask(
+        segmentation, mode="intersect_shell", erosion_radius=erosion_radius
     )
-    return erode_boundaries(torch.isin(segmentation, shell), radius=erosion_radius)
+
+
+def _class_ids(classes: frozenset[int], like: Tensor) -> Tensor:
+    return torch.tensor(sorted(classes), dtype=like.dtype, device=like.device)
 
 
 def erode_boundaries(

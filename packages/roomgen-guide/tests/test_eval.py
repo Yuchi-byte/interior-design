@@ -12,6 +12,7 @@ from roomgen_geometry.reward import masked_depth_error
 from roomgen_guide.eval import (
     ClipPromptAdherence,
     depth_error,
+    shell_coverage,
     signed_depth_residual_map,
 )
 from roomgen_guide.eval import clip as clip_module
@@ -144,6 +145,101 @@ def test_the_residual_is_positive_where_the_render_reads_closer_than_the_referen
 
     assert float(residual[band & reference.mask].mean()) > 0.0
     assert float(residual[~band & reference.mask].mean()) < 0.0
+
+
+def test_an_evaluation_mask_narrows_what_the_score_is_taken_over(
+    room_photo: Float[Tensor, "1 3 64 64"],
+    reference: GeometricReference,
+    fake_depth_estimator: FakeDepthEstimator,
+) -> None:
+    drifted = room_photo.clone()
+    drifted[:, :, :8, :8] = 0.0
+    # The corner this render changed, taken out of the score the way a render's
+    # own segmentation takes out the furniture it stood in front of a wall.
+    exempted = reference.mask.clone()
+    exempted[:, :8, :8] = False
+
+    assert (
+        depth_error(drifted, reference=reference, depth_estimator=fake_depth_estimator)
+        > 0.0
+    )
+    assert depth_error(
+        drifted,
+        reference=reference,
+        depth_estimator=fake_depth_estimator,
+        mask=exempted,
+    ) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_residual_map_is_taken_over_the_evaluation_mask_it_is_given(
+    room_photo: Float[Tensor, "1 3 64 64"],
+    reference: GeometricReference,
+    fake_depth_estimator: FakeDepthEstimator,
+    generator: Generator,
+) -> None:
+    render = torch.rand(room_photo.shape, generator=generator)
+    exempted = reference.mask.clone()
+    exempted[:, :16, :] = False
+
+    residual = signed_depth_residual_map(
+        render,
+        reference=reference,
+        depth_estimator=fake_depth_estimator,
+        mask=exempted,
+    )
+
+    assert not residual[~exempted].any()
+    masked_mean = (residual**2).flatten(1).sum(-1) / exempted.flatten(1).sum(-1)
+    assert float(masked_mean.mean()) == pytest.approx(
+        depth_error(
+            render,
+            reference=reference,
+            depth_estimator=fake_depth_estimator,
+            mask=exempted,
+        )
+    )
+
+
+def test_shell_coverage_is_the_share_of_the_reference_shell_still_scored(
+    reference: GeometricReference,
+) -> None:
+    half = reference.mask.clone()
+    half[:, : half.shape[1] // 2] = False
+
+    assert shell_coverage(reference.mask, reference=reference) == 1.0
+    assert shell_coverage(half, reference=reference) == pytest.approx(
+        int(half.sum()) / int(reference.mask.sum())
+    )
+    # A mask reaching past the photographed shell has not covered more than it.
+    assert shell_coverage(torch.ones_like(reference.mask), reference=reference) == 1.0
+
+
+def test_a_render_scored_on_nothing_reports_no_depth_error_at_all(
+    room_photo: Float[Tensor, "1 3 64 64"],
+    reference: GeometricReference,
+    fake_depth_estimator: FakeDepthEstimator,
+    generator: Generator,
+) -> None:
+    # The degenerate way to win gate (a): cover the room in furniture until the
+    # evaluation mask is empty. The error is a perfect zero and only the coverage
+    # says so, which is why the runs record it.
+    render = torch.rand(room_photo.shape, generator=generator)
+    nothing = torch.zeros_like(reference.mask)
+
+    assert (
+        depth_error(render, reference=reference, depth_estimator=fake_depth_estimator)
+        > 0.0
+    )
+    assert (
+        depth_error(
+            render,
+            reference=reference,
+            depth_estimator=fake_depth_estimator,
+            mask=nothing,
+        )
+        == 0.0
+    )
+    assert shell_coverage(nothing, reference=reference) == 0.0
 
 
 @dataclass

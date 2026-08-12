@@ -55,12 +55,17 @@ guidance:
   # worse: it halves the geometric win for no adherence gain.
   schedule: constant
   erosion_radius: 2
-  # The first half of the walk scores the reference shell alone: x̂₀ is still
-  # blur there, the segmenter finds no furniture in it, and its shell covers
-  # nearly the whole frame — so intersecting is a no-op that spends the layout
-  # budget pulling nascent furniture towards the reference's wall depth. 0.0 is
-  # the always-intersect arm.
-  resegment_after: 0.5
+  # Intersect the prediction's shell from the first step. Holding the reference
+  # shell over the early steps instead — where the predicted clean image is
+  # still blur the segmenter reads as furniture-free — is the arm to try next,
+  # not the one this config runs.
+  resegment_after: 0.0
+  # Both sides of the run read a prediction's segmentation this way: the
+  # guidance while sampling, and the eval that judges the render afterwards.
+  # `subtract_contents` exempts only what the segmenter affirmatively calls
+  # contents, which under the current ADE20K partition differs from this only
+  # on ids outside its 150 labelled classes.
+  mask_mode: intersect_shell
 
 adherence:
   # The real gate-(b) metric, on the fourth checkpoint `roomgen-prefetch` seeds

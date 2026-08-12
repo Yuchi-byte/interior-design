@@ -18,8 +18,14 @@ from framework.config import BenchmarkConfig, SceneConfig, build_schedule
 from framework.metrics import build_adherence
 from framework.photos import ensure_photos, load_photo
 from framework.residual_maps import mean_absolute_residual, write_signed_residual_map
+from roomgen_geometry.masking import scorable_mask
 from roomgen_geometry.reference import GeometricReference
-from roomgen_guide.eval import PromptAdherence, depth_error, signed_depth_residual_map
+from roomgen_guide.eval import (
+    PromptAdherence,
+    depth_error,
+    shell_coverage,
+    signed_depth_residual_map,
+)
 from roomgen_guide.guidance.schedule import ConstantStrength, GuidanceSchedule
 from roomgen_guide.renovate import renovate
 from roomgen_guide.sampling.guided import decode_latent
@@ -67,6 +73,10 @@ class PairResult:
     mean_abs_control_residual: float
     depth_map_control: str
     depth_map_guided: str
+    guided_shell_coverage: float
+    control_shell_coverage: float
+    eval_mask_guided: str
+    eval_mask_control: str
     mask_first: str | None
     mask_mid: str | None
     mask_last: str | None
@@ -100,6 +110,10 @@ class PairResult:
             "mean_abs_control_residual": self.mean_abs_control_residual,
             "depth_map_control": self.depth_map_control,
             "depth_map_guided": self.depth_map_guided,
+            "guided_shell_coverage": self.guided_shell_coverage,
+            "control_shell_coverage": self.control_shell_coverage,
+            "eval_mask_guided": self.eval_mask_guided,
+            "eval_mask_control": self.eval_mask_control,
             "mask_first": self.mask_first,
             "mask_mid": self.mask_mid,
             "mask_last": self.mask_last,
@@ -203,7 +217,9 @@ def _run_scene(
     _write_mask(reference.mask, image_dir / f"{scene.photo}_shell_mask.png")
 
     # The floor gate (a) is read against: what a *perfect* geometry-preserving
-    # renovation still pays for the VAE round trip alone.
+    # renovation still pays for the VAE round trip alone. On the reference's own
+    # shell, unlike the two arms: the round trip renovates nothing, so it has no
+    # furniture of its own to be excused for.
     reconstruction = depth_error(
         _vae_roundtrip(backends.pipeline.vae, photo, device=backends.device),
         reference=reference,
@@ -248,26 +264,48 @@ def _run_scene(
             mask_log, image_dir=image_dir, scene=scene.photo, seed=seed
         )
 
+        # Each arm is judged on its own shell: the reference's, narrowed by a
+        # segmentation of that arm's finished render, read under the same
+        # polarity the guidance was steered under. Scoring both against the
+        # reference alone charges either arm for every wall it legitimately
+        # furnished, which is a renovation doing its job, not geometry moving.
+        guided_eval_mask = _evaluation_mask(
+            guided, backends=backends, config=config, reference=reference
+        )
+        control_eval_mask = _evaluation_mask(
+            control, backends=backends, config=config, reference=reference
+        )
+        eval_mask_guided = f"{scene.photo}_seed{seed}_evalmask_guided.png"
+        eval_mask_control = f"{scene.photo}_seed{seed}_evalmask_control.png"
+        _write_mask(guided_eval_mask, image_dir / eval_mask_guided)
+        _write_mask(control_eval_mask, image_dir / eval_mask_control)
+
         control_residual = signed_depth_residual_map(
-            control, reference=reference, depth_estimator=backends.depth_estimator
+            control,
+            reference=reference,
+            depth_estimator=backends.depth_estimator,
+            mask=control_eval_mask,
         )
         guided_residual = signed_depth_residual_map(
-            guided, reference=reference, depth_estimator=backends.depth_estimator
+            guided,
+            reference=reference,
+            depth_estimator=backends.depth_estimator,
+            mask=guided_eval_mask,
         )
         # The control sets the scale for both arms, so a colour means the same
         # deviation in either map and the pair can be read against each other.
         mean_abs_control_residual = mean_absolute_residual(
-            control_residual, reference.mask
+            control_residual, control_eval_mask
         )
         depth_map_control = f"{scene.photo}_seed{seed}_depth_control.png"
         depth_map_guided = f"{scene.photo}_seed{seed}_depth_guided.png"
-        for residual, name in (
-            (control_residual, depth_map_control),
-            (guided_residual, depth_map_guided),
+        for residual, mask, name in (
+            (control_residual, control_eval_mask, depth_map_control),
+            (guided_residual, guided_eval_mask, depth_map_guided),
         ):
             write_signed_residual_map(
                 residual,
-                mask=reference.mask,
+                mask=mask,
                 normalizer=mean_abs_control_residual,
                 path=image_dir / name,
             )
@@ -281,11 +319,13 @@ def _run_scene(
                     guided,
                     reference=reference,
                     depth_estimator=backends.depth_estimator,
+                    mask=guided_eval_mask,
                 ),
                 control_depth_error=depth_error(
                     control,
                     reference=reference,
                     depth_estimator=backends.depth_estimator,
+                    mask=control_eval_mask,
                 ),
                 guided_prompt_adherence=adherence(
                     guided, prompt=scene.prompt, photo=photo, reference=reference
@@ -299,6 +339,12 @@ def _run_scene(
             mean_abs_control_residual=mean_abs_control_residual,
             depth_map_control=depth_map_control,
             depth_map_guided=depth_map_guided,
+            guided_shell_coverage=shell_coverage(guided_eval_mask, reference=reference),
+            control_shell_coverage=shell_coverage(
+                control_eval_mask, reference=reference
+            ),
+            eval_mask_guided=eval_mask_guided,
+            eval_mask_control=eval_mask_control,
             mask_first=mask_first,
             mask_mid=mask_mid,
             mask_last=mask_last,
@@ -347,6 +393,28 @@ def _sample(
         reference=reference,
     )
     return image, time.perf_counter() - started
+
+
+def _evaluation_mask(
+    image: Float[Tensor, "1 3 height width"],
+    *,
+    backends: Backends,
+    config: BenchmarkConfig,
+    reference: GeometricReference,
+) -> Bool[Tensor, "1 height width"]:
+    """The reference shell narrowed by one finished render's own segmentation.
+
+    One segmentation pass per arm, under `no_grad`: nothing downstream of a
+    finished render is differentiated, and the same segmenter, erosion and mask
+    polarity the guidance used are the ones the score is read under.
+    """
+    with torch.no_grad():
+        segmentation = backends.segmenter(image)
+    return reference.mask & scorable_mask(
+        segmentation,
+        mode=config.guidance.mask_mode,
+        erosion_radius=config.guidance.erosion_radius,
+    )
 
 
 def _vae_roundtrip(
@@ -399,7 +467,9 @@ def _format_result(result: PairResult) -> str:
         f"seed {result.seed}: depth {verdict.guided_depth_error:.6f} vs "
         f"{verdict.control_depth_error:.6f} ({result.depth_error_reduction:+.1%}), "
         f"adherence {verdict.guided_prompt_adherence:.4f} vs "
-        f"{verdict.control_prompt_adherence:.4f} ({result.adherence_ratio:.1%}) "
+        f"{verdict.control_prompt_adherence:.4f} ({result.adherence_ratio:.1%}), "
+        f"shell scored {result.guided_shell_coverage:.0%} vs "
+        f"{result.control_shell_coverage:.0%} "
         f"-> {'PASS' if verdict.passed else 'FAIL'}"
     )
 
