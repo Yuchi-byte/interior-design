@@ -41,14 +41,20 @@ def _clipped(update: Tensor, cap: float) -> Tensor:
 
 class MeanBrightnessEnergy:
     def __call__(
-        self, predicted_image: Float[Tensor, "batch 3 height width"]
+        self,
+        predicted_image: Float[Tensor, "batch 3 height width"],
+        *,
+        progress: float,
     ) -> Float[Tensor, ""]:
         return predicted_image.mean()
 
 
 class FlatEnergy:
     def __call__(
-        self, predicted_image: Float[Tensor, "batch 3 height width"]
+        self,
+        predicted_image: Float[Tensor, "batch 3 height width"],
+        *,
+        progress: float,
     ) -> Float[Tensor, ""]:
         # Attached to the image but flat in it: a literal constant would leave
         # the energy off the graph entirely, which autograd refuses rather than
@@ -62,23 +68,31 @@ class AmplifiedEnergy:
     factor: float
 
     def __call__(
-        self, predicted_image: Float[Tensor, "batch 3 height width"]
+        self,
+        predicted_image: Float[Tensor, "batch 3 height width"],
+        *,
+        progress: float,
     ) -> Float[Tensor, ""]:
-        return self.factor * self.energy(predicted_image)
+        return self.factor * self.energy(predicted_image, progress=progress)
 
 
 @dataclass
 class RecordingGuidance:
     energy: Guidance
     scored_on_the_graph: list[bool] = field(default_factory=list)
+    walked: list[float] = field(default_factory=list)
 
     def __call__(
-        self, predicted_image: Float[Tensor, "batch 3 height width"]
+        self,
+        predicted_image: Float[Tensor, "batch 3 height width"],
+        *,
+        progress: float,
     ) -> Float[Tensor, ""]:
         self.scored_on_the_graph.append(
             predicted_image.requires_grad and predicted_image.grad_fn is not None
         )
-        return self.energy(predicted_image)
+        self.walked.append(progress)
+        return self.energy(predicted_image, progress=progress)
 
 
 def _sample(
@@ -158,7 +172,9 @@ def test_guidance_lowers_the_depth_energy_of_the_sampled_image(
     unguided = _sample(fake_pipeline, room_photo, geometric_guidance, strength=0.0)
     guided = _sample(fake_pipeline, room_photo, geometric_guidance, strength=500.0)
 
-    assert float(geometric_guidance(guided)) < 0.9 * float(geometric_guidance(unguided))
+    assert float(geometric_guidance(guided, progress=1.0)) < 0.9 * float(
+        geometric_guidance(unguided, progress=1.0)
+    )
 
 
 def test_the_raw_energy_gradient_is_the_step_unless_normalization_is_asked_for(
@@ -403,6 +419,7 @@ def test_the_guided_step_differentiates_the_energy_through_the_predicted_origina
         latent=latent,
         noise_prediction=noise_prediction,
         alpha_cumprod=alpha_cumprod,
+        progress=0.0,
     )
 
     # Tweedie's x̂₀ spelled out, so the step is pinned to that estimate rather
@@ -412,7 +429,9 @@ def test_the_guided_step_differentiates_the_energy_through_the_predicted_origina
         differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
     ) / alpha_cumprod.sqrt()
     expected = assert_gradient_is_finite_and_nonzero(
-        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)),
+        geometric_guidance(
+            decode_latent(fake_pipeline.vae, predicted_original), progress=0.0
+        ),
         differentiable_latent,
     )
 
@@ -445,6 +464,7 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         text_guidance_scale=text_guidance_scale,
         apply_text_guidance=True,
         alpha_cumprod=alpha_cumprod,
+        progress=0.0,
     )
 
     # The same chain the loop plumbs, composed by hand: classifier-free ε̂ of the
@@ -463,7 +483,9 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         differentiable_latent - (1.0 - alpha_cumprod).sqrt() * attached_noise_prediction
     ) / alpha_cumprod.sqrt()
     expected = assert_gradient_is_finite_and_nonzero(
-        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)),
+        geometric_guidance(
+            decode_latent(fake_pipeline.vae, predicted_original), progress=0.0
+        ),
         differentiable_latent,
     )
     constant_epsilon = guidance_gradient(
@@ -472,6 +494,7 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         latent=latent,
         noise_prediction=noise_prediction,
         alpha_cumprod=alpha_cumprod,
+        progress=0.0,
     )
 
     torch.testing.assert_close(steering, expected)
@@ -554,6 +577,42 @@ def test_noise_strength_decides_how_much_of_the_trajectory_is_redone(
 
     assert len(partial.scored_on_the_graph) == 2
     assert len(complete.scored_on_the_graph) == 4
+
+
+def test_the_energy_is_told_how_far_through_the_walk_each_step_is(
+    fake_pipeline: FakePipeline,
+    geometric_guidance: GeometricGuidance,
+    room_photo: Tensor,
+) -> None:
+    whole = RecordingGuidance(geometric_guidance)
+    through_unet = RecordingGuidance(geometric_guidance)
+    # Half the schedule renoised: the walk is the two steps that are redone, and
+    # the first of them is its start — the fraction is of the walk, not of the
+    # trajectory the photo was never taken back up.
+    renoised = RecordingGuidance(geometric_guidance)
+    single = RecordingGuidance(geometric_guidance)
+
+    _sample(fake_pipeline, room_photo, whole, strength=1.0, steps=6, noise_strength=1.0)
+    _sample(
+        fake_pipeline,
+        room_photo,
+        through_unet,
+        strength=1.0,
+        steps=3,
+        noise_strength=1.0,
+        differentiate_through_unet=True,
+    )
+    _sample(
+        fake_pipeline, room_photo, renoised, strength=1.0, steps=4, noise_strength=0.5
+    )
+    _sample(
+        fake_pipeline, room_photo, single, strength=1.0, steps=1, noise_strength=1.0
+    )
+
+    assert whole.walked == pytest.approx([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+    assert through_unet.walked == pytest.approx([0.0, 0.5, 1.0])
+    assert renoised.walked == pytest.approx([0.0, 1.0])
+    assert single.walked == pytest.approx([0.0])
 
 
 def test_classifier_free_guidance_on_the_prompt_changes_the_image(

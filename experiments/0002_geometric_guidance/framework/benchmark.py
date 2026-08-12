@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 import torch
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 from torch import Tensor
 from torchvision.io import write_png
 
@@ -28,6 +29,31 @@ from roomgen_guide.verdict import Verdict, score_run
 
 PHOTO_SUBDIRECTORY = "benchmark_photos"
 
+# The three points of the walk the mask snapshots are taken at, in order: what
+# the reward scored at the first guided step, the middle one, and the last.
+_MASK_SNAPSHOTS: Final = ("first", "mid", "last")
+
+
+@dataclass
+class _MaskLog:
+    """Each guided step's effective mask, for the snapshots written after the run.
+
+    Appending a bool tensor the energy already built is all the loop pays; the
+    quantising and the PNG encoding happen once sampling is over, so recording
+    what the reward saw does not show up in the timing of what it steered.
+    """
+
+    masks: list[Bool[Tensor, "1 height width"]] = field(default_factory=list)
+
+    def __call__(self, progress: float, mask: Bool[Tensor, "1 height width"]) -> None:
+        self.masks.append(mask)
+
+    def snapshots(self) -> list[Bool[Tensor, "1 height width"]]:
+        """The mask at the first, middle and last guided step; empty if none was guided."""
+        if not self.masks:
+            return []
+        return [self.masks[0], self.masks[len(self.masks) // 2], self.masks[-1]]
+
 
 @dataclass(frozen=True)
 class PairResult:
@@ -41,6 +67,9 @@ class PairResult:
     mean_abs_control_residual: float
     depth_map_control: str
     depth_map_guided: str
+    mask_first: str | None
+    mask_mid: str | None
+    mask_last: str | None
     guided_seconds: float
     control_seconds: float
 
@@ -71,6 +100,9 @@ class PairResult:
             "mean_abs_control_residual": self.mean_abs_control_residual,
             "depth_map_control": self.depth_map_control,
             "depth_map_guided": self.depth_map_guided,
+            "mask_first": self.mask_first,
+            "mask_mid": self.mask_mid,
+            "mask_last": self.mask_last,
             "guided_prompt_adherence": self.verdict.guided_prompt_adherence,
             "control_prompt_adherence": self.verdict.control_prompt_adherence,
             "adherence_ratio": self.adherence_ratio,
@@ -168,7 +200,7 @@ def _run_scene(
         erosion_radius=config.guidance.erosion_radius,
     )
     _write_image(photo, image_dir / f"{scene.photo}_photo.png")
-    _write_mask(reference, image_dir / f"{scene.photo}_shell_mask.png")
+    _write_mask(reference.mask, image_dir / f"{scene.photo}_shell_mask.png")
 
     # The floor gate (a) is read against: what a *perfect* geometry-preserving
     # renovation still pays for the VAE round trip alone.
@@ -185,6 +217,9 @@ def _run_scene(
 
     results: list[PairResult] = []
     for seed in config.seeds:
+        # Only the guided arm has masks to record: the control's schedule is
+        # flat zero, so its energy is never evaluated.
+        mask_log = _MaskLog()
         guided, guided_seconds = _sample(
             photo,
             scene.prompt,
@@ -193,6 +228,7 @@ def _run_scene(
             reference=reference,
             schedule=build_schedule(config.guidance),
             seed=seed,
+            on_mask=mask_log,
         )
         # Strength 0 is the control: the same photo, prompt, seed, sampler and
         # trajectory, with the guidance term switched off — every difference
@@ -208,6 +244,9 @@ def _run_scene(
         )
         _write_image(guided, image_dir / f"{scene.photo}_seed{seed}_guided.png")
         _write_image(control, image_dir / f"{scene.photo}_seed{seed}_control.png")
+        mask_first, mask_mid, mask_last = _write_mask_snapshots(
+            mask_log, image_dir=image_dir, scene=scene.photo, seed=seed
+        )
 
         control_residual = signed_depth_residual_map(
             control, reference=reference, depth_estimator=backends.depth_estimator
@@ -260,6 +299,9 @@ def _run_scene(
             mean_abs_control_residual=mean_abs_control_residual,
             depth_map_control=depth_map_control,
             depth_map_guided=depth_map_guided,
+            mask_first=mask_first,
+            mask_mid=mask_mid,
+            mask_last=mask_last,
             guided_seconds=guided_seconds,
             control_seconds=control_seconds,
         )
@@ -277,6 +319,7 @@ def _sample(
     reference: GeometricReference,
     schedule: GuidanceSchedule,
     seed: int,
+    on_mask: _MaskLog | None = None,
 ) -> tuple[Float[Tensor, "1 3 height width"], float]:
     # The generator lives on the sampling device: the loop draws its noise with
     # `torch.randn(..., generator=..., device=latent.device)`, which refuses a
@@ -299,6 +342,8 @@ def _sample(
         clip_step_rms=config.guidance.clip,
         differentiate_through_unet=config.guidance.through_unet,
         resegment=config.guidance.resegment,
+        resegment_after=config.guidance.resegment_after,
+        on_mask=on_mask,
         reference=reference,
     )
     return image, time.perf_counter() - started
@@ -331,9 +376,21 @@ def _write_image(image: Float[Tensor, "1 3 height width"], path: Path) -> None:
     write_png(quantised.to(torch.uint8).cpu(), str(path))
 
 
-def _write_mask(reference: GeometricReference, path: Path) -> None:
-    mask = reference.mask[0].to(torch.uint8) * 255
-    write_png(mask.unsqueeze(0).cpu(), str(path))
+def _write_mask(mask: Bool[Tensor, "1 height width"], path: Path) -> None:
+    write_png((mask[0].to(torch.uint8) * 255).unsqueeze(0).cpu(), str(path))
+
+
+def _write_mask_snapshots(
+    log: _MaskLog, *, image_dir: Path, scene: str, seed: int
+) -> tuple[str | None, str | None, str | None]:
+    """Save what the reward scored at the ends and the middle of the walk; name the files."""
+    snapshots = log.snapshots()
+    if not snapshots:
+        return None, None, None
+    names = [f"{scene}_seed{seed}_mask_{point}.png" for point in _MASK_SNAPSHOTS]
+    for mask, name in zip(snapshots, names, strict=True):
+        _write_mask(mask, image_dir / name)
+    return names[0], names[1], names[2]
 
 
 def _format_result(result: PairResult) -> str:

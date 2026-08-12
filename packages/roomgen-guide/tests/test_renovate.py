@@ -6,7 +6,7 @@ from torch import Tensor
 
 from roomgen_fakes import FakeDepthEstimator, FakeSegmenter
 from roomgen_geometry.reference import GeometricReference
-from roomgen_guide.guidance.geometric import GeometricGuidance
+from roomgen_guide.guidance.geometric import GeometricGuidance, MaskObserver
 from roomgen_guide.guidance.schedule import ConstantStrength
 from roomgen_guide.renovate import renovate
 from roomgen_guide.sampling.guided import sample_guided
@@ -43,6 +43,8 @@ def _renovate(
     clip_step_rms: float | None = None,
     reference: GeometricReference | None = None,
     resegment: bool = True,
+    resegment_after: float = 0.5,
+    on_mask: MaskObserver | None = None,
 ) -> Tensor:
     return renovate(
         photo,
@@ -60,6 +62,8 @@ def _renovate(
         clip_step_rms=clip_step_rms,
         reference=reference,
         resegment=resegment,
+        resegment_after=resegment_after,
+        on_mask=on_mask,
     )
 
 
@@ -336,6 +340,94 @@ def test_resegmenting_scores_a_different_shell_than_the_reference_alone(
     assert not torch.equal(resegmented, reference_only)
 
 
+def test_the_resegmentation_threshold_decides_which_steps_intersect(
+    fake_pipeline: FakePipeline,
+    room_photo: Tensor,
+    fake_depth_estimator: FakeDepthEstimator,
+    fake_segmenter: FakeSegmenter,
+) -> None:
+    reference = GeometricReference.from_photo(
+        room_photo,
+        depth_estimator=fake_depth_estimator,
+        segmenter=fake_segmenter,
+        erosion_radius=_EROSION_RADIUS,
+    )
+
+    # Two walked steps, at progress 0 and 1: from the first step, from the last
+    # only, and never.
+    from_the_start = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment_after=0.0,
+    )
+    at_the_end = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment_after=1.0,
+    )
+    never = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment=False,
+    )
+
+    assert not torch.equal(from_the_start, at_the_end)
+    assert not torch.equal(at_the_end, never)
+
+
+def test_the_mask_hook_reports_what_every_guided_step_scored(
+    fake_pipeline: FakePipeline,
+    room_photo: Tensor,
+    fake_depth_estimator: FakeDepthEstimator,
+    fake_segmenter: FakeSegmenter,
+) -> None:
+    reference = GeometricReference.from_photo(
+        room_photo,
+        depth_estimator=fake_depth_estimator,
+        segmenter=fake_segmenter,
+        erosion_radius=_EROSION_RADIUS,
+    )
+    recorded: list[tuple[float, Tensor]] = []
+
+    observed = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment_after=1.0,
+        on_mask=lambda progress, mask: recorded.append((progress, mask)),
+    )
+    unobserved = _renovate(
+        fake_pipeline,
+        room_photo,
+        fake_depth_estimator,
+        _RELAID_OUT_SEGMENTER,
+        strength=_STRENGTH,
+        reference=reference,
+        resegment_after=1.0,
+    )
+
+    assert [progress for progress, _ in recorded] == [0.0, 1.0]
+    assert torch.equal(recorded[0][1], reference.mask)
+    assert not torch.equal(recorded[1][1], reference.mask)
+    # Watching the run must not be part of it.
+    assert torch.equal(observed, unobserved)
+
+
 def test_renovating_lowers_the_masked_depth_error_against_the_photo(
     fake_pipeline: FakePipeline,
     room_photo: Tensor,
@@ -363,7 +455,9 @@ def test_renovating_lowers_the_masked_depth_error_against_the_photo(
         strength=_STRENGTH,
     )
 
-    assert float(energy(guided)) < 0.9 * float(energy(unguided))
+    assert float(energy(guided, progress=1.0)) < 0.9 * float(
+        energy(unguided, progress=1.0)
+    )
 
 
 def test_the_stock_img2img_pipeline_is_callable_the_way_the_loop_calls_it() -> None:

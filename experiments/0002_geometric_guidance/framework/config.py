@@ -127,6 +127,11 @@ class GuidanceConfig(Config):
             reference-shell AND prediction-shell, so furniture the renovation
             adds may occlude the shell for free; false scores the reference
             mask alone (pre-occlusion semantics, the control arm for A/B).
+        resegment_after: fraction of the walked trajectory before which the
+            reference shell is scored alone even under `resegment`. An early x̂₀
+            is blur the segmenter reads as furniture-free, so its shell covers
+            the frame and intersecting with it costs a step of layout budget for
+            nothing; 0 intersects from the first step, 1 only on the last.
         through_unet: DPS-style gradient, keeping the graph through the UNet so
             the step carries the denoiser's Jacobian; costs roughly one extra
             UNet backward per guided step.
@@ -139,6 +144,7 @@ class GuidanceConfig(Config):
     final_strength: Annotated[float, Field(ge=0.0)] = 0.0
     erosion_radius: Annotated[int, Field(ge=0)] = 2
     resegment: bool = True
+    resegment_after: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5
     through_unet: bool = False
 
 

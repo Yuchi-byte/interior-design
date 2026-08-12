@@ -55,6 +55,12 @@ guidance:
   # worse: it halves the geometric win for no adherence gain.
   schedule: constant
   erosion_radius: 2
+  # The first half of the walk scores the reference shell alone: x̂₀ is still
+  # blur there, the segmenter finds no furniture in it, and its shell covers
+  # nearly the whole frame — so intersecting is a no-op that spends the layout
+  # budget pulling nascent furniture towards the reference's wall depth. 0.0 is
+  # the always-intersect arm.
+  resegment_after: 0.5
 
 adherence:
   # The real gate-(b) metric, on the fourth checkpoint `roomgen-prefetch` seeds

@@ -40,6 +40,22 @@ _STRIP: Final[tuple[tuple[str, str], ...]] = (
 _HERO_CAPTION: Final = "Guided"
 _SHELL_MASK: Final = "{scene}_shell_mask.png"
 _SHELL_MASK_CAPTION: Final = "Eroded shell mask (scored region in white)"
+# The effective weight mask of the first, middle and last guided step, labelled
+# by where in the walked trajectory that step falls.
+_MASK_SNAPSHOT_CAPTIONS: Final = (
+    "Scored mask, walk 0%",
+    "Scored mask, walk 50%",
+    "Scored mask, walk 100%",
+)
+_MASK_NOTE: Final = (
+    "White is what the reward actually scored at that step. Early in the walk "
+    "the predicted clean image is still blur, so the shell of a segmentation of "
+    "it would swallow the frame and the reference's own mask is scored alone; "
+    "from <span class=\"mono\">resegment_after</span> of the walked trajectory "
+    "on, the sample is re-segmented every step and the score falls on the "
+    "reference shell intersected with the prediction's, which is what stops the "
+    "furniture a renovation adds from being charged as moved architecture."
+)
 _DEPTH_MAP_CAPTIONS: Final = (
     "Unguided \N{MINUS SIGN} reference",
     "Guided \N{MINUS SIGN} reference",
@@ -71,6 +87,7 @@ class _Run:
     mean_abs_control_residual: float | None
     depth_map_control: str | None
     depth_map_guided: str | None
+    mask_snapshots: tuple[str | None, ...]
 
     def geometry_passed(self, gate: _Gate) -> bool:
         margin = gate.depth_error_margin
@@ -206,11 +223,20 @@ def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> s
         for pattern, caption in _STRIP
     ]
     strip = [cell for cell in cells if cell]
-    mask = _figure(
-        image_dir / _SHELL_MASK.format(scene=shown.scene),
-        caption=_SHELL_MASK_CAPTION,
-        scene=shown.scene,
-    )
+    masks = [
+        _figure(
+            image_dir / _SHELL_MASK.format(scene=shown.scene),
+            caption=_SHELL_MASK_CAPTION,
+            scene=shown.scene,
+        ),
+        *(
+            _figure(image_dir / Path(name).name, caption=caption, scene=shown.scene)
+            for name, caption in zip(
+                shown.mask_snapshots, _MASK_SNAPSHOT_CAPTIONS, strict=False
+            )
+            if name
+        ),
+    ]
     return (
         '  <section class="scene">\n'
         '    <header class="scene-head">\n'
@@ -220,7 +246,7 @@ def _scene_section(runs: tuple[_Run, ...], *, image_dir: Path, gate: _Gate) -> s
         f'    <div class="strip" style="--columns: {len(strip)}">{"".join(strip)}</div>\n'
         f"{_depth_row(shown, image_dir=image_dir)}"
         f"{_stats(runs, gate=gate)}"
-        f"{_detail_block(mask)}"
+        f"{_detail_block(masks)}"
         "  </section>\n"
     )
 
@@ -263,13 +289,18 @@ def _map_note(run: _Run) -> str:
     )
 
 
-def _detail_block(figure: str) -> str:
-    if not figure:
+def _detail_block(figures: list[str]) -> str:
+    # A run that recorded no mask snapshots still gets its shell mask, and one
+    # that wrote nothing at all gets no pane rather than an empty one.
+    shown = [figure for figure in figures if figure]
+    if not shown:
         return ""
+    note = f'      <p class="map-note">{_MASK_NOTE}</p>\n' if len(shown) > 1 else ""
     return (
         "    <details>\n"
         "      <summary>What the reward sees</summary>\n"
-        f'      <div class="duo">{figure}</div>\n'
+        f'      <div class="duo">{"".join(shown)}</div>\n'
+        f"{note}"
         "    </details>\n"
     )
 
@@ -367,6 +398,9 @@ def _run(row: dict[str, object]) -> _Run:
         mean_abs_control_residual=_number(row.get("mean_abs_control_residual")),
         depth_map_control=_text(row.get("depth_map_control")),
         depth_map_guided=_text(row.get("depth_map_guided")),
+        mask_snapshots=tuple(
+            _text(row.get(key)) for key in ("mask_first", "mask_mid", "mask_last")
+        ),
     )
 
 

@@ -103,6 +103,10 @@ def sample_guided(
     total_steps = len(timesteps)
     for step, timestep in enumerate(timesteps):
         strength = schedule(step, total_steps)
+        # The fraction of the *walked* trajectory behind this step: the energy
+        # reads it to know how much of x̂₀ it can believe. A single walked step
+        # is the first one, as `DecayingStrength` also treats it.
+        progress = step / (total_steps - 1) if total_steps > 1 else 0.0
         steering: Tensor | None = None
         if strength != 0.0 and differentiate_through_unet:
             noise_prediction, steering = guidance_gradient_through_unet(
@@ -114,6 +118,7 @@ def sample_guided(
                 text_guidance_scale=text_guidance_scale,
                 apply_text_guidance=apply_text_guidance,
                 alpha_cumprod=alphas_cumprod[timestep],
+                progress=progress,
             )
         else:
             noise_prediction = _predict_noise(
@@ -131,6 +136,7 @@ def sample_guided(
                     latent=latent,
                     noise_prediction=noise_prediction,
                     alpha_cumprod=alphas_cumprod[timestep],
+                    progress=progress,
                 )
         if steering is not None:
             latent = latent - _guided_update(
@@ -151,6 +157,7 @@ def guidance_gradient(
     latent: Float[Tensor, "batch channels height width"],
     noise_prediction: Float[Tensor, "batch channels height width"],
     alpha_cumprod: Float[Tensor, ""],
+    progress: float,
 ) -> Float[Tensor, "batch channels height width"]:
     """The steering direction of one guided step: ∂energy/∂latent at `latent`.
 
@@ -160,6 +167,8 @@ def guidance_gradient(
         noise_prediction: this step's ε, held constant — the gradient runs
             through Tweedie's x̂₀, the decoder and `guidance`, not the UNet.
         alpha_cumprod: the scheduler's ᾱ at this step's timestep.
+        progress: this step's position in the walked trajectory, as
+            :class:`~roomgen_guide.guidance.base.Guidance` defines it.
     """
     # `enable_grad` rather than an implicit ambient mode: the caller may be
     # inside the `no_grad` a diffusers pipeline runs under, and this region is
@@ -169,7 +178,7 @@ def guidance_gradient(
         predicted_original = (
             differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
         ) / alpha_cumprod.sqrt()
-        energy = guidance(decode_latent(vae, predicted_original))
+        energy = guidance(decode_latent(vae, predicted_original), progress=progress)
         (gradient,) = torch.autograd.grad(energy, differentiable_latent)
     return gradient
 
@@ -184,6 +193,7 @@ def guidance_gradient_through_unet(
     text_guidance_scale: float,
     apply_text_guidance: bool,
     alpha_cumprod: Float[Tensor, ""],
+    progress: float,
 ) -> tuple[
     Float[Tensor, "batch channels height width"],
     Float[Tensor, "batch channels height width"],
@@ -194,6 +204,8 @@ def guidance_gradient_through_unet(
         latent: the current step's latent; needs no gradient of its own, since
             the energy is differentiated against a leaf made from it here.
         alpha_cumprod: the scheduler's ᾱ at this step's timestep.
+        progress: this step's position in the walked trajectory, as
+            :class:`~roomgen_guide.guidance.base.Guidance` defines it.
 
     The returned ε̂ is the one this gradient was taken through, detached and ready
     for the scheduler, so the step pays for a single UNet forward rather than one
@@ -216,7 +228,9 @@ def guidance_gradient_through_unet(
         predicted_original = (
             differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
         ) / alpha_cumprod.sqrt()
-        energy = guidance(decode_latent(pipeline.vae, predicted_original))
+        energy = guidance(
+            decode_latent(pipeline.vae, predicted_original), progress=progress
+        )
         (gradient,) = torch.autograd.grad(energy, differentiable_latent)
     return noise_prediction.detach(), gradient
 

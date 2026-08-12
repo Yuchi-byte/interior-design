@@ -58,12 +58,16 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
 The guided sampler and the experiment harness shared with `experiments/`.
 
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
-  image x̂₀ to a scalar energy.
+  image x̂₀ and its `progress` through the walked trajectory (0 first, 1 last)
+  to a scalar energy.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
   re-runs the depth model, and scores it against a `GeometricReference` over the
-  reference's shell intersected with the shell of a configured segmenter's
-  (detached, `no_grad`) view of that same x̂₀ — so furniture the renovation puts
-  in front of a wall is free and a wall that has moved is not.
+  reference's shell — alone while `progress < resegment_after`, since an early
+  x̂₀ is blur whose segmentation covers the frame, and from there on intersected
+  with the shell of a configured segmenter's (detached, `no_grad`) view of that
+  same x̂₀, so furniture the renovation puts in front of a wall is free and a
+  wall that has moved is not; an optional `on_mask` hook reports the effective
+  mask of each step to a caller that wants to record it.
 - `guidance/schedule.py`: guidance-strength schedules over the timestep — strong
   early while layout is still being decided, decayed late so texture detail is
   not fought.

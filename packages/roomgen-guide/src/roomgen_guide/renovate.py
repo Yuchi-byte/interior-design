@@ -13,7 +13,7 @@ from torch import Tensor
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.segmentation.base import Segmenter
-from roomgen_guide.guidance.geometric import GeometricGuidance
+from roomgen_guide.guidance.geometric import GeometricGuidance, MaskObserver
 from roomgen_guide.guidance.schedule import GuidanceSchedule
 from roomgen_guide.sampling.guided import sample_guided
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
@@ -41,6 +41,8 @@ def renovate(
     differentiate_through_unet: bool = False,
     reference: GeometricReference | None = None,
     resegment: bool = True,
+    resegment_after: float = 0.5,
+    on_mask: MaskObserver | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Restyle the room in `photo` under `prompt` while holding its geometry.
 
@@ -61,11 +63,18 @@ def renovate(
             `None` freezes the photo here, at the cost of a depth and a
             segmentation pass per call.
         resegment: score on the reference shell *and* the prediction's own,
-            re-segmenting the sample at every guided step — occluding a wall
-            with new furniture is then free, moving that wall is not. `False`
-            scores the reference shell alone, which charges a renovation for
-            every surface it covers up, and leaves `segmenter` unused whenever
-            `reference` is already built.
+            re-segmenting the sample at each guided step past `resegment_after`
+            — occluding a wall with new furniture is then free, moving that wall
+            is not. `False` scores the reference shell alone for the whole
+            trajectory, which charges a renovation for every surface it covers
+            up, and leaves `segmenter` unused whenever `reference` is already
+            built.
+        resegment_after: fraction of the walked trajectory before which the
+            reference shell is scored alone even when `resegment` is set, since
+            an early x̂₀ is too blurred to segment and its shell would swallow
+            the frame; from there on the intersection is scored.
+        on_mask: called with `(progress, mask)` at each guided step, for a
+            caller recording what the reward actually scored.
 
     Samples against the photo's frozen
     :class:`~roomgen_geometry.reference.GeometricReference` with the same
@@ -87,6 +96,8 @@ def renovate(
             reference=reference,
             segmenter=segmenter if resegment else None,
             erosion_radius=erosion_radius if resegment else None,
+            resegment_after=resegment_after,
+            on_mask=on_mask,
         ),
         schedule=schedule,
         steps=steps,

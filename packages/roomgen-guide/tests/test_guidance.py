@@ -15,7 +15,10 @@ from roomgen_guide.guidance.schedule import (
 
 class MeanBrightnessEnergy:
     def __call__(
-        self, predicted_image: Float[Tensor, "batch 3 height width"]
+        self,
+        predicted_image: Float[Tensor, "batch 3 height width"],
+        *,
+        progress: float,
     ) -> Float[Tensor, ""]:
         return predicted_image.mean()
 
@@ -25,7 +28,7 @@ def test_a_fake_energy_stands_in_for_the_geometric_one() -> None:
     energy = MeanBrightnessEnergy()
 
     assert isinstance(energy, Guidance)
-    (gradient,) = torch.autograd.grad(energy(images), images)
+    (gradient,) = torch.autograd.grad(energy(images, progress=0.0), images)
     assert torch.isfinite(gradient).all()
     assert gradient.abs().sum() > 0
 
