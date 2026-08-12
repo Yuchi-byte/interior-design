@@ -1,7 +1,5 @@
 """One energy out of several: the weighted sum a sampler descends."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from jaxtyping import Float
@@ -26,6 +24,10 @@ class WeightedGuidance:
     gradient the sampler takes is the weighted sum of the terms' own gradients.
     Weights carry the terms' unit conversion as well as their relative pull: two
     energies in different units are not comparable at weight 1.
+
+    The sum is taken per batch element, as `Guidance` requires: summing the
+    terms' batch means instead would leave a composite energy that no caller
+    could take apart again.
     """
 
     terms: tuple[WeightedTerm, ...]
@@ -39,7 +41,7 @@ class WeightedGuidance:
 
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
+    ) -> Float[Tensor, "batch"]:
         energy = self.terms[0].weight * self.terms[0].guidance(predicted_image)
         for term in self.terms[1:]:
             energy = energy + term.weight * term.guidance(predicted_image)

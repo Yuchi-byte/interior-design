@@ -108,18 +108,17 @@ class _AlwaysIntersecting:
 
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
+    ) -> Float[Tensor, "batch"]:
         with torch.no_grad():
             shell = architectural_mask(
                 self.segmenter(predicted_image.detach()),
                 erosion_radius=self.erosion_radius,
             )
-        error = masked_depth_error(
+        return masked_depth_error(
             self.depth_estimator(predicted_image),
             self.reference.disparity,
             self.reference.mask & shell,
         )
-        return error.mean()
 
 
 @dataclass
@@ -185,6 +184,30 @@ def test_the_energy_grows_with_the_drift_of_the_sample_from_the_photo(
     assert 0.0 < small < large
 
 
+def test_the_energy_scores_every_batch_element_on_its_own(
+    fake_depth_estimator: FakeDepthEstimator, room_photo: Tensor
+) -> None:
+    # A batch mean here is a silent failure for any caller that weights batch
+    # members against each other by their own energies: MFM-G's IWAE over
+    # posterior draws would give a drifted draw the same weight as a perfect one.
+    batch = torch.cat([room_photo, room_photo])
+    mask = torch.ones((2, *room_photo.shape[-2:]), dtype=torch.bool)
+    guidance = GeometricGuidance(
+        depth_estimator=fake_depth_estimator,
+        reference=GeometricReference(
+            disparity=fake_depth_estimator(batch).detach(), mask=mask
+        ),
+    )
+    drifted = batch.clone()
+    drifted[1:] = _brightened(batch[1:], 0.2, (slice(0, 32), slice(0, 32)))
+
+    energy = guidance(drifted)
+
+    assert energy.shape == (2,)
+    assert float(energy[0]) < 1e-10
+    assert float(energy[1]) > 0.0
+
+
 def test_the_energy_ignores_the_affine_freedom_the_depth_backend_leaves(
     geometric_guidance: GeometricGuidance, room_photo: Tensor
 ) -> None:
@@ -222,7 +245,7 @@ def test_the_energy_gradient_reaches_the_latent_through_the_decoder(
 
     energy = geometric_guidance(decode_latent(fake_pipeline.vae, latent))
 
-    gradient = assert_gradient_is_finite_and_nonzero(energy, latent)
+    gradient = assert_gradient_is_finite_and_nonzero(energy.mean(), latent)
     assert gradient.shape == latent.shape
 
 
@@ -296,7 +319,7 @@ def test_the_energy_gradient_survives_resegmenting_the_prediction(
 
     energy = resegmenting(decode_latent(fake_pipeline.vae, latent))
 
-    gradient = assert_gradient_is_finite_and_nonzero(energy, latent)
+    gradient = assert_gradient_is_finite_and_nonzero(energy.mean(), latent)
     assert gradient.shape == latent.shape
 
 
@@ -317,7 +340,7 @@ def test_the_segmenter_never_sees_a_tensor_on_the_gradient_graph(
     energy = resegmenting(decode_latent(fake_pipeline.vae, latent))
 
     assert recording.calls == [(False, False)]
-    assert_gradient_is_finite_and_nonzero(energy, latent)
+    assert_gradient_is_finite_and_nonzero(energy.mean(), latent)
 
 
 def test_a_configured_segmenter_intersects_at_every_step_of_the_walk(

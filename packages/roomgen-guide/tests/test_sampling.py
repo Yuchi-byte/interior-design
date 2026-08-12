@@ -49,18 +49,18 @@ def _direction(update: Tensor) -> Tensor:
 class MeanBrightnessEnergy:
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
-        return predicted_image.mean()
+    ) -> Float[Tensor, "batch"]:
+        return predicted_image.mean(dim=(1, 2, 3))
 
 
 class FlatEnergy:
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
+    ) -> Float[Tensor, "batch"]:
         # Attached to the image but flat in it: a literal constant would leave
         # the energy off the graph entirely, which autograd refuses rather than
         # differentiates to zero.
-        return predicted_image.sum() * 0.0
+        return predicted_image.sum(dim=(1, 2, 3)) * 0.0
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ class AmplifiedEnergy:
 
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
+    ) -> Float[Tensor, "batch"]:
         return self.factor * self.energy(predicted_image)
 
 
@@ -82,7 +82,7 @@ class RecordingGuidance:
 
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
+    ) -> Float[Tensor, "batch"]:
         self.scored_on_the_graph.append(
             predicted_image.requires_grad and predicted_image.grad_fn is not None
         )
@@ -335,7 +335,7 @@ def test_the_guided_step_differentiates_the_energy_through_the_predicted_origina
         differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
     ) / alpha_cumprod.sqrt()
     expected = assert_gradient_is_finite_and_nonzero(
-        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)),
+        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)).mean(),
         differentiable_latent,
     )
 
@@ -386,7 +386,7 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         differentiable_latent - (1.0 - alpha_cumprod).sqrt() * attached_noise_prediction
     ) / alpha_cumprod.sqrt()
     expected = assert_gradient_is_finite_and_nonzero(
-        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)),
+        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)).mean(),
         differentiable_latent,
     )
     constant_epsilon = guidance_gradient(

@@ -1,6 +1,4 @@
-"""The Guidance contract: a predicted clean image in, a scalar energy out."""
-
-from __future__ import annotations
+"""The Guidance contract: a predicted clean image in, one energy per batch element out."""
 
 from typing import Protocol, runtime_checkable
 
@@ -17,11 +15,20 @@ class Guidance(Protocol):
             floating point, values in ``[0, 1]``, still attached to the latent
             it was formed from.
 
-    Low energy means the constraint holds. The sampler differentiates the
-    returned scalar with respect to that latent, so an implementation that
-    detaches anywhere returns a valid-looking energy with no gradient behind it.
+    Low energy means the constraint holds. The energy is **per batch element**
+    and is never reduced here: the caller reduces it, because what the reduction
+    should be is the caller's property and not the reward's. A sampler taking one
+    gradient over a batch reduces with `.mean()`; a sampler that weights members
+    of the batch against each other by their own scores — MFM-G's IWAE estimator
+    over posterior draws is the worked example — needs them apart, and a reward
+    that collapses the batch hands every draw an identical weight while looking
+    perfectly healthy.
+
+    The caller differentiates that reduction with respect to the latent, so an
+    implementation that detaches anywhere returns a valid-looking energy with no
+    gradient behind it.
     """
 
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]: ...
+    ) -> Float[Tensor, "batch"]: ...

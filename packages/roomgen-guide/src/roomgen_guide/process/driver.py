@@ -56,6 +56,14 @@ class _EvaluatedStep[Prediction]:
             endpoint = self.process.endpoint(state, self.step)
             if self.prediction is None:
                 self.prediction = endpoint.prediction
-            energy = self.reward(endpoint.image)
+            # The reward is per batch element and one backward is taken over the
+            # whole batch, so it is reduced here rather than by the reward. The
+            # mean is what `strength` has always been calibrated against, and it
+            # divides each element's pull by the batch size — batching therefore
+            # weakens guidance unless `strength` is scaled with it, which is why
+            # a batch is a throughput decision and not a free one. A backend that
+            # weights batch members against each other by their own energies
+            # (MFM-G's IWAE over posterior draws) reads the reward directly.
+            energy = self.reward(endpoint.image).mean()
             (gradient,) = torch.autograd.grad(energy, endpoint.state)
         return gradient

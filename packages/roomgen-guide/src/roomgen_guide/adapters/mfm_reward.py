@@ -8,6 +8,12 @@ tilts the training target by ``exp(reward)``. roomgen's
 the geometry matches and growing as it drifts. :class:`MfmGeometricReward` is
 the sign flip and the scale between the two conventions, and nothing else.
 
+The *shape* needs no conversion, and must not get one: MFM's
+`batched_reward_estimation` reshapes what a reward returns to `[batch,
+mc_samples]` and weights the draws against each other by their own scores, so
+every method here is per image — the same per-batch-element contract
+:class:`~roomgen_guide.guidance.base.Guidance` carries.
+
 Nothing here imports `mfm`. The interface is structural — the two methods MFM
 calls, on tensors it already speaks — so the adapter is checked, tested and
 gated like the rest of the repo while the vendored tree stays outside all three.

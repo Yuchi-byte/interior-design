@@ -1,7 +1,5 @@
 """The energy that holds the room still: depth of the sample against the photo."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -62,13 +60,12 @@ class GeometricGuidance:
 
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
+    ) -> Float[Tensor, "batch"]:
         scored = self._scored_pixels(predicted_image)
         if self.on_mask is not None:
             self.on_mask(scored)
         disparity = self.depth_estimator(predicted_image)
-        error = masked_depth_error(disparity, self.reference.disparity, scored)
-        return error.mean()
+        return masked_depth_error(disparity, self.reference.disparity, scored)
 
     def _scored_pixels(
         self, predicted_image: Float[Tensor, "batch 3 height width"]

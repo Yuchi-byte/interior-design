@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from jaxtyping import Float
@@ -30,7 +30,7 @@ class CountingGuidance:
 
     def __call__(
         self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, ""]:
+    ) -> Float[Tensor, "batch"]:
         self.calls += 1
         return self.energy(predicted_image)
 
@@ -72,6 +72,42 @@ class WindowedTilt:
         if step.index >= self.guided_fraction * step.total:
             return None
         return self.tilt(energy_gradient, state=state, step=step)
+
+
+@dataclass(frozen=True)
+class _PerElementEnergy:
+    """One energy per batch element, and a different one for each."""
+
+    weights: Tensor
+
+    def __call__(
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, "batch"]:
+        return self.weights * predicted_image.square().mean(dim=(1, 2, 3))
+
+
+@dataclass
+class _RecordingTilt:
+    """A pass-through tilt that keeps the gradient the driver handed it."""
+
+    states: list[Tensor] = field(default_factory=list)
+    gradients: list[Tensor] = field(default_factory=list)
+
+    def __call__(
+        self,
+        energy_gradient: EnergyGradient,
+        *,
+        state: Float[Tensor, "batch 3 height width"],
+        step: StepContext,
+    ) -> Float[Tensor, "batch 3 height width"]:
+        self.states.append(state.detach().clone())
+        gradient = energy_gradient(state)
+        self.gradients.append(gradient.detach().clone())
+        return torch.zeros_like(state)
+
+
+def _seeded(seed: int = 0) -> Generator:
+    return torch.Generator().manual_seed(seed)
 
 
 @dataclass(frozen=True)
@@ -140,6 +176,31 @@ def test_the_driver_steers_a_second_backend_by_the_same_geometric_reward(
         geometric_guidance(unguided.image)
     )
     assert torch.equal(guided.image, repeated.image)
+
+
+def test_the_driver_is_where_the_rewards_batch_is_reduced(room_photo: Tensor) -> None:
+    # The reward hands back one energy per batch element and the driver takes a
+    # single backward over the batch, so the reduction is the driver's. Spelled
+    # out here against the mean, because it is the mean `strength` has always
+    # been calibrated against — a `sum` would multiply every step by the batch
+    # size and quietly rescale every recorded experiment.
+    photo = torch.cat([room_photo, 1.0 - room_photo])
+    reward = _PerElementEnergy(torch.tensor([1.0, 4.0]))
+    process = ToyFlowMapProcess(
+        photo, class_label=_CLASS_LABEL, steps=_STEPS, generator=_seeded()
+    )
+    recorded = _RecordingTilt()
+
+    sample_endpoint_process(process, reward=reward, tilt=recorded)
+
+    state = recorded.states[0].detach().requires_grad_(True)
+    endpoint = ToyFlowMapProcess(
+        photo, class_label=_CLASS_LABEL, steps=_STEPS, generator=_seeded()
+    ).endpoint(state, StepContext(index=0, total=_STEPS))
+    energy = reward(endpoint.image)
+    assert energy.shape == (2,)
+    (expected,) = torch.autograd.grad(energy.mean(), endpoint.state)
+    torch.testing.assert_close(recorded.gradients[0], expected, rtol=0.0, atol=0.0)
 
 
 def test_an_unsteered_walk_never_evaluates_the_reward(

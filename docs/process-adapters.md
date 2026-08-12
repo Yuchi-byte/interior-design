@@ -16,7 +16,7 @@ lives in `roomgen_guide/adapters/`.
 | Piece | Where | Contract |
 |---|---|---|
 | `EndpointProcess[Prediction]` | `process/endpoint.py` | your backend: a state, a differentiable endpoint estimate of it, a step |
-| `Guidance` | `guidance/base.py` | the reward: predicted image in `[0, 1]` NCHW → scalar **energy**, low is good |
+| `Guidance` | `guidance/base.py` | the reward: predicted image in `[0, 1]` NCHW → one **energy per batch element**, low is good |
 | `TiltPolicy` | `process/tilt.py` | reward gradients → the displacement the state takes |
 | `sample_endpoint_process` | `process/driver.py` | the walk over the three; you do not write a loop |
 
@@ -34,6 +34,22 @@ return process.to_image(state)
 where `energy_gradient_at(step)(candidate)` is one call to
 `process.endpoint(candidate, step)`, one call to the reward on
 `Endpoint.image`, and one backward to `Endpoint.state`.
+
+## The reward is per batch element, and the caller reduces it
+
+A `Guidance` returns `Float[Tensor, "batch"]` and never reduces it. The driver
+takes a single backward over the batch, so the driver is where the `.mean()`
+happens — the same mean `strength` has always been calibrated against, which
+divides each element's pull by the batch size.
+
+The reduction belongs to the caller because it is not always a mean. MFM-G
+weights `mc_samples` posterior draws against *each other* by their own scores
+(`mfm/utils/steering.py` takes a `logsumexp` over them), and MFM-Search
+resamples particles by reward: an energy that collapsed the batch would hand
+every draw an identical weight and degenerate the estimator into a plain
+average, while every test still passed and every sample still looked healthy.
+`masked_depth_error` has always been per batch element; the reward boundary is
+what used to throw that away.
 
 ## What an adapter must provide
 
@@ -102,8 +118,10 @@ A policy that evaluates candidate states must evaluate the step's own `state`
 - `advance`: the Euler step (or the deterministic interpolation) at the next
   time, with `steering` added to the state first.
 - **Sign.** MFM's `reward_fn(images)` and `reward_fn.score(images, prompts)`
-  return per-image rewards where **higher is better**; a `Guidance` is a
-  **scalar energy** where lower is better. Under this driver no shim is needed —
+  return per-image rewards where **higher is better**; a `Guidance` returns
+  per-image energies where lower is better. The shapes already agree — it is
+  only the sign and the temperature that do not. Under this driver no shim is
+  needed —
   `GeometricGuidance` goes in unchanged. It is only the other direction, driving
   MFM's *own* sampler or its exp-tilted fine-tuning loss, that needs the sign and
   temperature converted, and that shim already exists:

@@ -304,11 +304,13 @@ def guidance_gradient(
     # the one place in the loop where that would silently zero the guidance.
     with torch.enable_grad():
         differentiable_latent = latent.detach().requires_grad_(True)
+        # Reduced here and not by the reward: `Guidance` hands back one energy
+        # per batch element, and this is a single backward over the batch.
         energy = guidance(
             _predicted_original_image(
                 vae, differentiable_latent, noise_prediction, alpha_cumprod
             )
-        )
+        ).mean()
         (gradient,) = torch.autograd.grad(energy, differentiable_latent)
     return gradient
 
@@ -349,7 +351,7 @@ def guidance_gradient_through_unet(
             apply_text_guidance=apply_text_guidance,
             alpha_cumprod=alpha_cumprod,
         )
-        energy = guidance(endpoint.image)
+        energy = guidance(endpoint.image).mean()
         (gradient,) = torch.autograd.grad(energy, endpoint.state)
     return endpoint.prediction, gradient
 

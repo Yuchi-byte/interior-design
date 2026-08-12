@@ -86,8 +86,8 @@ The guided sampler and the experiment harness shared with `experiments/`.
   `MfmGeometricReward` being the depth energy as the `score(images, prompts)`
   Meta Flow Maps ascends. Structural, so nothing here imports the vendored tree.
 - `guidance/base.py`: `Guidance`, the `Protocol` mapping a predicted clean
-  image x̂₀ to a scalar energy — the reward boundary the process package steers
-  by.
+  image x̂₀ to one energy per batch element — the reward boundary the process
+  package steers by, reducing it with `.mean()` for its single backward.
 - `guidance/composite.py`: `WeightedGuidance`, several energies summed into the
   one a sampler descends, so an extra reward rides alongside the geometric one.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
