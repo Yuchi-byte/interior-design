@@ -42,16 +42,15 @@ sampler:
   text_guidance_scale: 7.5
 
 guidance:
-  # Bounded step in latent-RMS units (gradient divided by its own RMS): the
-  # 0.02-0.04 plateau passes 16/16 at noise 0.6, and the bound is what stops
-  # the adversarial collapse raw-gradient guidance hits at noise 0.8 (use
-  # ~0.03 there). Raw mode (normalize: false) wants strength ~10 and is only
-  # safe at noise <= 0.6.
-  strength: 0.04
-  normalize: true
-  # Caps the RMS of a raw step (normalize: false), keeping the raw step's decay
-  # on scenes whose geometry is already close while bounding the rest.
-  clip: null
+  # Clipped raw step, the arm that dominates every other measured (report.md):
+  # the raw step's energy-adaptivity handles scenes whose geometry is already
+  # close, the cap prevents the high-noise adversarial runaway. 32/32 at noise
+  # 0.6 and 30/32 at 0.8 on seeds 0-3. A pure normalized step (normalize: true,
+  # strength ~0.02-0.04) is bounded but overshoots low-drift scenes; uncapped
+  # raw (clip: null) collapses at noise >= 0.8.
+  strength: 10.0
+  normalize: false
+  clip: 0.02
   # `decaying` (strength -> final_strength on a cosine) measured strictly
   # worse: it halves the geometric win for no adherence gain.
   schedule: constant

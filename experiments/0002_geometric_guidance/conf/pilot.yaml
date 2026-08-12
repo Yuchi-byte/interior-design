@@ -29,8 +29,9 @@ sampler:
   text_guidance_scale: 7.5
 
 guidance:
-  strength: 0.04
-  normalize: true
+  strength: 10.0
+  normalize: false
+  clip: 0.02
   schedule: constant
   erosion_radius: 2
 

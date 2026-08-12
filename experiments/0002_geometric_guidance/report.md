@@ -268,10 +268,27 @@ gate partly conflates "guidance weak" with "nothing to fix".
 The two step rules fail in complementary regimes: the raw step scales with
 the energy (adapts down when error is tiny; unbounded above — collapses at
 noise 0.8), the normalized step is bounded above (no collapse) but never
-shrinks (overshoots when there is nothing to fix). Next arm: a clipped raw
-step — raw scaling, RMS-capped — adaptive below, bounded above.
+shrinks (overshoots when there is nothing to fix).
 
-Then v2 sequencing: gradient-matching term, newer/flow-matching base models.
+### Clipped raw step (raw scaling, RMS-capped) — seeds 0–3, full benchmark
+
+| cap | noise 0.6 | noise 0.8 |
+|---|---|---|
+| 0.04 | **32/32**, mean red 73.5%, adh ≥96.2% | 28/32 |
+| 0.02 | **32/32**, mean red 72.7%, adh ≥96.6% | **30/32**, mean red 64.9%, adh ≥95.3% |
+
+The synthesis dominates both parents: at 0.6 it recovers the low-drift
+kitchens that broke the fixed-RMS step (the raw step decays there) while
+matching its quality everywhere else; at 0.8 the cap prevents the collapse
+and every remaining failure is an honest geometry near-miss (13–20%) on
+bedroom_warm_ensuite — the persistently hardest scene, not a new mode.
+
+**Pinned default: `strength: 10, normalize: false, clip: 0.02`** — one
+configuration across noise levels and across all four seeds, two of which
+were never used for tuning.
+
+Then v2 sequencing: gradient-matching term, newer/flow-matching base models,
+and bedroom_warm_ensuite as the standing hard case.
 
 ## Gaps in `roomgen_guide` this framework had to work around
 
