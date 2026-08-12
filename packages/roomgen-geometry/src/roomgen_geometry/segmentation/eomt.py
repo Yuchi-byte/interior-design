@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, cast
+from typing import Final
 
 import torch
 from jaxtyping import Float, Int
@@ -54,9 +54,12 @@ class EoMT:
         # step, and a trainable parameter would have that backward accumulate a
         # `.grad` the size of the weights for a gradient nobody reads.
         self._model = model.to(device).eval().requires_grad_(False)
-        # The processor is loaded for its normalisation statistics, its input
-        # size, and its mask-logit decoding; the image preprocessing itself is
-        # tensor ops below, so no input ever round-trips through PIL.
+        # The processor is loaded for its normalisation statistics and its
+        # input size only. Both the preprocessing and the semantic decode are
+        # tensor ops below: no input round-trips through PIL, and the decode
+        # does not depend on a `post_process_semantic_segmentation` whose
+        # handling of a directly-called model differs between the transformers
+        # versions this package supports.
         self._processor = EomtImageProcessor.from_pretrained(
             checkpoint, cache_dir=cache_dir
         )
@@ -77,43 +80,35 @@ class EoMT:
     def __call__(
         self, images: Float[Tensor, "batch 3 height width"]
     ) -> Int[Tensor, "batch height width"]:
-        batch, _, height, width = images.shape
         with torch.no_grad():
-            outputs = self._model(pixel_values=self._preprocess(images))
-            # The ids are decoded at the input resolution from the per-class
-            # *logits*, which is what interpolation is defined on: an id map is
-            # categorical and would be meaningless resampled bilinearly. The
-            # cast drops the per-class scores this call does not ask for.
-            maps = cast(
-                list[Tensor],
-                self._processor.post_process_semantic_segmentation(
-                    outputs, target_sizes=[(height, width)] * batch
-                ),
-            )
-        return torch.stack(maps).to(torch.int64)
+            return self.class_logits(images).argmax(dim=1)
 
     def class_logits(
         self, images: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, "batch classes height width"]:
         """Per-pixel class scores on the input frame, **carrying gradient into the image**.
 
-        Deliberately not under ``no_grad``, unlike :meth:`__call__`: this is the
-        one path into the segmentation network a reward may differentiate, and
-        it costs a forward *and a backward* through the encoder at every guided
-        step it is evaluated on.
+        Deliberately not under ``no_grad``, unlike :meth:`__call__`, which
+        takes the argmax of this under one: this is the one path into the
+        segmentation network a reward may differentiate, and it costs a forward
+        *and a backward* through the encoder at every guided step it is
+        evaluated on.
 
         The values are EoMT's semantic scores — each query's class distribution
         (null class dropped) weighted by that query's mask probability and summed
         — so they are non-negative mass rather than log-odds, and
-        :meth:`__call__` returns exactly their argmax.
+        :meth:`__call__` is exactly their argmax: the ids that gate a reward and
+        the scores it differentiates are one decode of one forward.
         """
         _, _, height, width = images.shape
         outputs = self._model(pixel_values=self._preprocess(images))
-        # The processor's `post_process_semantic_segmentation` computes this and
-        # then throws it away: it returns ids, and the keyword that keeps the
-        # scores beside them is newer than the transformers floor this package
-        # declares. The decode itself is four differentiable lines, so it is
-        # spelled out rather than pinned to a keyword that may not be there.
+        # The processor's `post_process_semantic_segmentation` computes this
+        # and then throws it away: it returns ids, and the keyword that keeps
+        # the scores beside them is newer than the transformers floor this
+        # package declares. Some versions also assume the processor did the
+        # tiling and fail outright on a model called directly, which this
+        # backend does. The decode is four differentiable lines: spelled out
+        # here, and both paths read it.
         queries = outputs.class_queries_logits.softmax(dim=-1)[..., :-1]
         masks = interpolate(
             outputs.masks_queries_logits,

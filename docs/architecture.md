@@ -46,11 +46,13 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   only thing on the segmentation side a reward can differentiate.
 - `segmentation/eomt.py`: the EoMT backend
   (`tue-mps/ade20k_semantic_eomt_large_512`, MIT-licensed DINOv2 weights), with
-  a tensor-op resize/normalise shared by its two paths: `__call__` decodes ids
-  onto the input frame under `no_grad`, and `class_logits` returns the
-  per-class scores behind them *with* gradient, at the cost of a forward and a
-  backward through the encoder per guided step it is evaluated on. Weights are
-  frozen, so that backward accumulates nothing.
+  a tensor-op resize/normalise and a tensor-op semantic decode (upstream's, in
+  four lines, rather than the image processor's — which returns only ids and
+  whose handling of a directly-called model varies by transformers version)
+  feeding its two paths: `class_logits` returns the per-class scores *with*
+  gradient, at the cost of a forward and a backward through the encoder per
+  guided step it is evaluated on, and `__call__` is their argmax under
+  `no_grad`. Weights are frozen, so that backward accumulates nothing.
 - `segmentation/ade20k.py`: the 150-class label table and the
   `ARCHITECTURAL_CLASSES`/`CONTENTS_CLASSES` partition (wall, floor, ceiling,
   door, column, stairs, ... vs. furniture, furnishings, decor; the glazing

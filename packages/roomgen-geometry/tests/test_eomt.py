@@ -70,6 +70,25 @@ def test_eomt_ids_are_the_argmax_of_the_scores_a_reward_differentiates(
     )
 
 
+def test_eomt_ids_are_what_the_processors_own_decode_would_have_said(
+    eomt: EoMT, synthetic_room: Tensor
+) -> None:
+    # The decode is spelled out in the backend rather than delegated, so this is
+    # what pins it to upstream's definition. It is only assertable where the
+    # installed processor can post-process a directly-called model at all: some
+    # versions assume the processor did the tiling and raise on `patch_offsets`
+    # being absent, which is the reason the decode is ours in the first place.
+    try:
+        maps = eomt._processor.post_process_semantic_segmentation(
+            eomt._model(pixel_values=eomt._preprocess(synthetic_room)),
+            target_sizes=[synthetic_room.shape[-2:]],
+        )
+    except TypeError as error:
+        pytest.skip(f"this transformers cannot post-process a direct call: {error}")
+
+    assert torch.equal(eomt(synthetic_room), torch.stack(maps).to(torch.int64))
+
+
 def test_eomt_class_logits_carry_a_gradient_back_to_the_image(
     eomt: EoMT, synthetic_room: Tensor
 ) -> None:
