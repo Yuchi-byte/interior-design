@@ -123,6 +123,10 @@ class GuidanceConfig(Config):
             read only by that schedule.
         erosion_radius: pixels trimmed either side of a segment edge before the
             shell mask is trusted.
+        resegment: segment each predicted image and score depth only on
+            reference-shell AND prediction-shell, so furniture the renovation
+            adds may occlude the shell for free; false scores the reference
+            mask alone (pre-occlusion semantics, the control arm for A/B).
     """
 
     strength: Annotated[float, Field(ge=0.0)]
@@ -131,6 +135,7 @@ class GuidanceConfig(Config):
     schedule: Literal["constant", "decaying"] = "constant"
     final_strength: Annotated[float, Field(ge=0.0)] = 0.0
     erosion_radius: Annotated[int, Field(ge=0)] = 2
+    resegment: bool = True
 
 
 def build_schedule(config: GuidanceConfig) -> GuidanceSchedule:

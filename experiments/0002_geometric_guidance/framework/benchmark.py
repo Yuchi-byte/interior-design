@@ -297,6 +297,7 @@ def _sample(
         generator=generator,
         normalize_gradient=config.guidance.normalize,
         clip_step_rms=config.guidance.clip,
+        resegment=config.guidance.resegment,
         reference=reference,
     )
     return image, time.perf_counter() - started
