@@ -87,8 +87,10 @@ the same process.
   only affirmative contents.
 - **The eval.** Both arms are scored on one common mask — each arm's reference
   shell narrowed by a segmentation of *that* render, intersected — with per-arm
-  coverage reported beside it, so an arm cannot win by hiding the geometry it
-  moved.
+  coverage reported beside it for comparability. Coverage is a diagnostic, not
+  a guard: under the slab degeneracy the segmenter reads planar renders as
+  floor/wall and coverage *rises*; the guard against winning on geometry by
+  not being a room is adherence, or a preference model beside the energy.
 - **The reporting.** Metrics and a gallery. There are no thresholds in the
   code: a framework measures, the owner judges.
 
@@ -130,9 +132,11 @@ The whole knob surface is `strength`, `clip`, `erosion_radius`, `mask_mode`,
   silently excused.
 - **The step arithmetic is float32 by contract**, so a half-precision sampler
   keeps a finite, correctly-directed gradient.
-- **Honest eval.** One common mask for both arms, coverage always reported
-  beside the score, adherence always reported beside depth error: the
-  degenerate way to win on geometry is not to renovate.
+- **Honest eval.** One common mask for both arms, adherence (or a preference
+  score) always reported beside depth error: the degenerate ways to win on
+  geometry are not renovating, and rendering depth-shaped non-rooms — the
+  second is invisible to coverage (measured: slabs inflate it) and visible to
+  preference models.
 - **The cheap gradient is the right one on SD1.5.** DPS (`through_unet`) is
   indistinguishable on geometry at noise 0.9, slightly worse on adherence and
   coverage, and costs +37% wall-clock and ~27.5 GiB. Keep it as an A/B knob,
