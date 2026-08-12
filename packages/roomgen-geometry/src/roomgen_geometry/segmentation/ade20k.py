@@ -178,15 +178,21 @@ NUM_CLASSES: Final[int] = len(ADE20K_LABELS)
 # renovation is not allowed to move. Membership is deliberately narrow: a class
 # admitted here freezes its depth, so a wrongly admitted movable object (a rug,
 # a fireplace surround, a shower enclosure) would forbid exactly the change the
-# renovation is for. Outdoor structure seen through a window ("building",
-# "sky", "tree") is excluded too — monocular depth behind glass is unreliable
-# and the facade is not this room's geometry.
+# renovation is for. Everything seen *through* a window is excluded for the
+# opposite reason — "building", "sky", "tree", and the "windowpane" itself:
+# monocular depth answers a glazed pixel with the depth of the outdoor scene, so
+# scoring it scores the view rather than the room. The opening is still held in
+# place by the wall around it, and the boundary erosion drops the band either
+# side of the glazing, so the frame transition is never scored either.
+# Windowpane is deliberately in neither list rather than moved to contents: a
+# window is not furniture a renovation adds, and contents membership would
+# *exempt* a prediction's glazing under `subtract_contents` instead of merely
+# declining to score it.
 ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
     {
         0,  # wall
         3,  # floor
         5,  # ceiling
-        8,  # windowpane
         14,  # door
         38,  # railing
         42,  # column
@@ -222,9 +228,9 @@ def _named_contents(ids: set[int]) -> frozenset[int]:
 # furnishings, appliances, decor, lighting, textiles, potted plants,
 # electronics. Named affirmatively, never as the complement of the shell —
 # `subtract_contents` excuses a pixel from the reward only where the segmenter
-# commits to one of these, so a class in neither list (sky, tree, person,
-# water, road: what a window shows or what walks through the frame) stays
-# scored. Borderline calls:
+# commits to one of these, so a class in neither list (windowpane, sky, tree,
+# person, water, road: the glass, what it shows, or what walks through the
+# frame) is never excused here. Borderline calls:
 #   curtain, blind: hang off the wall and swing clear of it, so a new window
 #     dressing is not held to the old one's depth.
 #   painting, poster, mirror, bulletin board: on the wall plane, but depth

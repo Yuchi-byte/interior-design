@@ -21,9 +21,10 @@ _SOFA: Final = ADE20K_LABELS.index("sofa")
 class FakeSegmenter:
     """A `Segmenter` that needs no checkpoint: a ceiling/wall/floor room with one window and one sofa.
 
-    The layout spans both sides of the ADE20K shell/contents partition the
-    architectural mask is built from. Label values ignore pixel content and
-    never carry gradient.
+    The layout spans all three sides of the ADE20K class lists the architectural
+    mask is built from: shell (ceiling, wall, floor), contents (the sofa), and
+    the glazing the two lists between them leave unclaimed. Label values ignore
+    pixel content and never carry gradient.
 
     Args:
         ceiling_fraction: share of the frame height labelled ceiling, from the

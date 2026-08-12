@@ -80,7 +80,7 @@ def test_the_mask_is_true_on_exactly_the_shell_classes() -> None:
     assert torch.equal(mask[0, 1], torch.zeros_like(mask[0, 1]))
 
 
-def test_the_mask_keeps_the_room_shell_and_drops_the_furniture(
+def test_the_mask_keeps_the_room_shell_and_drops_the_furniture_and_the_glazing(
     fake_segmenter: FakeSegmenter, room_photo: Tensor
 ) -> None:
     segmentation = fake_segmenter(room_photo)
@@ -88,8 +88,13 @@ def test_the_mask_keeps_the_room_shell_and_drops_the_furniture(
     mask = architectural_mask(segmentation, erosion_radius=0)
 
     sofa = segmentation == ADE20K_LABELS.index("sofa")
+    # The glass goes for the opposite reason to the sofa: not because a
+    # renovation may move it, but because the depth read there is the outdoor
+    # scene's. The wall around it still holds the opening in place.
+    glass = segmentation == ADE20K_LABELS.index("windowpane")
     assert not bool(mask[sofa].any())
-    assert bool(mask[~sofa].all())
+    assert not bool(mask[glass].any())
+    assert bool(mask[~(sofa | glass)].all())
 
 
 def test_eroding_the_room_mask_drops_the_band_around_the_furniture(
@@ -149,11 +154,11 @@ def test_the_two_modes_part_company_on_the_rest_of_the_label_table() -> None:
     assert bool(subtracting.all())
 
 
-def test_a_window_view_and_a_passer_by_are_scored_only_by_subtract_contents() -> None:
+def test_the_glass_and_what_it_shows_are_kept_only_by_subtract_contents() -> None:
     # A wall with a window onto sky and a tree, a sofa in front of it, and a
-    # person crossing the room. The sofa is contents under either mode; the view
-    # through the glass and the person are named by neither list, so subtracting
-    # still has to reconstruct them and intersecting lets them go.
+    # person crossing the room. The sofa is contents under either mode; the
+    # glazing, what it shows, and the person are named by neither list, so
+    # subtracting still has to reconstruct them and intersecting lets them go.
     segmentation = torch.full((1, 16, 16), _WALL)
     segmentation[:, 2:8, 2:8] = ADE20K_LABELS.index("windowpane")
     segmentation[:, 3:5, 3:7] = ADE20K_LABELS.index("sky")
@@ -166,11 +171,12 @@ def test_a_window_view_and_a_passer_by_are_scored_only_by_subtract_contents() ->
         segmentation, mode="subtract_contents", erosion_radius=0
     )
 
-    view, person, sofa, glass = (
+    view, person, sofa, glass, wall_above = (
         (slice(None), slice(3, 7), slice(3, 7)),
         (slice(None), slice(4, 12), slice(11, 14)),
         (slice(None), slice(10, 14), slice(2, 8)),
         (slice(None), 2, slice(2, 8)),
+        (slice(None), 1, slice(2, 8)),
     )
     assert not bool(intersecting[view].any())
     assert not bool(intersecting[person].any())
@@ -178,9 +184,15 @@ def test_a_window_view_and_a_passer_by_are_scored_only_by_subtract_contents() ->
     assert bool(subtracting[person].all())
     assert not bool(intersecting[sofa].any())
     assert not bool(subtracting[sofa].any())
-    # The window frame itself is shell, and both modes keep scoring it.
-    assert bool(intersecting[glass].all())
+    # The glass sits with the view rather than with the frame: affirmative shell
+    # no longer claims it, so the reference photo's mask — always read at
+    # `intersect_shell` — has stopped scoring the window at all.
+    assert not bool(intersecting[glass].any())
     assert bool(subtracting[glass].all())
+    # What still pins where the window is: the wall it is cut into, which is
+    # shell under both modes.
+    assert bool(intersecting[wall_above].all())
+    assert bool(subtracting[wall_above].all())
 
 
 def test_the_modes_part_company_on_an_id_neither_set_names() -> None:

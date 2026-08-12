@@ -48,7 +48,7 @@ def test_from_photo_leaves_the_reference_off_the_graph_a_gradient_could_reach(
     assert reference.mask.dtype == torch.bool
 
 
-def test_from_photo_scores_the_shell_and_ignores_the_furniture(
+def test_from_photo_scores_the_shell_and_ignores_the_furniture_and_the_glazing(
     fake_depth_estimator: FakeDepthEstimator,
     fake_segmenter: FakeSegmenter,
     room_photo: Tensor,
@@ -60,9 +60,12 @@ def test_from_photo_scores_the_shell_and_ignores_the_furniture(
         erosion_radius=0,
     )
 
-    sofa = fake_segmenter(room_photo) == ADE20K_LABELS.index("sofa")
+    segmentation = fake_segmenter(room_photo)
+    sofa = segmentation == ADE20K_LABELS.index("sofa")
+    glass = segmentation == ADE20K_LABELS.index("windowpane")
     assert not bool(reference.mask[sofa].any())
-    assert bool(reference.mask[~sofa].all())
+    assert not bool(reference.mask[glass].any())
+    assert bool(reference.mask[~(sofa | glass)].all())
 
 
 def test_the_reward_scores_an_affine_rescale_of_the_reference_as_no_drift(

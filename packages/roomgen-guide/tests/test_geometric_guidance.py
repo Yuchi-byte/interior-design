@@ -79,6 +79,23 @@ class _UnsureWhereFlooded:
 
 
 @dataclass(frozen=True)
+class _WallAroundTheSofa:
+    """Every pixel affirmatively named, by one list or the other.
+
+    `FakeSegmenter` cannot stage this: its window is glazing, which is in
+    neither list precisely so the reward never scores the view behind it.
+    """
+
+    def __call__(
+        self, images: Float[Tensor, "batch 3 height width"]
+    ) -> Int[Tensor, "batch height width"]:
+        batch, _, height, width = images.shape
+        ids = torch.full((batch, height, width), _WALL, dtype=torch.int64)
+        ids[:, _SOFA_REGION[0], _SOFA_REGION[1]] = _SOFA
+        return ids
+
+
+@dataclass(frozen=True)
 class _AlwaysIntersecting:
     """The energy as it scored before the threshold existed: both shells, every step.
 
@@ -471,19 +488,18 @@ def test_the_mask_modes_score_a_different_shell_of_the_same_prediction(
 
 
 def test_the_mask_modes_agree_when_the_segmenter_names_every_pixel(
-    geometric_guidance: GeometricGuidance,
-    room_photo: Tensor,
-    fake_segmenter: FakeSegmenter,
+    geometric_guidance: GeometricGuidance, room_photo: Tensor
 ) -> None:
     intersecting = replace(
         geometric_guidance,
-        segmenter=fake_segmenter,
+        segmenter=_WallAroundTheSofa(),
         erosion_radius=_EROSION_RADIUS,
         resegment_after=0.0,
     )
     subtracting = replace(intersecting, mask_mode="subtract_contents")
     drifted = _brightened(room_photo, 0.2, (slice(0, 32), slice(0, 32)))
 
-    torch.testing.assert_close(
-        subtracting(drifted, progress=1.0), intersecting(drifted, progress=1.0)
-    )
+    energy = intersecting(drifted, progress=1.0)
+
+    assert float(energy) > 0.0
+    torch.testing.assert_close(subtracting(drifted, progress=1.0), energy)

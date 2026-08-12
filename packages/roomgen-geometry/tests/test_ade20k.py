@@ -34,6 +34,16 @@ def test_the_two_lists_deliberately_leave_the_rest_of_the_table_unclaimed() -> N
     } <= unclaimed
 
 
+def test_the_glass_a_window_is_made_of_is_scored_as_neither() -> None:
+    # Depth behind glass is the outdoor scene's, not the room's, so the glazing
+    # is not shell; it is not contents either, or a prediction's window would
+    # excuse itself from the reward under `subtract_contents`.
+    windowpane = ADE20K_LABELS.index("windowpane")
+
+    assert windowpane not in ARCHITECTURAL_CLASSES
+    assert windowpane not in CONTENTS_CLASSES
+
+
 def test_the_furniture_a_renovation_replaces_is_named_contents() -> None:
     assert {
         ADE20K_LABELS.index(name)
