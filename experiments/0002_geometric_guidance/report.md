@@ -207,9 +207,29 @@ sessions instead.
 3. Guidance costs 3.1× the unguided sampler in wall-clock (1.4 s → 4.3 s per
    512² sample) — cheap enough that cost is not a factor in what to run next.
 
-Next: the `guidance.schedule=decaying` arm at the same seeds (running), then
-image inspection for artifacts CLIP cannot see, then v2 sequencing
-(gradient-matching term, newer/flow-matching base models).
+### Follow-up arms (2026-08-12, same seeds)
+
+**Decaying schedule (strength 10 → 0, cosine): settled, keep constant.**
+14/16 — mean reduction halves (72.2% → 50.2%) for zero adherence gain
+(99.3% vs 99.6%); the two failures are the geometry margin, not adherence.
+At noise 0.6 the late steps it gives up were doing useful geometric work.
+
+**noise_strength=0.8 at constant 10: adversarial collapse, gate caught it.**
+12/16. The four failures split two ways. Two scenes miss the geometry margin
+(bedroom_warm_ensuite again — the persistently hardest scene). Worse, the
+seeming star results (lakehouse −87%, blue_white_kitchen −98% depth error) are
+**adversarial textures**: the guided image is depth-satisfying noise, not a
+room (verified by eye, `outputs/noise08_inspect/`). With 24 walked steps of
+nearly-pure noise there is too little image prior to resist a constant-10
+pull, and sampling runs away into a texture that games the depth network.
+The CLIP floor (46–52% of control) is what caught it — the two-sided gate
+earned its keep. High-noise restyle needs the guidance step bounded relative
+to the gradient's scale (FreeDoM-style normalization), not a raw
+energy-gradient multiple.
+
+Next: gradient-normalized guidance step in `sample_guided` (strength becomes
+a step size, robust across noise levels), re-sweep at 0.6 and 0.8, then v2
+sequencing (gradient-matching term, newer/flow-matching base models).
 
 ## Gaps in `roomgen_guide` this framework had to work around
 
