@@ -14,9 +14,8 @@ from roomgen_guide.sampling.guided import (
     _predict_noise,
     _prompt_embeddings,
     _renoised_timesteps,
+    _through_unet_endpoint,
     decode_latent,
-    guidance_gradient,
-    guidance_gradient_through_unet,
     sample_guided,
 )
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
@@ -189,6 +188,27 @@ def _sample(
     )
 
 
+def _constant_epsilon_gradient(
+    pipeline: FakePipeline,
+    guidance: Guidance,
+    *,
+    latent: Tensor,
+    noise_prediction: Tensor,
+    alpha_cumprod: Tensor,
+) -> Tensor:
+    # Tweedie's x̂₀ spelled out rather than read back off the loop, so what a
+    # guided step is pinned to is that estimate and not whatever the loop
+    # happens to hand the decoder.
+    differentiable_latent = latent.detach().clone().requires_grad_(True)
+    predicted_original = (
+        differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
+    ) / alpha_cumprod.sqrt()
+    return assert_gradient_is_finite_and_nonzero(
+        guidance(decode_latent(pipeline.vae, predicted_original)).mean(),
+        differentiable_latent,
+    )
+
+
 def test_a_fake_pipeline_stands_in_for_a_diffusers_one(
     fake_pipeline: FakePipeline,
 ) -> None:
@@ -341,37 +361,6 @@ def test_a_non_positive_cap_is_rejected(
         )
 
 
-def test_the_guided_step_differentiates_the_energy_through_the_predicted_original(
-    fake_pipeline: FakePipeline,
-    geometric_guidance: GeometricGuidance,
-    generator: Generator,
-) -> None:
-    latent = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
-    noise_prediction = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
-    alpha_cumprod = torch.tensor(0.5)
-
-    steering = guidance_gradient(
-        fake_pipeline.vae,
-        geometric_guidance,
-        latent=latent,
-        noise_prediction=noise_prediction,
-        alpha_cumprod=alpha_cumprod,
-    )
-
-    # Tweedie's x̂₀ spelled out, so the step is pinned to that estimate rather
-    # than to whatever the loop happens to feed the decoder.
-    differentiable_latent = latent.clone().requires_grad_(True)
-    predicted_original = (
-        differentiable_latent - (1.0 - alpha_cumprod).sqrt() * noise_prediction
-    ) / alpha_cumprod.sqrt()
-    expected = assert_gradient_is_finite_and_nonzero(
-        geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)).mean(),
-        differentiable_latent,
-    )
-
-    torch.testing.assert_close(steering, expected)
-
-
 def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
     fake_pipeline: FakePipeline,
     geometric_guidance: GeometricGuidance,
@@ -389,15 +378,20 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         apply_text_guidance=True,
     )
 
-    noise_prediction, steering = guidance_gradient_through_unet(
+    endpoint = _through_unet_endpoint(
         fake_pipeline,
-        geometric_guidance,
         latent=latent,
         timestep=timestep,
         prompt_embeddings=prompt_embeddings,
         text_guidance_scale=text_guidance_scale,
         apply_text_guidance=True,
         alpha_cumprod=alpha_cumprod,
+    )
+    # The walk's own reduction and backward over that endpoint, which is what
+    # the driver takes for a guided step.
+    noise_prediction = endpoint.prediction
+    steering = assert_gradient_is_finite_and_nonzero(
+        geometric_guidance(endpoint.image).mean(), endpoint.state
     )
 
     # The same chain the loop plumbs, composed by hand: classifier-free ε̂ of the
@@ -419,8 +413,8 @@ def test_differentiating_epsilon_adds_the_denoisers_jacobian_to_the_step(
         geometric_guidance(decode_latent(fake_pipeline.vae, predicted_original)).mean(),
         differentiable_latent,
     )
-    constant_epsilon = guidance_gradient(
-        fake_pipeline.vae,
+    constant_epsilon = _constant_epsilon_gradient(
+        fake_pipeline,
         geometric_guidance,
         latent=latent,
         noise_prediction=noise_prediction,
@@ -758,8 +752,8 @@ def test_the_guided_step_moves_the_latent_before_the_scheduler_advances_it(
             text_guidance_scale=text_guidance_scale,
             apply_text_guidance=True,
         )
-        steering = guidance_gradient(
-            fake_pipeline.vae,
+        steering = _constant_epsilon_gradient(
+            fake_pipeline,
             geometric_guidance,
             latent=latent,
             noise_prediction=noise_prediction,

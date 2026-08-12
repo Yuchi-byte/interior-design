@@ -17,9 +17,12 @@ prompt adherence stays level with the control's.
 
 Both halves matter. The degenerate way to lower depth error is to return the
 input photo, which scores a perfect geometry error; over-guidance approaches
-exactly that failure, and adherence is what exposes it. So does coverage: an arm
-whose own segmentation excuses the shell is scored on nothing. A depth number
-read alone proves nothing.
+exactly that failure, and adherence is what exposes it. The other degenerate way
+is depth-satisfying planar slabs, which adherence — or a preference model beside
+the energy — is what exposes. Coverage is reported as a diagnostic: it says how
+much shell each arm's own segmentation left to score, and so how comparable the
+two depth errors are, but it does not point one way under a slab render, which
+the segmenter reads as *more* shell. A depth number read alone proves nothing.
 
 Two premises this framework leans on, both measured rather than assumed
 (numbers in Setup below): that the depth reward sees **geometry** and not
@@ -43,20 +46,25 @@ selected variant, ensures the photos, builds the stack, and drives
   photos in `conf/benchmark.yaml` and held identical between the guided run and
   its control.
 - **Seeds.** Listed rather than drawn, threaded as a `torch.Generator` created
-  on the sampling device. `conf/benchmark.yaml` pins `[0, 1]`; the baseline arms
-  below were run over `[0, 1, 2, 3]`, seeds 2 and 3 never having been used for
-  tuning.
+  on the sampling device. `conf/benchmark.yaml` pins `[0, 1, 2, 3]`, which is
+  what the reference numbers were measured over; seeds 2 and 3 were never used
+  for tuning.
 - **Reference.** `GeometricReference` per scene: Depth Anything V2 Small inverse
   depth, masked to the EoMT ADE20K shell with `erosion_radius=2`, computed once
   and detached. Measured shell coverage on these photos: 49-70% of the frame.
 - **Sampler.** SD1.5 img2img, 30 steps, `noise_strength=0.6`,
   `text_guidance_scale=7.5`, DDIM (the checkpoint's PNDM is replaced: DDIM's
   update is the deterministic closed form the guided loop's x̂₀ correction
-  assumes).
+  assumes). `conf/benchmark.yaml` is the **frozen v1 claim config**: every
+  number in this report rests on its 0.6, which is why it is pinned there and
+  not raised. New comparisons run at σ₀ 0.9 or from pure noise, where the
+  unguided control is off the metric's noise floor
+  (`docs/research/geometric-guidance.md`).
 - **Guidance.** Constant strength 10.0 with the step capped at `clip=0.02` in
   latent-RMS units; `resegment` on, so the reward scores reference-shell ∧
-  prediction-shell at every step under `mask_mode=intersect_shell`;
-  `through_unet` off (the DPS arm is an A/B, not the default).
+  prediction-shell at every step under `mask_mode=subtract_contents`, the
+  polarity the sweep below settled on; `through_unet` off (the DPS arm is the
+  A/B a new architecture's Jacobian question is asked against, not the default).
 - **Metrics.** `roomgen_guide.eval`, both arms scored on the **one common
   mask** — each arm's own reference-shell-narrowed-by-its-own-segmentation,
   intersected — so the two depth errors share a pixel set and neither arm
@@ -154,9 +162,6 @@ so the sweep ran downward instead.
 
 Monotone improvement up to ~10, past the peak by 50, catastrophic by 150.
 **Pinned: 10.0** in both `pilot.yaml` and `benchmark.yaml`.
-
-**TODO after the full benchmark run:** the per-scene table at strength 10, the
-cost table, and the decision. Record the run's `results.json` path.
 
 ### Per (scene, seed) at strength 10, constant (2026-08-12, 16/16 PASSED)
 

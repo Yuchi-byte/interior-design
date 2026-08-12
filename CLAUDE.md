@@ -8,7 +8,7 @@ code in this repository.
 roomgen renovates a photographed room with a diffusion model without letting
 the room move: sampling is steered by a differentiable geometric reward derived
 from monocular depth, restricted to the architectural shell (walls, floor,
-ceiling, windows, doors) and blind to the furniture, which is exactly what
+ceiling, doors) and blind to the furniture, which is exactly what
 renovation is allowed to change. The central hypothesis is that a pretrained
 monocular depth network's features already encode the structure that matters —
 planarity, room layout, relative scale — so a depth-space reconstruction error
@@ -125,9 +125,11 @@ framework **measures and reports** — the rendered comparisons plus the numbers
 behind them (both arms' depth error and its reduction, both arms' prompt
 adherence and its ratio, and how much shell the pair was scored over) — and
 asserts no pass/fail: there are no thresholds in the code, and judging the
-evidence is the owner's. Depth error still never travels alone; winning it by
-not renovating is the degenerate outcome the adherence and coverage numbers
-expose. `experiments/JOURNAL.md` is **owner-managed**: the owner writes entries
+evidence is the owner's. Depth error still never travels alone: winning it by
+not renovating, or by filling the room with depth-satisfying slabs, is what the
+adherence (or preference) score is there to expose — shell coverage is a
+diagnostic beside it, and a slab-filled render reads as *more* shell, not less.
+`experiments/JOURNAL.md` is **owner-managed**: the owner writes entries
 or dictates them verbatim — never append to it unprompted.
 
 ## Plans are temporary; docs/research is owner-reviewed

@@ -58,9 +58,14 @@ def shell_coverage(
     """The share of the reference's shell that an arm's evaluation mask still scores.
 
     1 is the whole photographed shell; 0 is a render whose segmentation excused
-    all of it. The degenerate way to lower depth error is to cover the room in
-    furniture and be scored on nothing, which costs no depth error at all — this
-    is the number that shows it happened.
+    all of it and was scored on nothing, which costs no depth error at all — so
+    a depth error means little without the coverage it was read over.
+
+    This is a diagnostic, not a degeneracy guard, and it does not point one way:
+    a sample that satisfies the energy with large planar slabs is segmented as
+    floor and wall, so its coverage *rises* while the render stops being a room.
+    Prompt adherence — or a preference model beside the energy — is what catches
+    that one.
     """
     shell = int(reference.mask.sum())
     if shell == 0:

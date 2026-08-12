@@ -31,8 +31,11 @@ backends:
 
 sampler:
   steps: 30
-  # SDEdit strength: high enough that the furniture is genuinely restyled, low
-  # enough that an unguided run still resembles the room it started from.
+  # SDEdit strength. This file is the frozen v1 claim config: every number in
+  # `report.md` was measured at 0.6, so it stays pinned here. New comparisons
+  # run at 0.9 or from pure noise — at 0.6 the unguided control already sits at
+  # the metric's noise floor, so nothing measured there separates two methods
+  # (`docs/research/geometric-guidance.md`).
   noise_strength: 0.6
   text_guidance_scale: 7.5
 

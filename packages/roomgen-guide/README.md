@@ -20,9 +20,11 @@ once, guided sample out under `ROOMGEN_WDIR`.
 
 `eval/` scores a finished render on two axes, because they trade off: masked
 depth error against the reference, and a prompt-adherence metric. A sampler that
-simply returns the input photo wins the first and fails the second, which is why
-a framework reads the two together — with `shell_coverage` beside them, since a
-render whose own segmentation excuses the whole shell is scored on nothing (see
+simply returns the input photo wins the first and fails the second, and so does
+one that fills the room with depth-satisfying slabs, which is why a framework
+reads the two together. `shell_coverage` sits beside them as a diagnostic — how
+much shell a render's own segmentation left to score, and therefore how
+comparable the two depth errors are — not as a second guard (see
 `experiments/README.md`).
 
 ## Settings

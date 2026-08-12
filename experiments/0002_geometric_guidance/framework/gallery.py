@@ -549,7 +549,7 @@ _LEDE: Final = (
     "Each strip shows the input photograph, the unguided SDEdit control, and "
     "the geometrically guided sample from the same seed. The guided column is "
     "steered by a differentiable masked depth error against the photo's "
-    "architectural shell &mdash; walls, floor, ceiling, windows, doors &mdash; "
+    "architectural shell &mdash; walls, floor, ceiling, doors &mdash; "
     "and blind to the furniture, which the renovation is allowed to change. "
     "Depth error is scale/shift-aligned inverse depth MSE on the shell, read "
     "for both arms over the one pixel set both renders left visible; adherence "
