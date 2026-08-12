@@ -165,8 +165,11 @@ takes its step, scaled by `guidance/schedule.py`. No weights are updated — thi
 is training-free guidance in the universal-guidance / FreeDoM family.
 
 The gradient therefore backpropagates through the depth network *and* the VAE
-decoder — but not the UNet, whose noise prediction enters x̂₀'s closed form as a
-constant. The VAE decode dominates memory: its decoder activations at full sample
+decoder. The UNet sits outside that path, its noise prediction entering x̂₀'s
+closed form as a constant, unless `differentiate_through_unet` puts it back in:
+the step then also carries the denoiser's Jacobian (DPS), which damps a push the
+denoiser would only undo, for one UNet backward more per guided step. The VAE
+decode dominates memory: its decoder activations at full sample
 resolution must be retained for the backward pass, and this cost is paid once
 per guided step. Gradient checkpointing on the decoder, computing the energy at a
 reduced depth-input resolution, and guiding on a subset of steps are the three
