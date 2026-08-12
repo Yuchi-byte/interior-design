@@ -123,10 +123,14 @@ per-run numbers), `qualitative.html` and `images/`.
 
 ## Results
 
-**Not yet run.** No run of this framework has been performed. Every cell below is
-a placeholder — no number in this section is measured, estimated, or otherwise
-real. The magnitudes in Setup are the *only* measured numbers in this document,
-and they are properties of the reward, not results of a sampling run.
+All numbers below are measured, from GPU runs on 2026-08-12 (RTX PRO 4500
+Blackwell, fp32). Every run's raw artifacts live under `outputs/` (gitignored);
+the arm-name ↔ directory mapping is stated per table. Caveats that postdate
+these measurements: the guided arm was later found run-to-run nondeterministic
+on CUDA (~0.6pp at the mean, up to ~11pp on a single run), so sub-point
+arm-vs-arm orderings here are indicative, not resolved; and every number in
+this section was scored on the reference mask alone, before the common-mask
+eval landed — comparable within this section, not with later runs.
 
 ### Strength sweep (pilot scene, seed 0, 10 steps, 2026-08-12)
 
