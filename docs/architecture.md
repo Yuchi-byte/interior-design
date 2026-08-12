@@ -38,8 +38,9 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   with a tensor-op resize/normalise and ids decoded back onto the input frame
   from the mask-query logits.
 - `segmentation/ade20k.py`: the 150-class label table and the
-  `SHELL`/`CONTENTS` partition (wall, floor, ceiling, window, door, column,
-  stairs, ... vs. furniture, furnishings, decor) — the domain-knowledge file.
+  `ARCHITECTURAL_CLASSES`/`CONTENTS_CLASSES` partition (wall, floor, ceiling,
+  window, door, column, stairs, ... vs. furniture, furnishings, decor) — the
+  domain-knowledge file.
 - `masking.py`: `architectural_mask`, the boolean shell mask, plus the boundary
   erosion that drops the few pixels either side of a segment edge where
   monocular depth is unreliable — a max-pool over the inverted mask (Chebyshev
@@ -47,11 +48,10 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels.
 - `reward.py`: `masked_depth_error`, the scale-and-shift-invariant masked
-  objective, plus an optional multi-scale gradient-matching term that penalises
-  disagreement in depth *gradients* across image pyramid levels.
+  objective, beside the `gradient_matching_error` the multi-scale term is
+  reserved under — declared and not implemented.
 - `reference.py`: `GeometricReference`, the frozen (masked depth, mask) pair
   computed once from the input photo and detached.
-- `config.py`: the pydantic v2 configs for the backends and the reward.
 
 ## `roomgen-guide`
 
@@ -146,9 +146,10 @@ prediction,
 
 which is invariant to any affine rescaling of `d` by construction. This is the
 scale-and-shift-invariant loss of MiDaS (arXiv:1907.01341) used as a reward
-rather than a training objective. The optional gradient-matching term adds the
-same masked mean over `|∇(s·d + t) − ∇r|` at several pyramid levels, which
-sharpens planarity and edge alignment that a pure value error tolerates.
+rather than a training objective. `gradient_matching_error` reserves the
+multi-scale term beside it — the same masked mean over `|∇(s·d + t) − ∇r|` at
+several pyramid levels, sharpening the planarity and edge alignment a pure value
+error tolerates — and raises `NotImplementedError` until the reward needs it.
 
 Everything downstream depends on this alignment: it is what makes the reward
 comparable across two different images at all.

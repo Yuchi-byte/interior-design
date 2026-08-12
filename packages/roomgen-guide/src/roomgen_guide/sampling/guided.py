@@ -1,11 +1,9 @@
 """The denoising loop that steers each step by an energy gradient."""
 
-from __future__ import annotations
-
 from typing import Final
 
 import torch
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from torch import Tensor
 
 from roomgen_guide.guidance.base import Guidance
@@ -79,9 +77,7 @@ def sample_guided(
 
     scheduler.set_timesteps(steps, device=photo.device)
     timesteps = _renoised_timesteps(scheduler.timesteps, noise_strength=noise_strength)
-    alphas_cumprod: Tensor = scheduler.alphas_cumprod.to(
-        device=photo.device, dtype=photo.dtype
-    )
+    alphas_cumprod = scheduler.alphas_cumprod.to(device=photo.device, dtype=photo.dtype)
 
     latent = _encode_photo(pipeline.vae, photo, generator=generator)
     noise = torch.randn(
@@ -110,19 +106,18 @@ def sample_guided(
         )
         strength = schedule(step, total_steps)
         if strength != 0.0:
-            steering = guidance_gradient(
-                pipeline.vae,
-                guidance,
-                latent=latent,
-                noise_prediction=noise_prediction,
-                alpha_cumprod=alphas_cumprod[timestep],
+            latent = latent - _guided_update(
+                guidance_gradient(
+                    pipeline.vae,
+                    guidance,
+                    latent=latent,
+                    noise_prediction=noise_prediction,
+                    alpha_cumprod=alphas_cumprod[timestep],
+                ),
+                strength=strength,
+                normalize_gradient=normalize_gradient,
+                clip_step_rms=clip_step_rms,
             )
-            if normalize_gradient:
-                steering = _normalized(steering, _RMS_EPSILON)
-            update = strength * steering
-            if clip_step_rms is not None:
-                update = _clipped(update, clip_step_rms, _RMS_EPSILON)
-            latent = latent - update
         latent = scheduler.step(noise_prediction, timestep, latent).prev_sample
 
     return decode_latent(pipeline.vae, latent)
@@ -169,22 +164,23 @@ def decode_latent(
     return ((decoded + 1.0) / 2.0).clamp(0.0, 1.0)
 
 
-def _normalized(
-    gradient: Float[Tensor, "batch channels height width"], epsilon: float
+def _guided_update(
+    gradient: Float[Tensor, "batch channels height width"],
+    *,
+    strength: float,
+    normalize_gradient: bool,
+    clip_step_rms: float | None,
 ) -> Float[Tensor, "batch channels height width"]:
-    # The result has unit RMS whatever the energy's units are, so a step of
-    # `strength` moves the latent by that much per entry.
-    return gradient / (_root_mean_square(gradient) + epsilon)
-
-
-def _clipped(
-    update: Float[Tensor, "batch channels height width"],
-    clip_step_rms: float,
-    epsilon: float,
-) -> Float[Tensor, "batch channels height width"]:
+    if normalize_gradient:
+        # Unit RMS whatever the energy's units are, so `strength` becomes the
+        # size of the step rather than a multiplier on it.
+        gradient = gradient / (_root_mean_square(gradient) + _RMS_EPSILON)
+    update = strength * gradient
+    if clip_step_rms is None:
+        return update
     # min(1, cap/RMS): a step under the cap is multiplied by exactly 1.0 and so
     # passes through bit-for-bit, and one over it lands exactly on the cap.
-    scale = clip_step_rms / (_root_mean_square(update) + epsilon)
+    scale = clip_step_rms / (_root_mean_square(update) + _RMS_EPSILON)
     return update * scale.clamp(max=1.0)
 
 
@@ -206,7 +202,9 @@ def _encode_photo(
     return latent * vae.config.scaling_factor
 
 
-def _renoised_timesteps(timesteps: Tensor, *, noise_strength: float) -> Tensor:
+def _renoised_timesteps(
+    timesteps: Int[Tensor, "steps"], *, noise_strength: float
+) -> Int[Tensor, "renoised_steps"]:
     # SDEdit: `noise_strength` decides how much of the trajectory is redone, so
     # the head of the schedule — the noisiest steps — is the part dropped.
     denoised = min(max(int(len(timesteps) * noise_strength), 1), len(timesteps))
@@ -238,7 +236,7 @@ def _prompt_embeddings(
 def _predict_noise(
     pipeline: Img2ImgPipeline,
     latent: Float[Tensor, "batch channels height width"],
-    timestep: Tensor,
+    timestep: Int[Tensor, ""],
     prompt_embeddings: Float[Tensor, "batch sequence embedding"],
     *,
     text_guidance_scale: float,

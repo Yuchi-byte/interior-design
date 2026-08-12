@@ -200,12 +200,3 @@ ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
 CONTENTS_CLASSES: Final[frozenset[int]] = (
     frozenset(range(NUM_CLASSES)) - ARCHITECTURAL_CLASSES
 )
-
-
-def label_name(index: int) -> str:
-    """Human-readable name of an ADE20K-150 model output id."""
-    if not 0 <= index < NUM_CLASSES:
-        raise IndexError(
-            f"ADE20K class index {index} out of range: expected 0..{NUM_CLASSES - 1}"
-        )
-    return ADE20K_LABELS[index]

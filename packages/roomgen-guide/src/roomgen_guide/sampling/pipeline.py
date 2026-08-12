@@ -6,12 +6,10 @@ Protocols exist because the loop steps the components itself, which a fake with
 no weights can therefore stand in for.
 """
 
-from __future__ import annotations
-
 from typing import Protocol, runtime_checkable
 
 import torch
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from torch import Tensor
 
 
@@ -49,7 +47,7 @@ class NoisePredictor(Protocol):
     def __call__(
         self,
         sample: Float[Tensor, "batch channels height width"],
-        timestep: Tensor,
+        timestep: Int[Tensor, ""],
         encoder_hidden_states: Float[Tensor, "batch sequence embedding"],
     ) -> SampleOutput: ...
 
@@ -74,21 +72,31 @@ class NoiseScheduler(Protocol):
     """
 
     config: SchedulerConfig
-    timesteps: Tensor
-    alphas_cumprod: Tensor
+    timesteps: Int[Tensor, "steps"]
+    alphas_cumprod: Float[Tensor, "train_timesteps"]
 
     def set_timesteps(
         self, num_inference_steps: int, device: torch.device | None = None
     ) -> None: ...
 
-    def scale_model_input(self, sample: Tensor, timestep: Tensor) -> Tensor: ...
+    def scale_model_input(
+        self,
+        sample: Float[Tensor, "batch channels height width"],
+        timestep: Int[Tensor, ""],
+    ) -> Float[Tensor, "batch channels height width"]: ...
 
     def add_noise(
-        self, original_samples: Tensor, noise: Tensor, timesteps: Tensor
-    ) -> Tensor: ...
+        self,
+        original_samples: Float[Tensor, "batch channels height width"],
+        noise: Float[Tensor, "batch channels height width"],
+        timesteps: Int[Tensor, "timesteps"],
+    ) -> Float[Tensor, "batch channels height width"]: ...
 
     def step(
-        self, model_output: Tensor, timestep: Tensor, sample: Tensor
+        self,
+        model_output: Float[Tensor, "batch channels height width"],
+        timestep: Int[Tensor, ""],
+        sample: Float[Tensor, "batch channels height width"],
     ) -> SchedulerStepOutput: ...
 
 

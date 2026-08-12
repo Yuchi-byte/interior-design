@@ -6,6 +6,7 @@ import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from huggingface_hub import snapshot_download
 
@@ -21,7 +22,7 @@ from roomgen_guide.settings import RoomgenSettings
 
 
 @dataclass(frozen=True)
-class _Checkpoint:
+class Checkpoint:
     repo_id: str
     ignore_patterns: tuple[str, ...] = ()
 
@@ -29,7 +30,7 @@ class _Checkpoint:
 # Stable Diffusion 1.5's repo carries ~25GB of redundant single-file
 # checkpoints (the `.ckpt`/non-diffusers weights); only the diffusers-format
 # shards under each pipeline component are needed.
-_SD15_IGNORE_PATTERNS: tuple[str, ...] = (
+_SD15_IGNORE_PATTERNS: Final = (
     "*.ckpt",
     "*.bin",
     "*.h5",
@@ -39,32 +40,31 @@ _SD15_IGNORE_PATTERNS: tuple[str, ...] = (
     "safety_checker/*",
 )
 
-CHECKPOINTS: tuple[_Checkpoint, ...] = (
-    _Checkpoint(DEPTH_CHECKPOINT),
-    _Checkpoint(SEGMENTATION_CHECKPOINT),
-    _Checkpoint(DIFFUSION_CHECKPOINT, _SD15_IGNORE_PATTERNS),
-    _Checkpoint(ADHERENCE_CHECKPOINT),
+CHECKPOINTS: Final[tuple[Checkpoint, ...]] = (
+    Checkpoint(DEPTH_CHECKPOINT),
+    Checkpoint(SEGMENTATION_CHECKPOINT),
+    Checkpoint(DIFFUSION_CHECKPOINT, _SD15_IGNORE_PATTERNS),
+    Checkpoint(ADHERENCE_CHECKPOINT),
 )
 
 
 def prefetch(cache_dir: Path) -> None:
     """Downloads every checkpoint in :data:`CHECKPOINTS` into `cache_dir`."""
-    for checkpoint in CHECKPOINTS:
-        snapshot_download(
-            checkpoint.repo_id,
-            cache_dir=cache_dir,
-            ignore_patterns=list(checkpoint.ignore_patterns) or None,
-        )
+    _snapshot_every_checkpoint(cache_dir, local_files_only=False)
 
 
 def verify(cache_dir: Path) -> None:
     """Proves every checkpoint in :data:`CHECKPOINTS` is fully cached, offline."""
+    _snapshot_every_checkpoint(cache_dir, local_files_only=True)
+
+
+def _snapshot_every_checkpoint(cache_dir: Path, *, local_files_only: bool) -> None:
     for checkpoint in CHECKPOINTS:
         snapshot_download(
             checkpoint.repo_id,
             cache_dir=cache_dir,
             ignore_patterns=list(checkpoint.ignore_patterns) or None,
-            local_files_only=True,
+            local_files_only=local_files_only,
         )
 
 

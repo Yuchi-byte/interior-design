@@ -8,7 +8,7 @@ _CONTROL_DEPTH_ERROR = 0.05
 _CONTROL_ADHERENCE = 0.30
 
 
-def make_verdict(*, geometry_improved: bool, adherence_held: bool) -> Verdict:
+def _verdict(*, geometry_improved: bool, adherence_held: bool) -> Verdict:
     return Verdict(
         guided_depth_error=0.01,
         control_depth_error=0.05,
@@ -19,7 +19,7 @@ def make_verdict(*, geometry_improved: bool, adherence_held: bool) -> Verdict:
     )
 
 
-def score(
+def _score_against_control(
     *,
     guided_depth_error: float = 0.01,
     guided_prompt_adherence: float = _CONTROL_ADHERENCE,
@@ -41,7 +41,7 @@ def score(
 def test_a_run_passes_only_on_both_sides_of_the_gate(
     geometry_improved: bool, adherence_held: bool, expected: bool
 ) -> None:
-    verdict = make_verdict(
+    verdict = _verdict(
         geometry_improved=geometry_improved, adherence_held=adherence_held
     )
 
@@ -72,7 +72,10 @@ def test_scoring_a_run_keeps_both_runs_measurements_beside_the_verdict() -> None
 def test_geometry_wins_only_by_the_configured_margin_on_the_control(
     guided_depth_error: float, expected: bool
 ) -> None:
-    assert score(guided_depth_error=guided_depth_error).geometry_improved is expected
+    assert (
+        _score_against_control(guided_depth_error=guided_depth_error).geometry_improved
+        is expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -83,13 +86,15 @@ def test_geometry_wins_only_by_the_configured_margin_on_the_control(
 def test_adherence_holds_only_against_the_controls_own_score(
     guided_prompt_adherence: float, expected: bool
 ) -> None:
-    verdict = score(guided_prompt_adherence=guided_prompt_adherence)
+    verdict = _score_against_control(guided_prompt_adherence=guided_prompt_adherence)
 
     assert verdict.adherence_held is expected
 
 
 def test_a_run_that_declines_to_renovate_fails_the_gate_it_wins_on_geometry() -> None:
-    verdict = score(guided_depth_error=0.0, guided_prompt_adherence=0.1)
+    verdict = _score_against_control(
+        guided_depth_error=0.0, guided_prompt_adherence=0.1
+    )
 
     assert verdict.geometry_improved
     assert not verdict.adherence_held
@@ -100,6 +105,8 @@ def test_a_run_that_declines_to_renovate_fails_the_gate_it_wins_on_geometry() ->
 def test_the_gate_is_unchanged_by_the_scale_the_metrics_report_in(scale: float) -> None:
     # Both thresholds are fractions of the control, so a scene whose depth error
     # runs three orders larger is judged identically.
-    verdict = score(guided_depth_error=0.03, guided_prompt_adherence=0.28, scale=scale)
+    verdict = _score_against_control(
+        guided_depth_error=0.03, guided_prompt_adherence=0.28, scale=scale
+    )
 
     assert verdict.passed

@@ -10,8 +10,7 @@ from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.guidance.schedule import ConstantStrength
 from roomgen_guide.sampling.guided import (
-    _clipped,
-    _normalized,
+    _guided_update,
     decode_latent,
     guidance_gradient,
     sample_guided,
@@ -20,11 +19,22 @@ from roomgen_guide.sampling.pipeline import Img2ImgPipeline
 from roomgen_guide_fakes import LATENT_CHANNELS, FakePipeline, FakeScheduler
 
 _PROMPT = "a mid-century living room"
-_NORMALIZATION_EPSILON = 1e-12
 # The raw step at strength 500 on this stack has an RMS of a few hundredths, so
 # one cap sits well clear of it and the other binds on every step.
 _SLACK_CAP = 1.0
 _BINDING_CAP = 0.01
+
+
+def _normalized(gradient: Tensor) -> Tensor:
+    return _guided_update(
+        gradient, strength=1.0, normalize_gradient=True, clip_step_rms=None
+    )
+
+
+def _clipped(update: Tensor, cap: float) -> Tensor:
+    return _guided_update(
+        update, strength=1.0, normalize_gradient=False, clip_step_rms=cap
+    )
 
 
 class MeanBrightnessEnergy:
@@ -239,8 +249,8 @@ def test_the_normalized_gradient_keeps_its_direction_at_unit_rms(
 ) -> None:
     gradient = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator)
 
-    normalized = _normalized(gradient, _NORMALIZATION_EPSILON)
-    amplified = _normalized(gradient * 1e6, _NORMALIZATION_EPSILON)
+    normalized = _normalized(gradient)
+    amplified = _normalized(gradient * 1e6)
 
     root_mean_square = normalized.square().mean().sqrt()
     torch.testing.assert_close(root_mean_square, torch.ones(()))
@@ -253,7 +263,7 @@ def test_the_normalized_gradient_keeps_its_direction_at_unit_rms(
 def test_a_zero_gradient_normalizes_to_zero() -> None:
     zero = torch.zeros((1, LATENT_CHANNELS, 8, 8))
 
-    assert torch.equal(_normalized(zero, _NORMALIZATION_EPSILON), zero)
+    assert torch.equal(_normalized(zero), zero)
 
 
 def test_a_step_under_the_cap_is_the_raw_step_untouched(
@@ -286,16 +296,16 @@ def test_a_step_over_the_cap_lands_exactly_on_it_without_turning(
 ) -> None:
     update = torch.randn((1, LATENT_CHANNELS, 8, 8), generator=generator) * 100.0
 
-    clipped = _clipped(update, _BINDING_CAP, _NORMALIZATION_EPSILON)
+    clipped = _clipped(update, _BINDING_CAP)
 
     torch.testing.assert_close(
         clipped.square().mean().sqrt(), torch.tensor(_BINDING_CAP)
     )
     torch.testing.assert_close(
-        _normalized(clipped, _NORMALIZATION_EPSILON),
-        _normalized(update, _NORMALIZATION_EPSILON),
+        _normalized(clipped),
+        _normalized(update),
     )
-    assert torch.equal(_clipped(update, 1e6, _NORMALIZATION_EPSILON), update)
+    assert torch.equal(_clipped(update, 1e6), update)
 
 
 def test_the_capped_trajectory_stops_growing_with_the_energy(
