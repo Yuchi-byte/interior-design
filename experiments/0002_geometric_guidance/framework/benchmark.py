@@ -383,9 +383,7 @@ def _sample(
         text_guidance_scale=config.sampler.text_guidance_scale,
         generator=generator,
         clip_step_rms=config.guidance.clip,
-        differentiate_through_unet=config.guidance.through_unet,
         resegment=config.guidance.resegment,
-        mask_mode=config.guidance.mask_mode,
         on_mask=on_mask,
         reference=reference,
     )
@@ -484,9 +482,7 @@ def _scorable(
     with torch.no_grad():
         segmentation = backends.segmenter(image)
     return reference.mask & scorable_mask(
-        segmentation,
-        mode=config.guidance.mask_mode,
-        erosion_radius=config.guidance.erosion_radius,
+        segmentation, erosion_radius=config.guidance.erosion_radius
     )
 
 

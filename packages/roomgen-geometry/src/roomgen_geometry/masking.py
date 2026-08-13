@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 import torch
 from jaxtyping import Bool, Int
 from torch import Tensor
@@ -15,60 +13,49 @@ from roomgen_geometry.segmentation.ade20k import (
     STRUCTURAL_CLASSES,
 )
 
-MaskMode = Literal["intersect_shell", "subtract_contents"]
-"""Which way round a segmentation is read when it decides what may be scored."""
-
 
 def scorable_mask(
-    segmentation: Int[Tensor, "batch height width"],
-    *,
-    mode: MaskMode,
-    erosion_radius: int,
+    segmentation: Int[Tensor, "batch height width"], *, erosion_radius: int
 ) -> Bool[Tensor, "batch height width"]:
-    """The pixels one segmentation leaves available to the reward, under either polarity.
+    """The pixels one *prediction's* segmentation leaves available to the reward.
 
     Args:
         segmentation: ADE20K-150 model output ids, as
             :class:`~roomgen_geometry.segmentation.base.Segmenter` returns them.
-        mode: `intersect_shell` exempts everything that is not affirmatively
-            shell (:data:`~roomgen_geometry.segmentation.ade20k.ARCHITECTURAL_CLASSES`);
-            `subtract_contents` exempts only what is affirmatively contents
-            (:data:`~roomgen_geometry.segmentation.ade20k.CONTENTS_CLASSES`), so
-            an id neither list names — an ignore index, or the sky, tree, or
-            person a window frames — stays scored rather than excused.
         erosion_radius: in pixels, passed on to :func:`erode_boundaries`.
 
-    Erosion is applied to the kept side in both modes, never to the exemption:
-    the unreliable band either side of a segment edge is dropped from the score
-    rather than trusted, so the region a mode exempts grows by the radius.
+    Only what the segmenter affirmatively calls contents
+    (:data:`~roomgen_geometry.segmentation.ade20k.CONTENTS_CLASSES`) is excused,
+    so an id neither class list names — an ignore index, or the sky, tree or
+    person a window frames — stays scored rather than excused by default. The
+    opposite polarity, keeping only affirmative shell, was measured and lost: it
+    tied at noise 0.6, gave up 1.8pp of depth-error reduction at 0.9, and scored
+    less of the room while doing it.
 
-    The two modes agree wherever every id is named by one of the two class
-    lists; they part company on every id named by neither — which is most of the
-    outdoor and stuff classes — and on the eroded band around them. The result is
-    a constant either way: it is derived from a segmentation that never carries
-    gradient.
+    Erosion is applied to the kept side and never to the exemption: the
+    unreliable band either side of a segment edge is dropped from the score
+    rather than trusted, so the excused region grows by the radius. The result is
+    a constant — it is derived from a segmentation that never carries gradient.
     """
-    exempt = (
-        torch.isin(segmentation, _class_ids(CONTENTS_CLASSES, segmentation))
-        if mode == "subtract_contents"
-        else ~torch.isin(segmentation, _class_ids(ARCHITECTURAL_CLASSES, segmentation))
+    return erode_boundaries(
+        ~_is_any_of(segmentation, CONTENTS_CLASSES), radius=erosion_radius
     )
-    return erode_boundaries(~exempt, radius=erosion_radius)
 
 
 def architectural_mask(
     segmentation: Int[Tensor, "batch height width"], *, erosion_radius: int
 ) -> Bool[Tensor, "batch height width"]:
-    """The pixels the geometric reward is allowed to score: `scorable_mask` at `intersect_shell`.
+    """The pixels the geometric reward is allowed to score, from the *photo's* segmentation.
 
     True on the shell classes
     (:data:`~roomgen_geometry.segmentation.ade20k.ARCHITECTURAL_CLASSES`) and
-    False on everything a renovation may change. This is the reference photo's
-    side of the reward, which is read one way only — the modes are a statement
-    about a *prediction's* segmentation, not about the room as photographed.
+    False on everything a renovation may change. The reference side is read the
+    other way round from the prediction side on purpose: what the photo
+    affirmatively shows is the room, while what a render declines to commit on
+    has not earned an exemption from being scored.
     """
-    return scorable_mask(
-        segmentation, mode="intersect_shell", erosion_radius=erosion_radius
+    return erode_boundaries(
+        _is_any_of(segmentation, ARCHITECTURAL_CLASSES), radius=erosion_radius
     )
 
 
@@ -88,13 +75,17 @@ def structural_mask(
     which `scorable_mask` answers.
     """
     return erode_boundaries(
-        torch.isin(segmentation, _class_ids(STRUCTURAL_CLASSES, segmentation)),
-        radius=erosion_radius,
+        _is_any_of(segmentation, STRUCTURAL_CLASSES), radius=erosion_radius
     )
 
 
-def _class_ids(classes: frozenset[int], like: Tensor) -> Tensor:
-    return torch.tensor(sorted(classes), dtype=like.dtype, device=like.device)
+def _is_any_of(
+    segmentation: Int[Tensor, "batch height width"], classes: frozenset[int]
+) -> Bool[Tensor, "batch height width"]:
+    ids = torch.tensor(
+        sorted(classes), dtype=segmentation.dtype, device=segmentation.device
+    )
+    return torch.isin(segmentation, ids)
 
 
 def erode_boundaries(

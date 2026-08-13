@@ -11,7 +11,7 @@ from roomgen_fakes import (
     assert_gradient_is_finite_and_nonzero,
 )
 from roomgen_geometry.depth.base import DepthEstimator
-from roomgen_geometry.masking import architectural_mask
+from roomgen_geometry.masking import scorable_mask
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.reward import masked_depth_error
 from roomgen_geometry.segmentation.ade20k import ADE20K_LABELS, NUM_CLASSES
@@ -94,8 +94,8 @@ class _WallAroundTheSofa:
 
 
 @dataclass(frozen=True)
-class _AlwaysIntersecting:
-    """Both shells, every step, spelled out rather than configured.
+class _AlwaysSubtractingContents:
+    """Both masks, every step, spelled out rather than configured.
 
     An independent statement of what a configured segmenter is supposed to
     mean, which the guidance is pinned against.
@@ -110,7 +110,7 @@ class _AlwaysIntersecting:
         self, predicted_image: Float[Tensor, "batch 3 height width"]
     ) -> Float[Tensor, "batch"]:
         with torch.no_grad():
-            shell = architectural_mask(
+            shell = scorable_mask(
                 self.segmenter(predicted_image.detach()),
                 erosion_radius=self.erosion_radius,
             )
@@ -343,7 +343,7 @@ def test_the_segmenter_never_sees_a_tensor_on_the_gradient_graph(
     assert_gradient_is_finite_and_nonzero(energy.mean(), latent)
 
 
-def test_a_configured_segmenter_intersects_at_every_step_of_the_walk(
+def test_a_configured_segmenter_narrows_the_shell_at_every_step_of_the_walk(
     geometric_guidance: GeometricGuidance,
     fake_pipeline: FakePipeline,
     room_photo: Tensor,
@@ -356,7 +356,7 @@ def test_a_configured_segmenter_intersects_at_every_step_of_the_walk(
         erosion_radius=_EROSION_RADIUS,
         on_mask=log,
     )
-    spelled_out = _AlwaysIntersecting(
+    spelled_out = _AlwaysSubtractingContents(
         depth_estimator=geometric_guidance.depth_estimator,
         reference=geometric_guidance.reference,
         segmenter=fake_segmenter,
@@ -414,35 +414,34 @@ def test_recording_the_mask_leaves_the_energy_and_the_trajectory_alone(
     )
 
 
-def test_the_mask_modes_score_a_different_shell_of_the_same_prediction(
+def test_a_pixel_the_segmenter_will_not_commit_on_stays_scored(
     geometric_guidance: GeometricGuidance, room_photo: Tensor
 ) -> None:
-    intersecting = replace(
+    # The polarity, and the only one there is: a render escapes being scored on a
+    # shell pixel by affirmatively covering it with contents, not by being
+    # unreadable there. Keeping only affirmative shell instead was measured — it
+    # tied at noise 0.6, gave up 1.8pp at 0.9, and scored less of the room.
+    unsure = replace(
         geometric_guidance,
         segmenter=_UnsureWhereFlooded(),
         erosion_radius=_EROSION_RADIUS,
     )
-    subtracting = replace(intersecting, mask_mode="subtract_contents")
     flooded = _flooded(room_photo, _SOFA_REGION)
 
-    # Where the segmenter declines to commit, intersecting stops scoring and
-    # subtracting keeps going: only an affirmative contents label excuses a pixel.
-    assert float(intersecting(flooded)) < 1e-10
-    assert float(subtracting(flooded)) > 0.0
+    assert float(unsure(flooded)) > 0.0
 
 
-def test_the_mask_modes_agree_when_the_segmenter_names_every_pixel(
+def test_a_named_prediction_scores_the_shell_the_reference_named(
     geometric_guidance: GeometricGuidance, room_photo: Tensor
 ) -> None:
-    intersecting = replace(
+    # Where the segmenter names every pixel, "keep what is not contents" and
+    # "keep what is shell" are the same statement, so what the walk scores is the
+    # reference's shell narrowed by the render's own furniture and nothing else.
+    named = replace(
         geometric_guidance,
         segmenter=_WallAroundTheSofa(),
         erosion_radius=_EROSION_RADIUS,
     )
-    subtracting = replace(intersecting, mask_mode="subtract_contents")
     drifted = _brightened(room_photo, 0.2, (slice(0, 32), slice(0, 32)))
 
-    energy = intersecting(drifted)
-
-    assert float(energy) > 0.0
-    torch.testing.assert_close(subtracting(drifted), energy)
+    assert float(named(drifted)) > 0.0

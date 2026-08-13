@@ -8,7 +8,6 @@ import torch
 from pydantic import Field, field_validator
 
 from roomgen_geometry.depth.depth_anything import DEFAULT_CHECKPOINT as DEPTH_CHECKPOINT
-from roomgen_geometry.masking import MaskMode
 from roomgen_geometry.segmentation.eomt import (
     DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
 )
@@ -118,23 +117,12 @@ class GuidanceConfig(Config):
             reference-shell AND prediction-shell, so furniture the renovation
             adds may occlude the shell for free; false scores the reference
             mask alone (pre-occlusion semantics, the control arm for A/B).
-        mask_mode: how a prediction's segmentation narrows the reference shell,
-            in guidance *and* in the eval that scores the run.
-            `intersect_shell` scores only what the render also calls shell;
-            `subtract_contents` scores everything it does not affirmatively call
-            contents, so an id outside the ADE20K shell/contents partition stays
-            scored instead of being excused.
-        through_unet: DPS-style gradient, keeping the graph through the UNet so
-            the step carries the denoiser's Jacobian; costs roughly one extra
-            UNet backward per guided step.
     """
 
     strength: Annotated[float, Field(ge=0.0)]
     clip: Annotated[float, Field(gt=0.0)] | None = None
     erosion_radius: Annotated[int, Field(ge=0)] = 2
     resegment: bool = True
-    mask_mode: MaskMode = "intersect_shell"
-    through_unet: bool = False
 
 
 class AdherenceConfig(Config):

@@ -41,12 +41,12 @@ class StructuralGuidance:
         on_mask: called with the mask after each evaluation decides what it
             scores, for a caller that wants to record it. Observation only.
 
-    The prediction's segmentation is read at `subtract_contents` and that is not
-    a knob: a renovation may legitimately stand a bookcase in front of a window,
-    so an affirmative contents label excuses the pixel, but a pixel the segmenter
-    calls sky — or declines to commit on — stays scored. Under `intersect_shell`
-    a render that replaced the glazing with sky would excuse itself, which
-    inverts the term into one that rewards erasing the window.
+    The prediction's segmentation excuses only affirmative contents, as
+    :func:`roomgen_geometry.masking.scorable_mask` always does: a renovation may
+    legitimately stand a bookcase in front of a window, but a pixel the segmenter
+    calls sky — or declines to commit on — stays scored. Keeping only affirmative
+    shell instead would let a render that replaced the glazing with sky excuse
+    itself, inverting the term into one that rewards erasing the window.
     """
 
     segmenter: ClassLogitSegmenter
@@ -79,6 +79,6 @@ class StructuralGuidance:
         with torch.no_grad():
             segmentation = self.segmenter(predicted_image.detach())
         uncovered = scorable_mask(
-            segmentation, mode="subtract_contents", erosion_radius=self.erosion_radius
+            segmentation, erosion_radius=self.erosion_radius
         )
         return self.reference.mask & uncovered

@@ -11,11 +11,13 @@ from roomgen_guide.adapters.mfm_reward import MfmGeometricReward
 from roomgen_guide.guidance.base import Guidance, WrongDirectionError
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.process import (
+    AnnealedSignTilt,
     ClippedGradientTilt,
     EndpointProcess,
     EnergyGradient,
     StepContext,
     TiltPolicy,
+    WarmupRestarts,
     sample_endpoint_process,
 )
 from roomgen_guide.sampling.guided import LatentDiffusionProcess
@@ -89,6 +91,7 @@ def _walk(
     tilt: TiltPolicy,
     seed: int = 0,
     steps: int = _STEPS,
+    restarts: WarmupRestarts | None = None,
 ) -> RecordedWalk:
     process = ToyFlowMapProcess(
         photo,
@@ -97,7 +100,10 @@ def _walk(
         generator=torch.Generator().manual_seed(seed),
     )
     return RecordedWalk(
-        sample_endpoint_process(process, reward=guidance, tilt=tilt), process
+        sample_endpoint_process(
+            process, reward=guidance, tilt=tilt, restarts=restarts
+        ),
+        process,
     )
 
 
@@ -303,6 +309,225 @@ def test_an_uncapped_inner_loop_is_what_the_cap_is_holding_back(
     assert loose is not None
     assert held is not None
     assert _rms(loose) > 1000.0 * _rms(held)
+
+
+_ETA = 0.5
+_SPAN = 0.25
+
+
+def _sign_steering(
+    tilt: AnnealedSignTilt, gradient: Tensor, *, index: int = 0, total: int = _STEPS
+) -> Tensor:
+    state = torch.zeros_like(gradient)
+    steering = tilt(
+        _ConstantGradient(gradient),
+        state=state,
+        step=StepContext(index=index, total=total, span=_SPAN),
+    )
+    assert steering is not None
+    return steering
+
+
+def test_the_sign_step_is_the_same_size_whatever_the_reward_measures_in(
+    room_photo: Tensor,
+) -> None:
+    # The property the whole rule turns on. FMRG-J's published configurations run
+    # n_opt=1, where a freshly-built Adam's bias-corrected first step is
+    # `rate * sign(gradient)` elementwise — so a reward whose gradient is 1e-9
+    # per element and one whose gradient is 1e3 move the state by exactly the
+    # same amount. That is the reward-scale invariance the paper credits to its
+    # unit-norm rescaling, and it is why `strength` here is a displacement per
+    # unit time rather than a multiplier on a raw gradient.
+    tilt = AnnealedSignTilt(strength=_ETA)
+    faint = torch.full_like(room_photo, 1e-4)
+    faint[:, :, ::2] = -1e-4
+    loud = 1e8 * faint
+
+    from_faint = _sign_steering(tilt, faint)
+    from_loud = _sign_steering(tilt, loud)
+
+    torch.testing.assert_close(from_faint, from_loud, rtol=1e-3, atol=0.0)
+    # Descended, and folded into the step's own share of the trajectory: the
+    # displacement is `span * rate` per element, which is FMRG's lambda_t = eta*dt.
+    torch.testing.assert_close(
+        from_faint, -_SPAN * _ETA * torch.sign(faint), rtol=1e-3, atol=0.0
+    )
+
+
+def test_the_rate_anneals_to_nothing_across_the_window(room_photo: Tensor) -> None:
+    tilt = AnnealedSignTilt(strength=_ETA, anneal_steps=_STEPS)
+    gradient = torch.full_like(room_photo, -3.0)
+
+    sizes = [
+        _rms(_sign_steering(tilt, gradient, index=index)) for index in range(_STEPS)
+    ]
+
+    assert sizes == pytest.approx(
+        [_SPAN * _ETA * (1.0 - index / _STEPS) for index in range(_STEPS)], rel=1e-3
+    )
+
+
+def test_the_anneal_horizon_is_not_the_guided_window(room_photo: Tensor) -> None:
+    # Upstream's `early_stop` truncates the grid *and* sets the anneal horizon,
+    # while the last step of that truncated grid — the jump to data — is never
+    # guided. So the horizon is one longer than the window, and reading it off
+    # the window instead quietly spends the last guided steps at a lower rate
+    # than every number the operating point was tuned at.
+    window, gradient = 3, torch.full_like(room_photo, 1.0)
+    faithful = AnnealedSignTilt(
+        strength=_ETA, guided_steps=window, anneal_steps=window + 1
+    )
+    collapsed = AnnealedSignTilt(strength=_ETA, guided_steps=window)
+
+    last = window - 1
+    assert _rms(_sign_steering(faithful, gradient, index=last)) == pytest.approx(
+        _SPAN * _ETA * (1.0 - last / (window + 1)), rel=1e-3
+    )
+    assert _rms(_sign_steering(collapsed, gradient, index=last)) == pytest.approx(
+        _SPAN * _ETA * (1.0 - last / window), rel=1e-3
+    )
+
+
+def test_an_inner_iteration_re_evaluates_at_the_state_it_displaced(
+    room_photo: Tensor,
+) -> None:
+    energy_gradient = _ConstantGradient(torch.full_like(room_photo, 2.0))
+    tilt = AnnealedSignTilt(strength=_ETA, iterations=3)
+
+    steering = tilt(
+        energy_gradient,
+        state=room_photo,
+        step=StepContext(index=0, total=_STEPS, span=_SPAN),
+    )
+
+    assert steering is not None
+    assert len(energy_gradient.states) == 3
+    # The step's own state first, bit for bit: its model output is the one
+    # `advance` reuses. Every later candidate is where Adam's moments have
+    # carried it, which is what makes the loop an optimisation.
+    assert torch.equal(energy_gradient.states[0], room_photo)
+    assert not torch.equal(energy_gradient.states[1], room_photo)
+
+
+def test_the_sign_step_drives_the_energy_down_on_a_real_walk(
+    room_photo: Tensor, geometric_guidance: GeometricGuidance
+) -> None:
+    guided = _walk(room_photo, geometric_guidance, tilt=AnnealedSignTilt(strength=1.0))
+    unguided = _walk(room_photo, geometric_guidance, tilt=AnnealedSignTilt(strength=0.0))
+
+    assert float(geometric_guidance(guided.image)) < 0.9 * float(
+        geometric_guidance(unguided.image)
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"strength": -1.0}, "strength must be non-negative"),
+        ({"strength": 1.0, "guided_steps": -1}, "guided_steps must be non-negative"),
+        ({"strength": 1.0, "anneal_steps": 0}, "anneal_steps must be at least 1"),
+        ({"strength": 1.0, "iterations": 0}, "iterations must be at least 1"),
+    ],
+)
+def test_a_sign_step_that_cannot_steer_is_refused_at_construction(
+    kwargs: dict[str, float | int], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        AnnealedSignTilt(**kwargs)  # type: ignore[arg-type]
+
+
+def _unguided_to(process: ToyFlowMapProcess, state: Tensor, *, start: int, stop: int) -> Tensor:
+    for index in range(start, stop):
+        state = process.advance(
+            state,
+            StepContext(index=index, total=process.steps, span=process.step_span(index)),
+            prediction=None,
+            steering=None,
+        )
+    return state
+
+
+def test_one_warmup_particle_is_the_single_trajectory_bit_for_bit(
+    room_photo: Tensor, geometric_guidance: GeometricGuidance
+) -> None:
+    # A field of one has nothing to select between, so it must not even pay for
+    # the endpoint that would judge it — and the walk it produces has to be the
+    # one the same seed takes without any restarts at all.
+    counted = CountingGuidance(geometric_guidance)
+    tilt = ClippedGradientTilt(strength=0.0)
+
+    alone = _walk(room_photo, counted, tilt=tilt, restarts=WarmupRestarts(1, 2))
+    plain = _walk(room_photo, geometric_guidance, tilt=tilt)
+
+    assert counted.calls == 0
+    assert torch.equal(alone.image, plain.image)
+
+
+def test_the_particle_the_reward_scores_best_is_the_one_that_continues(
+    room_photo: Tensor, geometric_guidance: GeometricGuidance
+) -> None:
+    particles, warmup = 3, 2
+    unguided = ClippedGradientTilt(strength=0.0)
+
+    walked = _walk(
+        room_photo,
+        geometric_guidance,
+        tilt=unguided,
+        restarts=WarmupRestarts(particles, warmup),
+    )
+
+    # Replayed by hand off the same seed: the draws are the generator's first
+    # `particles` samples, so particle 0's start is exactly the start the
+    # unrestarted walk has — restarts add draws, they do not reseed.
+    replay = ToyFlowMapProcess(
+        room_photo,
+        class_label=_CLASS_LABEL,
+        steps=_STEPS,
+        generator=_seeded(),
+    )
+    starts = [replay.initial_state() for _ in range(particles)]
+    warmed = [_unguided_to(replay, start, start=0, stop=warmup) for start in starts]
+    judged = StepContext(
+        index=warmup, total=_STEPS, span=replay.step_span(warmup)
+    )
+    with torch.no_grad():
+        energies = [
+            float(geometric_guidance(replay.endpoint(state, judged).image).mean())
+            for state in warmed
+        ]
+    winner = warmed[energies.index(min(energies))]
+
+    assert len(set(energies)) == particles
+    assert torch.equal(
+        walked.image,
+        replay.to_image(_unguided_to(replay, winner, start=warmup, stop=_STEPS)),
+    )
+
+
+def test_a_warmup_that_leaves_no_walk_to_continue_is_refused(
+    room_photo: Tensor, geometric_guidance: GeometricGuidance
+) -> None:
+    with pytest.raises(ValueError, match="leaves nothing of a"):
+        _walk(
+            room_photo,
+            geometric_guidance,
+            tilt=ClippedGradientTilt(strength=0.0),
+            restarts=WarmupRestarts(2, _STEPS),
+        )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"particles": 0, "steps": 1}, "particles must be at least 1"),
+        ({"particles": 2, "steps": 0}, "steps must be at least 1"),
+    ],
+)
+def test_a_warmup_that_cannot_run_is_refused_at_construction(
+    kwargs: dict[str, int], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        WarmupRestarts(**kwargs)
 
 
 def test_a_reward_that_is_ascended_is_refused_by_the_driver(

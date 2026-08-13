@@ -284,20 +284,6 @@ def _room(generator: Generator) -> tuple[Tensor, Tensor]:
     return disparity, mask
 
 
-def test_no_alignment_leaves_both_maps_exactly_where_they_stand(
-    generator: Generator,
-) -> None:
-    prediction, mask = _room(generator)
-    target = 3.0 * prediction + 1.0
-
-    fit = align_scale_shift(prediction, target, mask, mode="none")
-
-    assert torch.equal(fit.scale, torch.ones(2))
-    assert torch.equal(fit.shift, torch.zeros(2))
-    assert torch.equal(fit.refused_variance, torch.zeros(2))
-    assert torch.equal(apply_scale_shift(prediction, fit), prediction)
-
-
 def test_shift_only_matches_the_masked_means_and_nothing_else(
     generator: Generator,
 ) -> None:
@@ -334,7 +320,7 @@ def test_shift_only_refuses_to_absorb_a_scale_the_full_fit_would_swallow(
     assert float(charged) > 0.05
 
 
-@pytest.mark.parametrize("mode", ["scale_shift", "shift", "none"])
+@pytest.mark.parametrize("mode", ["scale_shift", "shift"])
 def test_every_mode_leaves_an_empty_mask_alone(mode: str) -> None:
     prediction = torch.full((1, 4, 4), 3.0)
     target = torch.zeros((1, 4, 4))
@@ -346,7 +332,7 @@ def test_every_mode_leaves_an_empty_mask_alone(mode: str) -> None:
     assert torch.equal(fit.refused_variance, torch.zeros(1))
 
 
-@pytest.mark.parametrize("mode", ["scale_shift", "shift", "none"])
+@pytest.mark.parametrize("mode", ["scale_shift", "shift"])
 def test_every_mode_keeps_the_prediction_on_the_graph(
     mode: str, generator: Generator
 ) -> None:

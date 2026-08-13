@@ -49,13 +49,6 @@ guidance:
   strength: 10.0
   clip: 0.02
   erosion_radius: 2
-  # Both sides of the run read a prediction's segmentation this way: the
-  # guidance while sampling, and the eval that judges the render afterwards.
-  # `subtract_contents` exempts only what the segmenter affirmatively calls
-  # contents, so it keeps every id the ADE20K partition does not name; it ties
-  # intersect_shell at noise 0.6 and beats it at 0.9 while scoring more of
-  # the room (report.md).
-  mask_mode: subtract_contents
 
 adherence:
   # The prompt-adherence metric, on the fourth checkpoint `roomgen-prefetch` seeds

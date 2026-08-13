@@ -1,7 +1,17 @@
-"""The end-to-end entry point: a photographed room in, a renovated one out."""
+"""The end-to-end entry points: a photographed room in, a renovated one out.
+
+Two samplers, one reward. :func:`renovate` steers Stable Diffusion 1.5 img2img
+by the raw capped gradient of the geometric energy; :func:`renovate_flow_map`
+steers a two-time flow map by FMRG-J's sign step. They are siblings, not a
+default and a variant: everything that makes a renovation a renovation — the
+reward, the shell mask, the reference, the eval that judges the result — is the
+same object in both, and what differs is only which process the driver walks and
+which tilt policy turns the reward's gradient into a step.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
@@ -11,16 +21,41 @@ from jaxtyping import Float
 from torch import Tensor
 
 from roomgen_geometry.depth.base import DepthEstimator
-from roomgen_geometry.masking import MaskMode
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.segmentation.base import Segmenter
+from roomgen_guide.adapters.flow_map import (
+    FlowMapBackend,
+    FlowMapProcess,
+    FlowMapStepping,
+    GuidanceWindow,
+)
+from roomgen_guide.guidance.base import Guidance
+from roomgen_guide.guidance.composite import WeightedGuidance, WeightedTerm
 from roomgen_guide.guidance.geometric import GeometricGuidance, MaskObserver
+from roomgen_guide.process import (
+    AnnealedSignTilt,
+    WarmupRestarts,
+    sample_endpoint_process,
+)
 from roomgen_guide.sampling.guided import sample_guided
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
 
 # The canonical Stable Diffusion 1.5 mirror: the original `runwayml` repo no
 # longer exists on the Hub (CreativeML OpenRAIL-M).
 DEFAULT_CHECKPOINT: Final = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+
+# The flow-map operating point roomgen's own tuning selected, at 512² against a
+# FLUX.1-dev flow-map LoRA: eta 10 (2.5 never builds the room, 5 leaves cells
+# unsteered), a 102-sigma grid stopped at 25 — t_stop 0.245, the value upstream
+# reports and this reward reproduces, with adherence falling monotonically as the
+# window lengthens — the final jump split in two, and 3 warmup particles walking
+# half the guided window. Together that is ~101 NFE, which is the frontier: 53
+# goes off-manifold and 205 wins raw depth error while hacking it (an 11x blur
+# ratio), so more budget is not more geometry.
+TUNED_STRENGTH: Final = 10.0
+TUNED_STEPS: Final = 102
+TUNED_WINDOW: Final = GuidanceWindow(early_stop=25, unguided_steps=2)
+TUNED_RESTARTS: Final = WarmupRestarts(particles=3, steps=12)
 
 
 def renovate(
@@ -37,10 +72,9 @@ def renovate(
     text_guidance_scale: float,
     generator: torch.Generator,
     clip_step_rms: float | None = None,
-    differentiate_through_unet: bool = False,
     reference: GeometricReference | None = None,
     resegment: bool = True,
-    mask_mode: MaskMode = "intersect_shell",
+    extra_rewards: Sequence[WeightedTerm] = (),
     on_mask: MaskObserver | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Restyle the room in `photo` under `prompt` while holding its geometry.
@@ -53,9 +87,6 @@ def renovate(
         clip_step_rms: ceiling on the RMS of the raw step, keeping the step that
             a well-matched scene earns while bounding the one a large energy
             asks for.
-        differentiate_through_unet: DPS-style gradient — keep the graph through
-            the UNet so the step carries the denoiser's Jacobian, at roughly
-            one extra UNet backward per guided step.
         reference: the photo's already-frozen geometry, which the caller must
             have built with this same `depth_estimator` and `segmenter` — a
             reference is only meaningful to the backends that produced it.
@@ -67,12 +98,8 @@ def renovate(
             the reference shell alone, which charges a renovation for every
             surface it covers up, and leaves `segmenter` unused whenever
             `reference` is already built.
-        mask_mode: which way a prediction's segmentation is read when it
-            narrows the reference shell — `intersect_shell` keeps what the
-            prediction also calls shell, `subtract_contents` keeps everything it
-            does not affirmatively call contents. Whatever judges the render
-            afterwards must read it the same way or the two disagree about what
-            was ever being scored.
+        extra_rewards: further terms summed beside the geometric one, as
+            :func:`renovate_flow_map` takes them.
         on_mask: called with the mask each guided step scored, for a caller
             recording what the reward actually saw.
 
@@ -80,23 +107,18 @@ def renovate(
     :class:`~roomgen_geometry.reference.GeometricReference` with the same
     `depth_estimator` on both sides.
     """
-    if reference is None:
-        reference = GeometricReference.from_photo(
-            photo,
-            depth_estimator=depth_estimator,
-            segmenter=segmenter,
-            erosion_radius=erosion_radius,
-        )
     return sample_guided(
         pipeline,
         photo,
         prompt,
-        guidance=GeometricGuidance(
+        guidance=geometric_reward(
+            photo,
             depth_estimator=depth_estimator,
+            segmenter=segmenter,
+            erosion_radius=erosion_radius,
             reference=reference,
-            segmenter=segmenter if resegment else None,
-            erosion_radius=erosion_radius if resegment else None,
-            mask_mode=mask_mode,
+            resegment=resegment,
+            extra_rewards=extra_rewards,
             on_mask=on_mask,
         ),
         strength=strength,
@@ -105,8 +127,138 @@ def renovate(
         text_guidance_scale=text_guidance_scale,
         generator=generator,
         clip_step_rms=clip_step_rms,
-        differentiate_through_unet=differentiate_through_unet,
     )
+
+
+def renovate_flow_map(
+    photo: Float[Tensor, "batch 3 height width"],
+    *,
+    backend: FlowMapBackend,
+    depth_estimator: DepthEstimator,
+    segmenter: Segmenter,
+    erosion_radius: int,
+    generator: torch.Generator,
+    start_sigma: float,
+    strength: float = TUNED_STRENGTH,
+    steps: int = TUNED_STEPS,
+    window: GuidanceWindow | None = TUNED_WINDOW,
+    restarts: WarmupRestarts | None = TUNED_RESTARTS,
+    iterations: int = 1,
+    stepping: FlowMapStepping = "two_time",
+    differentiate_through_velocity: bool = True,
+    reference: GeometricReference | None = None,
+    resegment: bool = True,
+    extra_rewards: Sequence[WeightedTerm] = (),
+    on_mask: MaskObserver | None = None,
+) -> Float[Tensor, "batch 3 height width"]:
+    """The same renovation on a two-time flow map, steered by FMRG-J.
+
+    The defaults are the faithful configuration, and they are faithful together:
+    the Jacobian pullback, the two-time step, the truncated window and the sign
+    step are one method (arXiv:2604.27147), not four knobs. What roomgen adds to
+    it is the reward and the img2img start — every published FMRG result begins
+    at pure noise, and starting from the photographed room is what makes matching
+    *this* room's geometry a matter of holding what is already there rather than
+    of inventing texture the depth network misreads.
+
+    Args:
+        backend: the flow map, holding the prompt; there is no `prompt` argument
+            because a two-time sampler encodes its conditioning once, at load.
+        start_sigma: how far up the interpolant the photo is renoised; 1 discards
+            it and is the text-to-image control. Measurements are run at 0.9 or
+            at 1, never lower — below that the unguided control already sits at
+            the metric's noise floor.
+        strength: FMRG's `eta`, in latent units per unit sigma. Not comparable to
+            :func:`renovate`'s `strength`, which multiplies a raw gradient: the
+            sign step's displacement is `eta * dsigma * (1 - k/N)` per element
+            whatever the reward's scale.
+        steps: the resolution of the sigma grid, not the number of steps walked —
+            `window` truncates it.
+        window: FMRG's early stop, the grid truncation and the jump to data.
+            `None` guides and walks the whole grid, which its own ablation and
+            roomgen's both measure as worse.
+        restarts: warmup particles; `None` runs a single trajectory.
+        iterations: FMRG's `n_opt`, at one model call each.
+        stepping: which velocity the step is taken off; `two_time` is the mode
+            upstream uses above ~30 NFE and the one this operating point is
+            measured under.
+        differentiate_through_velocity: FMRG-J rather than FMRG-E — the reward
+            gradient is pulled back through the transformer, which is what
+            projects it onto the data manifold. Off, the walk is FMRG-E, cheaper
+            per step and free to leave the manifold in exactly the direction a
+            depth reward is satisfied by.
+        extra_rewards: terms summed beside the geometric one. A preference model
+            (:class:`~roomgen_guide.guidance.preference.PreferenceGuidance`)
+            belongs here whenever the run is judged on more than depth: the depth
+            energy's own optimum is an empty room, and every depth-only arm
+            measured below the unguided control on preference.
+    """
+    process = FlowMapProcess(
+        backend,
+        photo,
+        steps=steps,
+        start_sigma=start_sigma,
+        generator=generator,
+        window=window,
+        stepping=stepping,
+        differentiate_through_velocity=differentiate_through_velocity,
+    )
+    return sample_endpoint_process(
+        process,
+        reward=geometric_reward(
+            photo,
+            depth_estimator=depth_estimator,
+            segmenter=segmenter,
+            erosion_radius=erosion_radius,
+            reference=reference,
+            resegment=resegment,
+            extra_rewards=extra_rewards,
+            on_mask=on_mask,
+        ),
+        tilt=AnnealedSignTilt(
+            strength=strength,
+            guided_steps=None if window is None else window.guided_steps,
+            anneal_steps=None if window is None else window.early_stop,
+            iterations=iterations,
+        ),
+        restarts=restarts,
+    )
+
+
+def geometric_reward(
+    photo: Float[Tensor, "batch 3 height width"],
+    *,
+    depth_estimator: DepthEstimator,
+    segmenter: Segmenter,
+    erosion_radius: int,
+    reference: GeometricReference | None = None,
+    resegment: bool = True,
+    extra_rewards: Sequence[WeightedTerm] = (),
+    on_mask: MaskObserver | None = None,
+) -> Guidance:
+    """The energy both samplers descend: the depth term, plus whatever rides beside it.
+
+    The reference is frozen from `photo` when the caller has not already frozen
+    it — with the same `depth_estimator` and `segmenter` the sample will be
+    scored by, since a reference means nothing to any other backend.
+    """
+    if reference is None:
+        reference = GeometricReference.from_photo(
+            photo,
+            depth_estimator=depth_estimator,
+            segmenter=segmenter,
+            erosion_radius=erosion_radius,
+        )
+    geometric = GeometricGuidance(
+        depth_estimator=depth_estimator,
+        reference=reference,
+        segmenter=segmenter if resegment else None,
+        erosion_radius=erosion_radius if resegment else None,
+        on_mask=on_mask,
+    )
+    if not extra_rewards:
+        return geometric
+    return WeightedGuidance((WeightedTerm(geometric, 1.0), *extra_rewards))
 
 
 def load_pipeline(

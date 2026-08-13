@@ -28,7 +28,7 @@ from jaxtyping import Bool, Float
 from torch import Tensor
 
 from roomgen_geometry.depth.base import DepthEstimator
-from roomgen_geometry.masking import MaskMode, scorable_mask
+from roomgen_geometry.masking import scorable_mask
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.reward import masked_depth_error
 from roomgen_geometry.segmentation.base import Segmenter
@@ -68,8 +68,6 @@ class MfmGeometricReward:
             geometry.
         erosion_radius: for the sample's mask; required with `segmenter` and
             meaningless without it.
-        mask_mode: which way a sample's segmentation is read, as
-            :func:`roomgen_geometry.masking.scorable_mask` defines it.
         scale: multiplies the energy before the sign flip. It stands where MFM's
             `image_reward._lambda` does on the steering path (upstream applies
             that inside its own `load_image_reward_fn`, which this replaces), and
@@ -105,7 +103,6 @@ class MfmGeometricReward:
     depth_estimator: DepthEstimator
     segmenter: Segmenter | None = None
     erosion_radius: int | None = None
-    mask_mode: MaskMode = "intersect_shell"
     scale: float = 1.0
     autocast: bool = False
 
@@ -174,9 +171,7 @@ class MfmGeometricReward:
         # image is what the depth backend sees.
         with torch.no_grad():
             segmentation = segmenter(images.detach())
-        return shell & scorable_mask(
-            segmentation, mode=self.mask_mode, erosion_radius=erosion_radius
-        )
+        return shell & scorable_mask(segmentation, erosion_radius=erosion_radius)
 
     def _reference_disparity(
         self, images: Float[Tensor, "batch 3 height width"]

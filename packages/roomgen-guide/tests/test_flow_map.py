@@ -5,7 +5,11 @@ from torch import Generator, Tensor
 
 from roomgen_fakes.depth import FakeDepthEstimator
 from roomgen_geometry.reference import GeometricReference
-from roomgen_guide.adapters.flow_map import FlowMapProcess
+from roomgen_guide.adapters.flow_map import (
+    FlowMapProcess,
+    FlowMapStepping,
+    GuidanceWindow,
+)
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.process import (
     ClippedGradientTilt,
@@ -71,6 +75,9 @@ def _process(
     start_sigma: float = _RENOVATION_SIGMA,
     steps: int = _STEPS,
     seed: int = 0,
+    window: GuidanceWindow | None = None,
+    stepping: FlowMapStepping = "endpoint_reuse",
+    differentiate_through_velocity: bool = False,
 ) -> FlowMapProcess:
     return FlowMapProcess(
         backend,
@@ -78,6 +85,9 @@ def _process(
         steps=steps,
         start_sigma=start_sigma,
         generator=_seeded(seed),
+        window=window,
+        stepping=stepping,
+        differentiate_through_velocity=differentiate_through_velocity,
     )
 
 
@@ -337,6 +347,111 @@ def test_a_bfloat16_backend_walks_a_guided_trajectory_and_not_the_unguided_one(
     # the config accepts it, the gradient is finite, the cap binds — so the only
     # thing standing between it and a silently unguided run is the state's dtype.
     assert not torch.equal(guided, unguided)
+
+
+def test_two_time_stepping_buys_a_second_velocity_and_a_different_walk(
+    photographed_room: Tensor, room_guidance: GeometricGuidance
+) -> None:
+    reused, separate, unguided = (
+        ToyFlowMapBackend(),
+        ToyFlowMapBackend(),
+        ToyFlowMapBackend(),
+    )
+    tilt = ClippedGradientTilt(strength=_STRENGTH)
+
+    endpoint_reuse = _walk(photographed_room, room_guidance, tilt=tilt, backend=reused)
+    two_time = sample_endpoint_process(
+        _process(photographed_room, separate, stepping="two_time"),
+        reward=room_guidance,
+        tilt=tilt,
+    )
+    sample_endpoint_process(
+        _process(photographed_room, unguided, stepping="two_time"),
+        reward=room_guidance,
+        tilt=ClippedGradientTilt(strength=0.0),
+    )
+
+    # The endpoint's (sigma, 0) jump and the step's (sigma, sigma_next) velocity
+    # are two different network evaluations, so `two_time` pays a second call per
+    # guided step — upstream's flow_map2, which is what its high-NFE results and
+    # roomgen's own tuned operating point run. Reusing the endpoint is the
+    # low-NFE mode, and the shortcut's error accumulates as the grid gets finer.
+    assert reused.velocity_calls == _STEPS
+    assert separate.velocity_calls == 2 * _STEPS
+    assert unguided.velocity_calls == _STEPS
+    assert not torch.equal(endpoint_reuse, two_time)
+
+
+def test_the_jacobian_path_pulls_the_reward_back_through_the_backend(
+    photographed_room: Tensor, room_guidance: GeometricGuidance
+) -> None:
+    step = StepContext(index=0, total=_STEPS)
+    cheap = _process(photographed_room, ToyFlowMapBackend())
+    jacobian = _process(
+        photographed_room, ToyFlowMapBackend(), differentiate_through_velocity=True
+    )
+    state = cheap.initial_state()
+
+    gradients = []
+    for process in (cheap, jacobian):
+        endpoint = process.endpoint(state, step)
+        (gradient,) = torch.autograd.grad(
+            room_guidance(endpoint.image).mean(), endpoint.state
+        )
+        gradients.append(gradient)
+
+    # Both are finite and both steer; what separates them is that the Jacobian
+    # one carries d(velocity)/d(state), which is the projection FMRG-J's
+    # on-manifold claim rests on. A backend held constant cannot supply it, and
+    # nothing about the walk looks different when it is missing.
+    assert all(bool(torch.isfinite(gradient).all()) for gradient in gradients)
+    assert float(gradients[1].abs().max()) > 0.0
+    assert not torch.equal(gradients[0], gradients[1])
+
+
+def test_the_window_truncates_the_grid_and_covers_the_rest_in_one_jump(
+    photographed_room: Tensor,
+) -> None:
+    steps, window = 8, GuidanceWindow(early_stop=3, unguided_steps=2)
+    backend = ToyFlowMapBackend()
+    whole = _process(photographed_room, backend, steps=steps)
+    truncated = _process(photographed_room, backend, steps=steps, window=window)
+
+    # The walk visits the window's sigmas and then jumps: `steps` is only the
+    # resolution the sigma grid is drawn at, and everything below the stopping
+    # sigma is covered by `unguided_steps` steps rather than by the grid's own.
+    assert whole.steps == steps
+    assert truncated.steps == window.guided_steps + window.unguided_steps
+    assert truncated.step_span(0) == whole.step_span(0)
+    assert truncated.step_span(truncated.steps - 1) == pytest.approx(
+        _RENOVATION_SIGMA * (1.0 - 2 / steps) / window.unguided_steps
+    )
+
+
+def test_a_window_the_walk_never_reaches_is_refused(
+    photographed_room: Tensor,
+) -> None:
+    with pytest.raises(ValueError, match="past the end of a schedule"):
+        _process(
+            photographed_room,
+            ToyFlowMapBackend(),
+            steps=_STEPS,
+            window=GuidanceWindow(early_stop=_STEPS + 1),
+        )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"early_stop": 1}, "early_stop must be at least 2"),
+        ({"early_stop": 3, "unguided_steps": 0}, "unguided_steps must be at least 1"),
+    ],
+)
+def test_a_window_that_cannot_stop_is_refused_at_construction(
+    kwargs: dict[str, int], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        GuidanceWindow(**kwargs)
 
 
 @pytest.mark.parametrize(

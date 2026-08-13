@@ -12,6 +12,7 @@ from roomgen_guide.guidance.base import (
     require_per_element,
 )
 from roomgen_guide.process.endpoint import EndpointProcess, StepContext
+from roomgen_guide.process.restart import WarmupRestarts
 from roomgen_guide.process.tilt import TiltPolicy
 
 
@@ -20,6 +21,7 @@ def sample_endpoint_process[Prediction](
     *,
     reward: Guidance,
     tilt: TiltPolicy,
+    restarts: WarmupRestarts | None = None,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Walk `process` to a finished image, steering each step by the gradient of `reward`.
 
@@ -30,20 +32,105 @@ def sample_endpoint_process[Prediction](
             here rather than quietly steered away from.
         tilt: what turns that energy's gradient into the step's steering, and
             what decides whether a step is steered at all.
+        restarts: run the noisiest part of the walk from several draws and keep
+            the one the reward likes best (FMRG's warmup particles); `None`
+            walks a single trajectory, which is what one particle also does.
 
     No weights are updated: the only gradient taken is with respect to the state.
     """
     require_descended_energy(reward)
-    state = process.initial_state()
     total = process.steps
-    for index in range(total):
-        step = StepContext(index=index, total=total)
-        evaluated = _EvaluatedStep(process, reward, step, state)
-        steering = tilt(evaluated, state=state, step=step)
-        state = process.advance(
-            state, step, prediction=evaluated.prediction, steering=steering
+    if restarts is None:
+        state, resume = process.initial_state(), 0
+    else:
+        restarts.check(total)
+        state, resume = _best_particle(process, reward=reward, tilt=tilt, of=restarts)
+    for index in range(resume, total):
+        state = _advance(
+            process, reward=reward, tilt=tilt, state=state, step=_context(process, index)
         )
     return process.to_image(state)
+
+
+def _context[Prediction](process: EndpointProcess[Prediction], index: int) -> StepContext:
+    return StepContext(index=index, total=process.steps, span=process.step_span(index))
+
+
+def _advance[Prediction](
+    process: EndpointProcess[Prediction],
+    *,
+    reward: Guidance,
+    tilt: TiltPolicy,
+    state: Float[Tensor, "batch *state"],
+    step: StepContext,
+) -> Float[Tensor, "batch *state"]:
+    evaluated = _EvaluatedStep(process, reward, step, state)
+    steering = tilt(evaluated, state=state, step=step)
+    return process.advance(
+        state, step, prediction=evaluated.prediction, steering=steering
+    )
+
+
+def _best_particle[Prediction](
+    process: EndpointProcess[Prediction],
+    *,
+    reward: Guidance,
+    tilt: TiltPolicy,
+    of: WarmupRestarts,
+) -> tuple[Float[Tensor, "batch *state"], int]:
+    """The warmed-up state the reward scores lowest, and where the walk resumes.
+
+    Each particle is an independent draw from the process — a fresh renoise of
+    the photo, or fresh noise — walked through the same guided steps under the
+    same policy, and scored on its endpoint estimate. Only the winner continues,
+    so the cost is `particles` partial walks and one full one, and the selection
+    is greedy on the very energy being steered by: it buys robustness against a
+    trajectory that never took, not a better trajectory.
+    """
+    particles = [
+        _warmed_up(process, reward=reward, tilt=tilt, steps=of.steps)
+        for _ in range(of.particles)
+    ]
+    if len(particles) == 1:
+        # Nothing to select between, and scoring it would cost an endpoint
+        # evaluation that changes no decision: one particle is the single
+        # trajectory, bit for bit.
+        return particles[0], of.steps
+    step = _context(process, of.steps)
+    energies = [
+        float(_endpoint_energy(process, reward=reward, state=state, step=step))
+        for state in particles
+    ]
+    return particles[energies.index(min(energies))], of.steps
+
+
+def _warmed_up[Prediction](
+    process: EndpointProcess[Prediction],
+    *,
+    reward: Guidance,
+    tilt: TiltPolicy,
+    steps: int,
+) -> Float[Tensor, "batch *state"]:
+    state = process.initial_state()
+    for index in range(steps):
+        state = _advance(
+            process, reward=reward, tilt=tilt, state=state, step=_context(process, index)
+        )
+    return state
+
+
+def _endpoint_energy[Prediction](
+    process: EndpointProcess[Prediction],
+    *,
+    reward: Guidance,
+    state: Float[Tensor, "batch *state"],
+    step: StepContext,
+) -> Tensor:
+    # Scoring only: nothing is differentiated here, so the endpoint's model call
+    # is the whole cost of a particle's audition.
+    with torch.no_grad():
+        endpoint = process.endpoint(state, step)
+        return require_per_element(reward(endpoint.image), reward=reward).mean()
 
 
 @dataclass
@@ -62,8 +149,8 @@ class _EvaluatedStep[Prediction]:
                 "a tilt policy must evaluate the step's own state before any "
                 "candidate: the first evaluation's model output is what "
                 "`advance` reuses, so probing a displaced state first steps the "
-                "walk off a prediction taken where the state never was — with "
-                "the steering itself perfectly correct and nothing to see"
+                "walk off a prediction taken at a state the walk was never at — "
+                "with the steering itself perfectly correct and nothing to see"
             )
         # `enable_grad` rather than an ambient mode: the caller may be inside the
         # `no_grad` a diffusers pipeline runs under, and this region is the one

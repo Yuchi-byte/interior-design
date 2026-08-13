@@ -57,14 +57,20 @@ class SigmaScheduler(Protocol):
     config: Mapping[str, float]
 
 
-class DeviceMovable(Protocol):
+class Transformer(Protocol):
+    """The flow map's own network, as the loader has to configure it."""
+
     def to(self, device: torch.device) -> object: ...
+
+    def requires_grad_(self, requires_grad: bool) -> object: ...
+
+    def enable_gradient_checkpointing(self) -> None: ...
 
 
 class TwoTimestepPipeline(Protocol):
     vae: FluxAutoencoder
     scheduler: SigmaScheduler
-    transformer: DeviceMovable
+    transformer: Transformer
 
 
 class TwoTimeFlowMapSampler(Protocol):
@@ -221,6 +227,13 @@ def load_flow_map_sampler(
     not fit. The transformer is held back for the length of that call and lifted
     once the encoders are gone, which halves the transient; the vendored tree
     stays byte-identical to the commit its NOTICE.md records.
+
+    The transformer comes back frozen and checkpointed, which is what the
+    Jacobian path needs to fit at all: no weight gradient is ever used — the only
+    gradient taken anywhere is with respect to the state — so letting a backward
+    populate `.grad` on 12B parameters spends VRAM on nothing, and a 512² FLUX
+    backward without activation checkpointing does not fit on a 32GB card.
+    Neither changes a number: both are memory, not arithmetic.
     """
     with _fmrg_on_path(fmrg_path):
         try:
@@ -243,7 +256,10 @@ def load_flow_map_sampler(
                 dtype=dtype,
                 prompt=prompt,
             )
-    sampler.pipeline.transformer.to(device)
+    transformer = sampler.pipeline.transformer
+    transformer.to(device)
+    transformer.requires_grad_(False)
+    transformer.enable_gradient_checkpointing()
     return sampler
 
 

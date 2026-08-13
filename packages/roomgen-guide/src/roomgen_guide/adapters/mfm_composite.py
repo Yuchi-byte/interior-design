@@ -19,36 +19,24 @@ so a term is anything of that shape.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import ClassVar
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
 
 from roomgen_guide.guidance.base import ASCENDED_SCORE, RewardDirection
+from roomgen_guide.guidance.preference import ImagePreferenceModel
 
+MfmReward = ImagePreferenceModel
+"""What Meta Flow Maps calls a reward is the preference-model shape exactly.
 
-@runtime_checkable
-class MfmReward(Protocol):
-    """What Meta Flow Maps calls a reward: one score per image, higher is better.
-
-    Args:
-        images: decoded samples, NCHW, floating point, values in ``[0, 1]``,
-            still attached to the latent they came from.
-        prompts: one caption per image, for a reward that is conditioned on one;
-            a reward that is not takes it and ignores it.
-
-    Per image and never reduced: MFM weights the `mc_samples` posterior draws of
-    a step against each other by their own scores, so a reward that returned the
-    batch's mean would weight every draw identically.
-    """
-
-    def score(
-        self,
-        images: Float[Tensor, "batch 3 height width"],
-        prompts: Sequence[str] | None,
-        /,
-    ) -> Float[Tensor, "batch"]: ...
+`score(images, prompts) -> [batch]`, higher is better, never reduced — MFM
+weights the `mc_samples` posterior draws of a step against each other by their
+own scores, so a reward that returned the batch's mean would weight every draw
+identically. Named separately because MFM's side of the boundary calls it a
+reward and ours calls it a preference model; it is one Protocol.
+"""
 
 
 @dataclass(frozen=True)

@@ -10,14 +10,20 @@ from torch import Tensor
 #
 # `scale_shift` is the default and the only mode an affine-invariant backend
 # (Depth Anything V2) may be scored under — see CLAUDE.md's "never compare raw
-# depth maps". The looser modes exist for *metric* backends, whose disparity is
+# depth maps". `shift` exists for *metric* backends, whose disparity is
 # determined absolutely rather than up to a scale and shift: for those, fitting
-# a scale is handing back a degree of freedom the network resolved, which is
-# exactly the freedom an over- or under-scaled room escapes through. `shift`
-# keeps a global offset free, `none` fits nothing. Choosing either for an
-# affine-invariant backend measures affine mismatch and is wrong however good
-# the number looks.
-type AlignmentMode = Literal["scale_shift", "shift", "none"]
+# a scale is handing back the very degree of freedom the network resolved, and
+# it is the freedom an over- or under-scaled room escapes through — guided arms
+# remove ~90% of the depth energy under a scale-and-shift fit while the room's
+# measured size ratio stays where the unguided control put it, or worse.
+# Choosing `shift` for an affine-invariant backend measures affine mismatch and
+# is wrong however good the number looks.
+#
+# Fitting *nothing* was measured too, and is not offered: raw metric residuals
+# score best of any arm from a renoised photo and collapse from pure noise,
+# where a global offset the walk cannot remove dominates a normalised step
+# budget. `shift` is the mode that holds at both.
+type AlignmentMode = Literal["scale_shift", "shift"]
 
 # The normal equations of a scale/shift fit are ill-conditioned whenever the
 # masked depth range is narrow, and float32 loses several digits there for no
@@ -74,9 +80,8 @@ def align_scale_shift(
         mode: which parameters the fit is free to move. The default
             `scale_shift` is the full affine solve described below and is the
             only correct mode for an affine-invariant backend; `shift` solves
-            for the offset alone at a fixed unit scale, and `none` returns the
-            identity so the two maps are scored where they already stand. See
-            :data:`AlignmentMode` for when the looser two are legitimate.
+            for the offset alone at a fixed unit scale. See
+            :data:`AlignmentMode` for when the looser one is legitimate.
 
     Minimises ``sum_i mask_i * (scale * prediction_i + shift - target_i)^2``
     **subject to a non-negative scale**, lightly ridge-damped and with `scale`
@@ -125,8 +130,6 @@ def align_scale_shift(
     nothing = torch.zeros_like(count)
 
     match mode:
-        case "none":
-            return _cast(ScaleShift(unit, nothing, nothing), prediction.dtype)
         case "shift":
             # The offset that matches the two masked means, which is the whole
             # of the least-squares solve once the scale is held at one. Nothing

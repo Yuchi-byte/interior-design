@@ -8,7 +8,7 @@ from jaxtyping import Bool, Float
 from torch import Tensor
 
 from roomgen_geometry.depth.base import DepthEstimator
-from roomgen_geometry.masking import MaskMode, scorable_mask
+from roomgen_geometry.masking import scorable_mask
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.reward import masked_depth_error
 from roomgen_geometry.segmentation.base import Segmenter
@@ -34,11 +34,6 @@ class GeometricGuidance:
         erosion_radius: for the prediction's mask, as
             :func:`roomgen_geometry.masking.architectural_mask` takes it;
             required with `segmenter` and meaningless without it.
-        mask_mode: which way the prediction's segmentation is read, as
-            :func:`roomgen_geometry.masking.scorable_mask` defines it —
-            `intersect_shell` scores only what the prediction also calls shell,
-            `subtract_contents` scores everything it does not affirmatively call
-            contents. The eval that judges the run must read it the same way.
         on_mask: called with the mask after each evaluation decides what it
             scores, for a caller that wants to record it. Observation only —
             the energy is what it would be without one.
@@ -48,7 +43,6 @@ class GeometricGuidance:
     reference: GeometricReference
     segmenter: Segmenter | None = None
     erosion_radius: int | None = None
-    mask_mode: MaskMode = "intersect_shell"
     on_mask: MaskObserver | None = None
 
     def __post_init__(self) -> None:
@@ -80,6 +74,6 @@ class GeometricGuidance:
         with torch.no_grad():
             segmentation = segmenter(predicted_image.detach())
         prediction_shell = scorable_mask(
-            segmentation, mode=self.mask_mode, erosion_radius=erosion_radius
+            segmentation, erosion_radius=erosion_radius
         )
         return self.reference.mask & prediction_shell

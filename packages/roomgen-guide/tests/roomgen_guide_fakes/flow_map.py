@@ -54,6 +54,9 @@ class ToyFlowMapProcess:
     def steps(self) -> int:
         return len(self._times) - 1
 
+    def step_span(self, index: int) -> float:
+        return float(self._times[index + 1] - self._times[index])
+
     def initial_state(self) -> Float[Tensor, "batch 3 height width"]:
         noise = torch.randn(
             self._photo.shape,

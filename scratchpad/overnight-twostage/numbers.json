@@ -1,0 +1,274 @@
+{
+  "validation": {
+    "this_pod_guided_s10": 0.062516,
+    "sibling_rows_json": 0.065613,
+    "window": [
+      1.0,
+      0.8558
+    ],
+    "reward_calls": 50,
+    "steps": 51
+  },
+  "config": {
+    "grid_steps": 208,
+    "window_sigmas": 51,
+    "guided_steps": 50,
+    "eta": 5.0,
+    "seed": 0,
+    "erosion_radius": 2,
+    "mask_mode": "intersect_shell"
+  },
+  "photo": {
+    "depth_error": 0.0,
+    "blurred_depth_error": 0.004198,
+    "shell_coverage": 1.0,
+    "shell_fraction": 0.452,
+    "adherence": 0.268
+  },
+  "stage1": [
+    {
+      "name": "p0_s08",
+      "start_sigma": 0.8,
+      "shell_fraction": 0.5635,
+      "vs_photo": {
+        "depth_error": 0.00352,
+        "blurred_depth_error": 0.01032,
+        "shell_coverage": 0.9378
+      },
+      "prompt": "an empty unfurnished living room, bare walls, bare floor, no furniture, empty space"
+    },
+    {
+      "name": "p0_s09",
+      "start_sigma": 0.9,
+      "shell_fraction": 0.5945,
+      "vs_photo": {
+        "depth_error": 0.035439,
+        "blurred_depth_error": 0.322482,
+        "shell_coverage": 0.8544
+      },
+      "prompt": "an empty unfurnished living room, bare walls, bare floor, no furniture, empty space"
+    },
+    {
+      "name": "p1_s08",
+      "start_sigma": 0.8,
+      "shell_fraction": 0.5926,
+      "vs_photo": {
+        "depth_error": 0.004932,
+        "blurred_depth_error": 0.01095,
+        "shell_coverage": 0.9448
+      },
+      "prompt": "a completely empty room, bare white walls, bare wooden floor, plain ceiling, no furniture, no decoration, nothing in the room, architectural interior photograph"
+    },
+    {
+      "name": "p1_s09",
+      "start_sigma": 0.9,
+      "shell_fraction": 0.6456,
+      "vs_photo": {
+        "depth_error": 0.004868,
+        "blurred_depth_error": 0.046982,
+        "shell_coverage": 0.852
+      },
+      "prompt": "a completely empty room, bare white walls, bare wooden floor, plain ceiling, no furniture, no decoration, nothing in the room, architectural interior photograph"
+    },
+    {
+      "name": "p1_s10",
+      "start_sigma": 1.0,
+      "shell_fraction": 0.9563,
+      "vs_photo": {
+        "depth_error": 0.462824,
+        "blurred_depth_error": 0.560617,
+        "shell_coverage": 0.9823
+      },
+      "prompt": "a completely empty room, bare white walls, bare wooden floor, plain ceiling, no furniture, no decoration, nothing in the room, architectural interior photograph"
+    },
+    {
+      "name": "p2_s10",
+      "start_sigma": 1.0,
+      "shell_fraction": 0.8915,
+      "vs_photo": {
+        "depth_error": 0.170147,
+        "blurred_depth_error": 0.903141,
+        "shell_coverage": 0.8491
+      },
+      "prompt": "empty vacant apartment interior, stripped bare, no furniture at all, blank walls, clean empty floor, natural daylight"
+    }
+  ],
+  "stage2": {
+    "stage2_spec": {
+      "empty_reference": {
+        "depth_error": 0.17313,
+        "blurred_depth_error": 0.902728,
+        "shell_coverage": 0.8491,
+        "shell_fraction": 0.8915,
+        "adherence": 0.1838
+      },
+      "runs": [
+        {
+          "name": "furnished_s08",
+          "start_sigma": 0.8,
+          "arm": "guided",
+          "adherence": 0.2193,
+          "shell_fraction": 0.89,
+          "vs_photo": {
+            "depth_error": 0.285677,
+            "blurred_depth_error": 0.804928,
+            "shell_coverage": 0.8445
+          },
+          "vs_empty": {
+            "depth_error": 0.025975,
+            "blurred_depth_error": 0.33888,
+            "shell_coverage": 0.9956
+          }
+        },
+        {
+          "name": "furnished_s09",
+          "start_sigma": 0.9,
+          "arm": "guided",
+          "adherence": 0.2209,
+          "shell_fraction": 0.8219,
+          "vs_photo": {
+            "depth_error": 0.388916,
+            "blurred_depth_error": 0.761298,
+            "shell_coverage": 0.8398
+          },
+          "vs_empty": {
+            "depth_error": 0.070576,
+            "blurred_depth_error": 0.267543,
+            "shell_coverage": 0.8888
+          }
+        },
+        {
+          "name": "furnished_s09_unguided",
+          "start_sigma": 0.9,
+          "arm": "unguided",
+          "adherence": 0.2267,
+          "shell_fraction": 0.8125,
+          "vs_photo": {
+            "depth_error": 0.798896,
+            "blurred_depth_error": 0.77488,
+            "shell_coverage": 0.8364
+          },
+          "vs_empty": {
+            "depth_error": 0.426884,
+            "blurred_depth_error": 0.379645,
+            "shell_coverage": 0.9015
+          }
+        },
+        {
+          "name": "baseline_s10_guided",
+          "start_sigma": 1.0,
+          "arm": "guided",
+          "adherence": 0.3234,
+          "shell_fraction": 0.4401,
+          "vs_photo": {
+            "depth_error": 0.072846,
+            "blurred_depth_error": 0.468112,
+            "shell_coverage": 0.4665
+          },
+          "vs_empty": null
+        },
+        {
+          "name": "baseline_s10_unguided",
+          "start_sigma": 1.0,
+          "arm": "unguided",
+          "adherence": 0.3207,
+          "shell_fraction": 0.6237,
+          "vs_photo": {
+            "depth_error": 0.764409,
+            "blurred_depth_error": 0.822652,
+            "shell_coverage": 0.6478
+          },
+          "vs_empty": null
+        }
+      ]
+    },
+    "stage2_best": {
+      "empty_reference": {
+        "depth_error": 0.004897,
+        "blurred_depth_error": 0.046263,
+        "shell_coverage": 0.8522,
+        "shell_fraction": 0.6457,
+        "adherence": 0.2679
+      },
+      "runs": [
+        {
+          "name": "furnished_s08",
+          "start_sigma": 0.8,
+          "arm": "guided",
+          "adherence": 0.2801,
+          "shell_fraction": 0.6254,
+          "vs_photo": {
+            "depth_error": 0.005458,
+            "blurred_depth_error": 0.053379,
+            "shell_coverage": 0.8288
+          },
+          "vs_empty": {
+            "depth_error": 0.000373,
+            "blurred_depth_error": 0.159957,
+            "shell_coverage": 0.9677
+          }
+        },
+        {
+          "name": "furnished_s09",
+          "start_sigma": 0.9,
+          "arm": "guided",
+          "adherence": 0.2722,
+          "shell_fraction": 0.5792,
+          "vs_photo": {
+            "depth_error": 0.008398,
+            "blurred_depth_error": 0.056058,
+            "shell_coverage": 0.7312
+          },
+          "vs_empty": {
+            "depth_error": 0.003228,
+            "blurred_depth_error": 0.113847,
+            "shell_coverage": 0.8895
+          }
+        },
+        {
+          "name": "furnished_s09_unguided",
+          "start_sigma": 0.9,
+          "arm": "unguided",
+          "adherence": 0.267,
+          "shell_fraction": 0.7075,
+          "vs_photo": {
+            "depth_error": 0.242906,
+            "blurred_depth_error": 0.435405,
+            "shell_coverage": 0.8081
+          },
+          "vs_empty": {
+            "depth_error": 0.199626,
+            "blurred_depth_error": 0.209074,
+            "shell_coverage": 0.8984
+          }
+        },
+        {
+          "name": "baseline_s10_guided",
+          "start_sigma": 1.0,
+          "arm": "guided",
+          "adherence": 0.3216,
+          "shell_fraction": 0.4352,
+          "vs_photo": {
+            "depth_error": 0.093727,
+            "blurred_depth_error": 0.480717,
+            "shell_coverage": 0.4674
+          },
+          "vs_empty": null
+        },
+        {
+          "name": "baseline_s10_unguided",
+          "start_sigma": 1.0,
+          "arm": "unguided",
+          "adherence": 0.3207,
+          "shell_fraction": 0.6237,
+          "vs_photo": {
+            "depth_error": 0.764409,
+            "blurred_depth_error": 0.822652,
+            "shell_coverage": 0.6478
+          },
+          "vs_empty": null
+        }
+      ]
+    }
+  }
+}

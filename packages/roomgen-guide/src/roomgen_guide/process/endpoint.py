@@ -14,10 +14,19 @@ class StepContext:
     Args:
         index: 0 on the first step of the walk, whatever noise level that is.
         total: how many steps the walk takes in all.
+        span: how much of the trajectory this step crosses, in the process's own
+            time units — the sigma gap for a flow map, the timestep gap over the
+            training horizon for a diffusion schedule. A schedule is rarely
+            uniform (FLUX warps its sigmas by sequence length), so a policy whose
+            step size is a rate rather than a displacement — FMRG's
+            ``lambda_t = eta * dt`` — cannot read it off `index` and `total`.
+            Defaults to the whole trajectory, which is what a policy that never
+            asks is implicitly using.
     """
 
     index: int
     total: int
+    span: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -58,7 +67,22 @@ class EndpointProcess[Prediction](Protocol):
         ...
 
     def initial_state(self) -> Float[Tensor, "batch *state"]:
-        """The state the walk starts from — a renoised photo, or pure noise."""
+        """The state the walk starts from — a renoised photo, or pure noise.
+
+        Drawn from the process's own generator, so calling it again draws a
+        *different* start: that is what makes a restart a restart, and what makes
+        the first of several draws the one a single-trajectory walk would have
+        taken.
+        """
+        ...
+
+    def step_span(self, index: int) -> float:
+        """How much of the trajectory step `index` crosses — `StepContext.span`.
+
+        In the process's own time units, and read by the tilt policy alone: the
+        driver only carries it. A process whose steps are not scheduled in any
+        meaningful unit returns ``1 / steps``.
+        """
         ...
 
     def endpoint(

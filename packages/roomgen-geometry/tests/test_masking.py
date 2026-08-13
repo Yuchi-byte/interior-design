@@ -4,7 +4,6 @@ from torch import Tensor
 
 from roomgen_fakes import FakeSegmenter
 from roomgen_geometry.masking import (
-    MaskMode,
     architectural_mask,
     erode_boundaries,
     scorable_mask,
@@ -116,50 +115,42 @@ def test_eroding_the_room_mask_drops_the_band_around_the_furniture(
     assert not bool(eroded[0][below_sofa])
 
 
-def test_the_shell_mask_is_the_default_polarity_of_the_scorable_mask() -> None:
-    segmentation = _room_with_block(_SOFA)
-
-    assert torch.equal(
-        architectural_mask(segmentation, erosion_radius=2),
-        scorable_mask(segmentation, mode="intersect_shell", erosion_radius=2),
-    )
-
-
-def test_the_two_modes_agree_on_every_id_one_of_the_lists_names() -> None:
+def test_the_two_sides_agree_on_every_id_one_of_the_lists_names() -> None:
     # Restricted to the classes the two lists between them name, keeping what is
-    # shell and dropping what is contents are the same statement.
+    # shell (the photo's side) and dropping what is contents (a render's) are the
+    # same statement.
     named = sorted(ARCHITECTURAL_CLASSES | CONTENTS_CLASSES)
     segmentation = torch.tensor(named).reshape(1, 1, len(named))
 
-    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
-    subtracting = scorable_mask(
-        segmentation, mode="subtract_contents", erosion_radius=0
-    )
+    shell = architectural_mask(segmentation, erosion_radius=0)
+    scorable = scorable_mask(segmentation, erosion_radius=0)
 
-    assert torch.equal(intersecting, subtracting)
-    assert int(intersecting.sum()) == len(ARCHITECTURAL_CLASSES)
+    assert torch.equal(shell, scorable)
+    assert int(shell.sum()) == len(ARCHITECTURAL_CLASSES)
 
 
-def test_the_two_modes_part_company_on_the_rest_of_the_label_table() -> None:
+def test_an_id_neither_list_names_is_the_photo_s_to_drop_and_a_render_s_to_keep() -> None:
     unclaimed = sorted(
         set(range(NUM_CLASSES)) - ARCHITECTURAL_CLASSES - CONTENTS_CLASSES
     )
     segmentation = torch.tensor(unclaimed).reshape(1, 1, len(unclaimed))
 
-    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
-    subtracting = scorable_mask(
-        segmentation, mode="subtract_contents", erosion_radius=0
-    )
+    shell = architectural_mask(segmentation, erosion_radius=0)
+    scorable = scorable_mask(segmentation, erosion_radius=0)
 
-    assert not bool(intersecting.any())
-    assert bool(subtracting.all())
+    # The asymmetry is the design: the reference shell is what the photo
+    # affirmatively shows, while a render only escapes being scored by
+    # affirmatively covering the pixel with contents. An id the segmenter
+    # declines to commit on stays scored rather than excusing itself.
+    assert not bool(shell.any())
+    assert bool(scorable.all())
 
 
-def test_the_glass_and_what_it_shows_are_kept_only_by_subtract_contents() -> None:
+def test_the_glass_and_what_it_shows_stay_scored_on_a_render() -> None:
     # A wall with a window onto sky and a tree, a sofa in front of it, and a
-    # person crossing the room. The sofa is contents under either mode; the
-    # glazing, what it shows, and the person are named by neither list, so
-    # subtracting still has to reconstruct them and intersecting lets them go.
+    # person crossing the room. The sofa is contents on either side; the glazing,
+    # what it shows, and the person are named by neither list, so a render's mask
+    # keeps them and the photo's shell does not claim them.
     segmentation = torch.full((1, 16, 16), _WALL)
     segmentation[:, 2:8, 2:8] = ADE20K_LABELS.index("windowpane")
     segmentation[:, 3:5, 3:7] = ADE20K_LABELS.index("sky")
@@ -167,10 +158,8 @@ def test_the_glass_and_what_it_shows_are_kept_only_by_subtract_contents() -> Non
     segmentation[:, 10:14, 2:8] = _SOFA
     segmentation[:, 4:12, 11:14] = ADE20K_LABELS.index("person")
 
-    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
-    subtracting = scorable_mask(
-        segmentation, mode="subtract_contents", erosion_radius=0
-    )
+    shell = architectural_mask(segmentation, erosion_radius=0)
+    scorable = scorable_mask(segmentation, erosion_radius=0)
 
     view, person, sofa, glass, wall_above = (
         (slice(None), slice(3, 7), slice(3, 7)),
@@ -179,101 +168,43 @@ def test_the_glass_and_what_it_shows_are_kept_only_by_subtract_contents() -> Non
         (slice(None), 2, slice(2, 8)),
         (slice(None), 1, slice(2, 8)),
     )
-    assert not bool(intersecting[view].any())
-    assert not bool(intersecting[person].any())
-    assert bool(subtracting[view].all())
-    assert bool(subtracting[person].all())
-    assert not bool(intersecting[sofa].any())
-    assert not bool(subtracting[sofa].any())
-    # The glass sits with the view rather than with the frame: affirmative shell
-    # no longer claims it, so the reference photo's mask — always read at
-    # `intersect_shell` — has stopped scoring the window at all.
-    assert not bool(intersecting[glass].any())
-    assert bool(subtracting[glass].all())
+    assert not bool(shell[view].any())
+    assert not bool(shell[person].any())
+    assert bool(scorable[view].all())
+    assert bool(scorable[person].all())
+    assert not bool(shell[sofa].any())
+    assert not bool(scorable[sofa].any())
+    # The glass sits with the view rather than with the frame: the reference
+    # photo's mask does not score the window at all, because the depth read there
+    # is the outdoor scene's.
+    assert not bool(shell[glass].any())
+    assert bool(scorable[glass].all())
     # What still pins where the window is: the wall it is cut into, which is
-    # shell under both modes.
-    assert bool(intersecting[wall_above].all())
-    assert bool(subtracting[wall_above].all())
+    # shell on both sides.
+    assert bool(shell[wall_above].all())
+    assert bool(scorable[wall_above].all())
 
 
-def test_the_modes_part_company_on_an_id_neither_set_names() -> None:
-    segmentation = _room_with_block(_UNNAMED)
-
-    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=0)
-    subtracting = scorable_mask(
-        segmentation, mode="subtract_contents", erosion_radius=0
-    )
-
-    # Intersecting exempts everything it cannot confirm is shell; subtracting
-    # exempts only what it can confirm is contents, so an unnamed id stays scored.
-    assert not bool(intersecting[:, 6:10, 6:10].any())
-    assert bool(subtracting.all())
-
-
-@pytest.mark.parametrize("mode", ["intersect_shell", "subtract_contents"])
-def test_erosion_grows_the_region_a_mode_exempts_whichever_mode_it_is(
-    mode: MaskMode,
-) -> None:
-    # Both modes exempt an affirmative contents block, and erosion is applied to
-    # the kept side in either: the exemption spreads by the radius, never shrinks.
+def test_erosion_grows_the_region_a_render_is_excused_from() -> None:
+    # Erosion is applied to the kept side, so the exemption around an
+    # affirmative contents block spreads by the radius and never shrinks.
     segmentation = _room_with_block(_SOFA)
 
-    uneroded = scorable_mask(segmentation, mode=mode, erosion_radius=0)
-    eroded = scorable_mask(segmentation, mode=mode, erosion_radius=2)
+    uneroded = scorable_mask(segmentation, erosion_radius=0)
+    eroded = scorable_mask(segmentation, erosion_radius=2)
 
     assert int(uneroded.sum()) == 16 * 16 - 4 * 4
     assert bool((eroded <= uneroded).all())
     assert int(eroded.sum()) == 16 * 16 - 8 * 8
 
 
-def test_erosion_trims_the_kept_side_against_whatever_the_mode_exempted() -> None:
+def test_erosion_follows_the_exemption_rather_than_the_label_map() -> None:
     segmentation = _room_with_block(_UNNAMED)
 
-    intersecting = scorable_mask(segmentation, mode="intersect_shell", erosion_radius=2)
-    subtracting = scorable_mask(
-        segmentation, mode="subtract_contents", erosion_radius=2
-    )
+    shell = architectural_mask(segmentation, erosion_radius=2)
+    scorable = scorable_mask(segmentation, erosion_radius=2)
 
-    # One mode has an edge to erode against here and the other has none, which
-    # is the point: erosion follows the exemption rather than the label map.
-    assert not bool(intersecting[:, 4:12, 4:12].any())
-    assert bool(subtracting.all())
-
-
-def test_the_structural_mask_keeps_the_glazing_the_shell_mask_drops(
-    fake_segmenter: FakeSegmenter, room_photo: Tensor
-) -> None:
-    segmentation = fake_segmenter(room_photo)
-
-    structural = structural_mask(segmentation, erosion_radius=0)
-    shell = architectural_mask(segmentation, erosion_radius=0)
-
-    glazing = segmentation == ADE20K_LABELS.index("windowpane")
-    assert bool(glazing.any())
-    assert bool(structural[glazing].all())
-    assert not bool(shell[glazing].any())
-    # Everything the depth mask scores, the class term scores too: the sets
-    # differ by the glazing and nothing else.
-    assert torch.equal(structural, shell | glazing)
-
-
-def test_the_structural_mask_still_drops_the_furniture(
-    fake_segmenter: FakeSegmenter, room_photo: Tensor
-) -> None:
-    segmentation = fake_segmenter(room_photo)
-
-    structural = structural_mask(segmentation, erosion_radius=0)
-
-    assert not bool(structural[segmentation == _SOFA].any())
-
-
-def test_the_structural_mask_erodes_its_boundaries_like_every_other_mask() -> None:
-    # A class label flickers in the band either side of a segment edge, and a
-    # term that chases the flicker is charging the render for noise.
-    segmentation = _room_with_block(_SOFA)
-
-    uneroded = structural_mask(segmentation, erosion_radius=0)
-    eroded = structural_mask(segmentation, erosion_radius=2)
-
-    assert int(uneroded.sum()) == 16 * 16 - 4 * 4
-    assert int(eroded.sum()) == 16 * 16 - 8 * 8
+    # The unnamed block is an edge for the photo's shell to erode against and no
+    # edge at all for a render's mask, which excuses nothing here.
+    assert not bool(shell[:, 4:12, 4:12].any())
+    assert bool(scorable.all())

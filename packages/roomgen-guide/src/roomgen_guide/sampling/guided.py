@@ -23,7 +23,6 @@ def sample_guided(
     text_guidance_scale: float,
     generator: torch.Generator,
     clip_step_rms: float | None = None,
-    differentiate_through_unet: bool = False,
 ) -> Float[Tensor, "batch 3 height width"]:
     """Renoise `photo` and denoise it back under `prompt`, steered by `guidance`.
 
@@ -43,11 +42,6 @@ def sample_guided(
             sized per batch element. Below it the step is the raw one, which
             shrinks as the energy is satisfied; above it the step is exactly
             this size.
-        differentiate_through_unet: keep the UNet forward on the gradient path,
-            so ∂energy/∂latent carries the denoiser's Jacobian and a push the
-            denoiser would undo is damped at the source (DPS, arXiv:2209.14687),
-            at the cost of a UNet backward per guided step. Left off, ε̂ enters
-            x̂₀ as a constant and only the decoder and the energy are traversed.
 
     A guided step forms the predicted clean image from the current latent,
     decodes it, evaluates `guidance` on it, and shifts the latent along the
@@ -69,7 +63,6 @@ def sample_guided(
         noise_strength=noise_strength,
         text_guidance_scale=text_guidance_scale,
         generator=generator,
-        differentiate_through_unet=differentiate_through_unet,
     )
     return sample_endpoint_process(process, reward=guidance, tilt=tilt)
 
@@ -91,9 +84,15 @@ class LatentDiffusionProcess:
         text_guidance_scale: classifier-free guidance on the prompt; 1 turns it
             off.
         generator: the only source of randomness in the walk.
-        differentiate_through_unet: keep the UNet forward on the gradient path,
-            so the endpoint carries the denoiser's Jacobian (DPS,
-            arXiv:2209.14687) for one UNet backward more per evaluated step.
+
+    ε̂ enters x̂₀ as a constant, so the reward's gradient traverses the decoder
+    and the closed form and never the UNet. Keeping the denoiser in the graph —
+    DPS, arXiv:2209.14687 — was measured on this stack and settled against: it is
+    indistinguishable on geometry at noise 0.9, slightly worse on adherence and
+    coverage, and costs +37% wall-clock and ~27.5 GiB. The Jacobian pullback that
+    *does* pay lives on the flow-map path, where the endpoint estimate it is
+    taken through does not degrade with noise
+    (:class:`roomgen_guide.adapters.flow_map.FlowMapProcess`).
     """
 
     def __init__(
@@ -106,7 +105,6 @@ class LatentDiffusionProcess:
         noise_strength: float,
         text_guidance_scale: float,
         generator: torch.Generator,
-        differentiate_through_unet: bool = False,
     ) -> None:
         if steps < 1:
             raise ValueError(f"steps must be at least 1, got {steps}")
@@ -123,7 +121,6 @@ class LatentDiffusionProcess:
         self._pipeline = pipeline
         self._photo = photo
         self._generator = generator
-        self._differentiate_through_unet = differentiate_through_unet
         self._timesteps = _renoised_timesteps(
             scheduler.timesteps, noise_strength=noise_strength
         )
@@ -144,6 +141,16 @@ class LatentDiffusionProcess:
     def steps(self) -> int:
         return len(self._timesteps)
 
+    def step_span(self, index: int) -> float:
+        # The share of the *training* trajectory this step crosses: the walked
+        # timesteps are a subsample of the schedule's own horizon, which is what
+        # `alphas_cumprod` is indexed by, and the last step lands at 0.
+        timestep = int(self._timesteps[index])
+        following = (
+            int(self._timesteps[index + 1]) if index + 1 < self.steps else 0
+        )
+        return (timestep - following) / len(self._alphas_cumprod)
+
     def initial_state(self) -> Float[Tensor, "batch channels height width"]:
         latent = _encode_photo(
             self._pipeline.vae, self._photo, generator=self._generator
@@ -163,16 +170,6 @@ class LatentDiffusionProcess:
     ) -> Endpoint[Float[Tensor, "batch channels height width"]]:
         timestep = self._timesteps[step.index]
         alpha_cumprod = self._alphas_cumprod[timestep]
-        if self._differentiate_through_unet:
-            return _through_unet_endpoint(
-                self._pipeline,
-                latent=state,
-                timestep=timestep,
-                prompt_embeddings=self._prompt_embeddings,
-                text_guidance_scale=self._text_guidance_scale,
-                apply_text_guidance=self._apply_text_guidance,
-                alpha_cumprod=alpha_cumprod,
-            )
         noise_prediction = self._noise_prediction(state, timestep)
         differentiable_latent = state.detach().requires_grad_(True)
         return Endpoint(
@@ -235,37 +232,6 @@ def decode_latent(
     # the decode is in range; a decode pinned at the rails would zero the
     # guidance instead, which is what the loop's gradient tests are watching for.
     return ((decoded + 1.0) / 2.0).clamp(0.0, 1.0)
-
-
-def _through_unet_endpoint(
-    pipeline: Img2ImgPipeline,
-    *,
-    latent: Float[Tensor, "batch channels height width"],
-    timestep: Tensor,
-    prompt_embeddings: Float[Tensor, "batch sequence embedding"],
-    text_guidance_scale: float,
-    apply_text_guidance: bool,
-    alpha_cumprod: Float[Tensor, ""],
-) -> Endpoint[Float[Tensor, "batch channels height width"]]:
-    differentiable_latent = latent.detach().requires_grad_(True)
-    noise_prediction = _predict_noise(
-        pipeline,
-        differentiable_latent,
-        timestep,
-        prompt_embeddings,
-        text_guidance_scale=text_guidance_scale,
-        apply_text_guidance=apply_text_guidance,
-        differentiable=True,
-    )
-    # ε̂ stays attached, which is the whole difference from the constant-ε̂
-    # step: x̂₀ then carries dε̂/dx_t and the denoiser damps its own undoing.
-    return Endpoint(
-        differentiable_latent,
-        _predicted_original_image(
-            pipeline.vae, differentiable_latent, noise_prediction, alpha_cumprod
-        ),
-        noise_prediction.detach(),
-    )
 
 
 def _predicted_original_image(
@@ -331,15 +297,13 @@ def _predict_noise(
     *,
     text_guidance_scale: float,
     apply_text_guidance: bool,
-    differentiable: bool = False,
 ) -> Float[Tensor, "batch channels height width"]:
     batched = torch.cat([latent, latent]) if apply_text_guidance else latent
     model_input: Tensor = pipeline.scheduler.scale_model_input(batched, timestep)
-    # The UNet is off the gradient path unless a caller is deliberately
-    # differentiating through it: guidance otherwise differentiates the energy
+    # The UNet is off the gradient path: guidance differentiates the energy
     # through x̂₀'s closed form only, which costs one decoder backward per step
     # instead of a UNet one (FreeDoM, arXiv:2303.09833).
-    with torch.set_grad_enabled(differentiable):
+    with torch.no_grad():
         prediction: Tensor = pipeline.unet(
             model_input, timestep, encoder_hidden_states=prompt_embeddings
         ).sample

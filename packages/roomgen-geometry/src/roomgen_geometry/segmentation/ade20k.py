@@ -3,8 +3,8 @@
 The shell is the set of surfaces a renovation must leave where they are; the
 contents are the objects a renovation is free to move, replace, or delete. Both
 are named class by class and neither is the other's complement: the ids in
-neither list — outdoors, people, stuff — are the ones the two `MaskMode`
-polarities disagree about, which is the whole reason to spell them out.
+neither list — outdoors, people, stuff — are the ones a mask has to decide about
+without being told, which is the whole reason to spell the two lists out.
 """
 
 from typing import Final

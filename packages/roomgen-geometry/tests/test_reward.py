@@ -407,13 +407,13 @@ def test_the_class_energy_rejects_a_margin_outside_the_unit_interval() -> None:
 
 @pytest.mark.parametrize(
     ("alignment", "scored"),
-    [("scale_shift", False), ("shift", True), ("none", True)],
-    ids=["the default absorbs it", "shift charges it", "raw charges it"],
+    [("scale_shift", False), ("shift", True)],
+    ids=["the default absorbs it", "shift charges it"],
 )
 def test_only_the_default_alignment_forgives_a_uniformly_rescaled_room(
     alignment: str, scored: bool, generator: Generator
 ) -> None:
-    # Why the looser modes exist. A render whose geometry is right but whose
+    # Why the looser mode exists. A render whose geometry is right but whose
     # absolute scale is off is a *perfect* match under the scale-and-shift fit
     # the hard rule mandates — which is correct for an affine-invariant backend,
     # whose scale is undetermined, and is exactly the blindness a metric backend
