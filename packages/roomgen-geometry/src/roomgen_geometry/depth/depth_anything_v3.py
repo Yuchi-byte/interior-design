@@ -13,6 +13,7 @@ observed drifting. Whether to actually spend the freedom is the caller's, via
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Final
 
@@ -47,9 +48,9 @@ _MIN_DEPTH: Final = 1e-4
 _MISSING_PACKAGE = """\
 The Depth Anything 3 backend needs upstream's `depth_anything_3` package, which
 is deliberately *not* a roomgen-geometry dependency: it pins `numpy<2` against
-this package's `numpy>=2`, and hard-requires xformers, open3d and pycolmap for
-export paths this backend never reaches. Its model code needs none of that, so
-install it alongside without its dependency set:
+this package's `numpy>=2`, and hard-requires xformers, moviepy, open3d and
+pycolmap for export paths this backend never reaches. Its model code needs none
+of that, so install it alongside without its dependency set:
 
     uv pip install --no-deps depth-anything-3
     uv pip install addict omegaconf einops
@@ -59,23 +60,40 @@ install it alongside without its dependency set:
 def load_network(checkpoint: str, *, cache_dir: Path | None) -> Module:
     """Build the DA3 network with pretrained weights, off the guidance path.
 
-    The upstream `DepthAnything3` API object is only a carrier here: its own
-    ``forward`` is wrapped in ``torch.inference_mode``, which would make this
-    backend return a tensor that cannot be differentiated at all, so only the
-    ``nn.Module`` inside it is kept.
+    Upstream's own ``DepthAnything3.from_pretrained`` is not used, for two
+    reasons: its module imports the whole GLB/COLMAP/gaussian-splat export tree
+    and so needs moviepy, trimesh, open3d and pycolmap to be importable at all,
+    and its ``forward`` is wrapped in ``torch.inference_mode``, which would hand
+    back a tensor that cannot be differentiated. The checkpoint's own
+    ``config.json`` describes the network completely, so it is built from that
+    and the weights loaded into it directly — the same object either route
+    produces, minus the tail.
     """
     try:
         # Deferred, and the only reference to the package anywhere: it is
         # installed out of band, so importing it at module scope would make
         # `roomgen_geometry.depth` unimportable on a CI runner that has neither
         # it nor any weights.
-        from depth_anything_3.api import DepthAnything3  # noqa: PLC0415
+        from depth_anything_3.cfg import create_object  # noqa: PLC0415
     except ImportError as error:  # pragma: no cover - exercised by the message
         raise ImportError(_MISSING_PACKAGE) from error
+    from huggingface_hub import hf_hub_download  # noqa: PLC0415
+    from omegaconf import OmegaConf  # noqa: PLC0415
+    from safetensors.torch import load_file  # noqa: PLC0415
 
-    network: Module = DepthAnything3.from_pretrained(
-        checkpoint, cache_dir=cache_dir
-    ).model
+    def fetch(filename: str) -> Path:
+        return Path(hf_hub_download(checkpoint, filename, cache_dir=cache_dir))
+
+    config = json.loads(fetch("config.json").read_text())
+    network: Module = create_object(OmegaConf.create(config["config"]))
+    # The published state dict is upstream's `DepthAnything3` wrapper's, whose
+    # network hangs off `.model`; strict, so a checkpoint that does not fit the
+    # config it shipped with fails here rather than predicting from half a head.
+    weights = {
+        name.removeprefix("model."): tensor
+        for name, tensor in load_file(fetch("model.safetensors")).items()
+    }
+    network.load_state_dict(weights)
     return network
 
 
