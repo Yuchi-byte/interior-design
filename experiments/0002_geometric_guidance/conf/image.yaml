@@ -1,12 +1,24 @@
 # The image-reward question: inject the user's photo at the reward point — the
 # render pulled toward the photo in a frozen vision model's feature space — and
 # compare that steering against depth steering, alone and composed, across
-# every plausible helper model. Per scene at one seed: an unguided control, the
-# depth-only anchor, one image-only arm per helper (CLIP ViT-B/32 embedding
-# cosine, DINOv2 patch-token cosine, the SigLIP tower Redux already ships, a
-# VGG16 LPIPS-shaped perceptual distance), and image+depth composites for CLIP
-# and DINOv2 at per-scene measured weights. The photo reaches the prior only
-# through the one SDEdit init every arm shares.
+# every plausible helper model. Per scene at one seed: an unguided control and
+# the depth-only anchor under the plain style prompt (continuity anchors), the
+# same pair under the renovation instruction, one image-only arm per helper
+# (CLIP ViT-B/32 embedding cosine, DINOv2 patch-token cosine, the SigLIP tower
+# Redux already ships, a VGG16 LPIPS-shaped perceptual distance) and an
+# image+depth composite for every helper, at per-scene measured weights — the
+# helper arms all steering under the instruction prompt. The photo reaches the
+# prior only through the one SDEdit init every arm shares.
+#
+# The instruction prompt is the owner's template around each scene's style
+# descriptors verbatim: "renovate this room into <style>, keep the windows,
+# walls, floor and ceiling the same, remove the <object> in the room", where
+# <object> is a table/desk actually present in that scene's photo (the scandi
+# scene has none, so its most removable large furniture item — the shell chair
+# — substitutes, and the config says so). Two readings score it: the share of
+# frame still segmented as the object (photo share as baseline) and the
+# common-aligned depth error over the photo's windowpane pixels. Adherence is
+# still judged against the scene's one neutral style text for every arm.
 #
 # The known risk this study measures rather than assumes: a full-frame image
 # similarity carries the old furniture as well as the shell, so it may win its
@@ -18,7 +30,7 @@
 study: fmrg_image
 name: 0002_fmrg_image
 
-# One seed: the owner's fast-iteration setting, 8 arms x 4 scenes = 32 walks.
+# One seed: the owner's fast-iteration setting, 12 arms x 4 scenes = 48 walks.
 seeds: [0]
 
 resolution: 512
@@ -51,9 +63,10 @@ guidance:
   resegment: true
 
 image:
-  # The helper-model comparison: every image-only arm, then the composites.
+  # The helper-model comparison: every image-only arm, and the completed grid —
+  # every helper also runs an image+depth composite.
   models: [clip, dinov2, siglip, vgg]
-  composite_models: [clip, dinov2]
+  composite_models: [clip, dinov2, siglip, vgg]
   # null measures the depth weight per (scene, model) as the gradient-RMS
   # ratio at the midpoint of the guided window, on the walk the arms run.
   depth_weight: null
@@ -83,17 +96,31 @@ preference:
 
 # The four scenes today's studies ran, with their standing style prompts; the
 # owner's "hotel_suite" maps to the assets' hotel_suite_living_room. Adherence
-# judges every arm against the scene's one neutral eval text.
+# judges every arm against the scene's one neutral eval text. Each removal
+# object was read off the photo itself; the class ids are the ADE20K
+# table/desk family (table 15, desk 33, coffee table 64) except the scandi
+# scene, whose photo holds no table or desk at all — its shell chair
+# substitutes, counted under the chair family (chair 19, armchair 30,
+# swivel chair 75).
 scenes:
   - photo: scandi_living_room
     style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
     eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    removal_object: chair
+    removal_classes: [19, 30, 75]
+    removal_substituted: true
   - photo: blue_white_kitchen
     style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
     eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    removal_object: table
+    removal_classes: [15, 33, 64]
   - photo: ny_loft_bedroom
     style_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
     eval_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    removal_object: desk
+    removal_classes: [15, 33, 64]
   - photo: hotel_suite_living_room
     style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
     eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    removal_object: coffee table
+    removal_classes: [15, 33, 64]

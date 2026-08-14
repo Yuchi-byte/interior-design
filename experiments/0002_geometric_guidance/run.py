@@ -393,7 +393,7 @@ def _report_eta(summary: EtaSummary) -> None:
 
 _IMAGE_COLUMNS = (
     f"{'arm':<16}{'depth':>10}{'vs ctl':>9}{'adher':>9}{'ratio':>8}"
-    f"{'imgsim':>9}{'pref':>9}{'shell':>7}{'sec':>7}"
+    f"{'remove':>8}{'window':>10}{'imgsim':>9}{'pref':>9}{'shell':>7}{'sec':>7}"
 )
 
 
@@ -405,18 +405,28 @@ def _report_image(summary: ImageSummary) -> None:
         f"{len(specs)} arms, one common mask each"
     )
     for result in summary.results:
-        print(f"{result.scene} seed {result.seed}:\n{_IMAGE_COLUMNS}")
+        print(
+            f"{result.scene} seed {result.seed} (photo {result.removal_object} "
+            f"share {result.photo_removal_fraction:.1%}, windowpane "
+            f"{result.window_fraction:.1%} of frame):\n{_IMAGE_COLUMNS}"
+        )
         for cell in result.arms:
             similarity = (
                 "n/a"
                 if cell.image_similarity is None
                 else f"{cell.image_similarity:.4f}"
             )
+            window = (
+                "n/a"
+                if cell.window_depth_error is None
+                else f"{cell.window_depth_error:.5f}"
+            )
             print(
                 f"{cell.arm:<16}{cell.depth_error:>10.5f}"
                 f"{_signed(result.depth_delta_vs_control(cell.arm)):>9}"
                 f"{cell.adherence:>9.4f}"
                 f"{_share(result.adherence_ratio_vs_control(cell.arm)):>8}"
+                f"{cell.removal_fraction:>7.1%} {window:>9}"
                 f"{similarity:>9}{cell.preference:>9.3f}"
                 f"{cell.shell_coverage:>6.0%} {cell.seconds:>6.1f}"
             )
@@ -426,7 +436,7 @@ def _report_image(summary: ImageSummary) -> None:
                 for model, weight in result.sizing.weights.items()
             )
             print(f"{'measured depth weights':<25}{weights}")
-        print(f"{'common mask':<25}{'':>32}{result.common_coverage:>16.0%}")
+        print(f"{'common mask':<25}{'':>50}{result.common_coverage:>16.0%}")
     means = image_arm_means(summary.results, specs)
     print("\n[means]   per arm, over every (scene, seed)")
     for spec in specs:
@@ -436,8 +446,14 @@ def _report_image(summary: ImageSummary) -> None:
             if row["image_similarity"] is None
             else f"{row['image_similarity']:.4f}"
         )
+        window = (
+            "n/a"
+            if row["window_depth_error"] is None
+            else f"{row['window_depth_error']:.5f}"
+        )
         print(
             f"{spec.arm:<16}{row['depth_error']:>10.5f}{row['adherence']:>9.4f}"
+            f"{row['removal_fraction']:>7.1%} {window:>9}"
             f"{similarity:>9}{row['preference']:>9.3f}"
             f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
         )

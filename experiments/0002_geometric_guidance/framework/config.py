@@ -25,6 +25,7 @@ from roomgen_geometry.depth.depth_anything_v3 import (
 from roomgen_geometry.depth.depth_anything_v3 import (
     DEFAULT_INPUT_SIZE as METRIC_INPUT_SIZE,
 )
+from roomgen_geometry.segmentation.ade20k import CONTENTS_CLASSES
 from roomgen_geometry.segmentation.eomt import (
     DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
 )
@@ -675,6 +676,54 @@ class FmrgAlignmentConfig(ExperimentConfig):
 ImageModelName = Literal["clip", "dinov2", "siglip", "vgg"]
 
 
+class ImageSceneConfig(EtaSceneConfig):
+    """An eta-study scene plus the instruction-prompt arm's removal target.
+
+    The image study's instruction arms steer with the scene's style content
+    rephrased as an explicit renovation instruction — keep the shell, remove one
+    named object — so each scene names the object and the ADE20K ids the
+    removal-compliance metric counts it under.
+
+    Args:
+        removal_object: the object the instruction prompt asks the renovation to
+            remove, named as it appears in the photo (e.g. `coffee table`).
+        removal_classes: ADE20K-150 model-output ids the removal-compliance
+            metric counts as that object; every id must be a contents class,
+            because asking a renovation to remove a piece of the shell would
+            contradict the same prompt's "keep" clause and the depth reward.
+        removal_substituted: true when the photo holds no table or desk at all
+            and the prompt removes the scene's most removable large furniture
+            item instead — recorded so the report can say so.
+    """
+
+    removal_object: Annotated[str, Field(min_length=1)]
+    removal_classes: Annotated[tuple[int, ...], Field(min_length=1)]
+    removal_substituted: bool = False
+
+    @field_validator("removal_classes")
+    @classmethod
+    def _removal_targets_are_contents(cls, ids: tuple[int, ...]) -> tuple[int, ...]:
+        outside = [
+            identifier for identifier in ids if identifier not in CONTENTS_CLASSES
+        ]
+        if outside:
+            raise ValueError(
+                f"removal_classes {outside} are not ADE20K contents classes: the "
+                f"instruction removes furniture, never shell, so a non-contents "
+                f"id would score the wrong pixels as compliance"
+            )
+        return ids
+
+    @property
+    def instruction_prompt(self) -> str:
+        """The owner's template around the scene's style descriptors, verbatim."""
+        return (
+            f"renovate this room into {self.style_prompt}, keep the windows, "
+            f"walls, floor and ceiling the same, remove the "
+            f"{self.removal_object} in the room"
+        )
+
+
 class ImageGuidanceConfig(Config):
     """Which frozen vision models steer the render toward the reference photo.
 
@@ -765,7 +814,7 @@ class FmrgImageConfig(ExperimentConfig):
     """
 
     study: Literal["fmrg_image"]
-    scenes: Annotated[tuple[EtaSceneConfig, ...], Field(min_length=1)]
+    scenes: Annotated[tuple[ImageSceneConfig, ...], Field(min_length=1)]
     resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
     backends: FmrgBackendConfig
     sampler: FmrgSamplerConfig = FmrgSamplerConfig()

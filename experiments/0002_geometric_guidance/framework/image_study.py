@@ -1,15 +1,22 @@
 """The image-reward study: the user's photo injected at the reward point, per helper model.
 
-Per scene at one seed, all arms off one transformer load: an unguided control,
-the depth-only anchor, one image-only guided arm per frozen helper model (the
-render pulled toward the reference photo in that model's feature space), and an
-image-plus-depth composite per configured model at a measured weight. The photo
-enters only at the reward point and in the depth reference — the prior sees the
-one SDEdit init every arm shares. Every arm is scored on the one pixel set all
-arms left visible, judged by an adherence CLIP, an image-similarity CLIP and a
-preference model that are all independent of every feature space any arm
-descended; beside the numbers, every arm leaves a masked depth map and a signed
-depth-error map on the control's colour scale.
+Per scene at one seed, all arms off one transformer load: an unguided control
+and the depth-only anchor under the scene's style prompt, the same pair again
+under an explicit renovation instruction (keep the shell, remove one named
+object), one image-only guided arm per frozen helper model (the render pulled
+toward the reference photo in that model's feature space) and an
+image-plus-depth composite per configured model at a measured weight — the
+helper arms all steering under the instruction prompt, so instruction-following
+is read against prompt-matched baselines. The photo enters only at the reward
+point and in the depth reference — the prior sees the one SDEdit init every arm
+shares. Every arm is scored on the one pixel set all arms left visible, judged
+by an adherence CLIP (always against the scene's one neutral style text), an
+image-similarity CLIP and a preference model that are all independent of every
+feature space any arm descended, plus two instruction readings: the share of
+frame still segmented as the removed object (the photo's share as baseline) and
+the aligned depth error restricted to the photo's windowpane pixels. Beside the
+numbers, every arm leaves a masked depth map and a signed depth-error map on
+the control's colour scale.
 
 The helper models are parked on the CPU between walks: FMRG's guided walk peaks
 near a 32GB card's ceiling, and only the arm being walked needs its tower
@@ -32,9 +39,9 @@ from torch import Tensor
 
 from framework.config import (
     TORCH_DTYPES,
-    EtaSceneConfig,
     FmrgImageConfig,
     ImageModelName,
+    ImageSceneConfig,
 )
 from framework.depth_maps import write_disparity_map, write_masked_disparity_map
 from framework.fmrg_alignment_study import shell_class_table
@@ -48,15 +55,16 @@ from framework.fmrg_study import (
     _write_mask,
     build_stacks,
     sample_walk,
-    scorable,
     walked_steps,
     warm_up_walk,
 )
-from framework.metrics import build_adherence
+from framework.metrics import build_adherence, class_area_fraction, masked_mean_square
 from framework.photos import ensure_photos, load_photo
 from framework.preference import build_preference
 from framework.residual_maps import mean_absolute_residual, write_signed_residual_map
+from roomgen_geometry.masking import scorable_mask
 from roomgen_geometry.reference import GeometricReference
+from roomgen_geometry.segmentation.ade20k import ADE20K_LABELS
 from roomgen_guide.adapters.flow_map import FlowMapProcess, GuidanceWindow
 from roomgen_guide.adapters.fmrg_flux import select_cached_prompt
 from roomgen_guide.eval import (
@@ -86,32 +94,60 @@ from roomgen_guide.settings import RoomgenSettings
 CONTROL_ARM: Final = "control"
 DEPTH_ARM: Final = "depth"
 
+# The prompt-matched baselines the helper arms' instruction-following is read
+# against: the same control and depth anchor, steering under the scene's
+# instruction prompt — without them, "the table went away" cannot be attributed
+# to the helper model rather than to the prompt itself.
+CONTROL_INSTRUCTION_ARM: Final = "control_instr"
+DEPTH_INSTRUCTION_ARM: Final = "depth_instr"
+
+# The ADE20K id whose photo pixels the windows-kept reading is restricted to.
+WINDOWPANE_CLASS: Final = ADE20K_LABELS.index("windowpane")
+
 ArmKind = Literal["control", "depth", "image", "composite"]
 
 
 @dataclass(frozen=True)
 class ImageArmSpec:
-    """One arm of the study; `model` names the helper for the image-steered kinds."""
+    """One arm of the study; `model` names the helper for the image-steered kinds.
+
+    `instruction` is the prompt the walk steers under: false is the scene's
+    plain style description, true its renovation-instruction rephrasing. The
+    eval prompt never varies with it.
+    """
 
     arm: str
     kind: ArmKind
     model: ImageModelName | None
+    instruction: bool
 
     @property
     def guided(self) -> bool:
         return self.kind != "control"
 
+    def steering_prompt(self, scene: ImageSceneConfig) -> str:
+        return scene.instruction_prompt if self.instruction else scene.style_prompt
+
 
 def image_arms(config: FmrgImageConfig) -> tuple[ImageArmSpec, ...]:
-    """The arms, control first, then the depth anchor, the model sweep, the composites."""
+    """The arms: both prompt-matched baseline pairs, then the model sweep, the composites.
+
+    Style-prompt control and depth anchor first (continuity with the study's
+    first run), then the same pair under the instruction prompt, then every
+    helper arm — image-only and composite — under the instruction prompt.
+    """
     arms = [
-        ImageArmSpec(CONTROL_ARM, "control", None),
-        ImageArmSpec(DEPTH_ARM, "depth", None),
+        ImageArmSpec(CONTROL_ARM, "control", None, instruction=False),
+        ImageArmSpec(DEPTH_ARM, "depth", None, instruction=False),
+        ImageArmSpec(CONTROL_INSTRUCTION_ARM, "control", None, instruction=True),
+        ImageArmSpec(DEPTH_INSTRUCTION_ARM, "depth", None, instruction=True),
     ]
     for model in config.image.models:
-        arms.append(ImageArmSpec(f"img_{model}", "image", model))
+        arms.append(ImageArmSpec(f"img_{model}", "image", model, instruction=True))
     for model in config.image.composite_models:
-        arms.append(ImageArmSpec(f"imgdepth_{model}", "composite", model))
+        arms.append(
+            ImageArmSpec(f"imgdepth_{model}", "composite", model, instruction=True)
+        )
     return tuple(arms)
 
 
@@ -145,14 +181,25 @@ class WeightSizing:
 
 @dataclass(frozen=True)
 class ImageArmResult:
-    """One arm's render, its depth reading, and its scores against the control's."""
+    """One arm's render, its depth reading, and its scores against the control's.
+
+    `steering_prompt` is the exact text the walk conditioned on; `adherence` is
+    still read against the scene's one neutral eval text. `removal_fraction` is
+    the share of frame the segmenter still calls the removed object (the scene
+    row carries the photo's share as baseline); `window_depth_error` is the
+    common-mask-aligned squared depth residual over the photo's windowpane
+    pixels, `None` for a scene the segmenter found no windowpane in.
+    """
 
     arm: str
     kind: ArmKind
     model: str | None
+    steering_prompt: str
     depth_weight: float | None
     depth_error: float
     shell_coverage: float
+    removal_fraction: float
+    window_depth_error: float | None
     adherence: float
     image_similarity: float | None
     preference: float
@@ -167,9 +214,12 @@ class ImageArmResult:
             "arm": self.arm,
             "kind": self.kind,
             "model": self.model,
+            "steering_prompt": self.steering_prompt,
             "depth_weight": self.depth_weight,
             "depth_error": self.depth_error,
             "shell_coverage": self.shell_coverage,
+            "removal_fraction": self.removal_fraction,
+            "window_depth_error": self.window_depth_error,
             "adherence": self.adherence,
             "image_similarity": self.image_similarity,
             "preference": self.preference,
@@ -188,7 +238,13 @@ class ImageSceneResult:
     scene: str
     seed: int
     style_prompt: str
+    instruction_prompt: str
     eval_prompt: str
+    removal_object: str
+    removal_classes: tuple[int, ...]
+    removal_substituted: bool
+    photo_removal_fraction: float
+    window_fraction: float
     start_sigma: float
     effective_first_sigma: float
     arms: tuple[ImageArmResult, ...]
@@ -200,6 +256,7 @@ class ImageSceneResult:
     photo_depth_map: str
     photo_depth_map_masked: str
     shell_mask: str
+    window_mask: str
     eval_mask_common: str
 
     def arm(self, arm_id: str) -> ImageArmResult:
@@ -227,7 +284,13 @@ class ImageSceneResult:
             "scene": self.scene,
             "seed": self.seed,
             "style_prompt": self.style_prompt,
+            "instruction_prompt": self.instruction_prompt,
             "eval_prompt": self.eval_prompt,
+            "removal_object": self.removal_object,
+            "removal_classes": list(self.removal_classes),
+            "removal_substituted": self.removal_substituted,
+            "photo_removal_fraction": self.photo_removal_fraction,
+            "window_fraction": self.window_fraction,
             "start_sigma": self.start_sigma,
             "effective_first_sigma": self.effective_first_sigma,
             "sizing": None if self.sizing is None else self.sizing.as_row(),
@@ -238,6 +301,7 @@ class ImageSceneResult:
             "photo_depth_map": self.photo_depth_map,
             "photo_depth_map_masked": self.photo_depth_map_masked,
             "shell_mask": self.shell_mask,
+            "window_mask": self.window_mask,
             "eval_mask_common": self.eval_mask_common,
             "arms": [
                 {
@@ -370,9 +434,17 @@ def run_image_study(config: FmrgImageConfig, settings: RoomgenSettings) -> Image
                 f"scene photo {scene.photo!r} is not in experiments/assets/"
                 f"photos.json; known ids: {', '.join(sorted(photo_paths))}"
             )
+    # Every prompt any arm will steer under, cached before the text encoders
+    # are freed: each scene's style description and its instruction rephrasing.
     stacks = build_stacks(
         config.backends,
-        prompts=list(dict.fromkeys(scene.style_prompt for scene in config.scenes)),
+        prompts=list(
+            dict.fromkeys(
+                prompt
+                for scene in config.scenes
+                for prompt in (scene.style_prompt, scene.instruction_prompt)
+            )
+        ),
         text_guidance_scale=config.sampler.text_guidance_scale,
         settings=settings,
     )
@@ -526,7 +598,7 @@ def _release(device: torch.device) -> None:
 
 
 def _run_scene(
-    scene: EtaSceneConfig,
+    scene: ImageSceneConfig,
     *,
     config: FmrgImageConfig,
     stacks: Stacks,
@@ -549,12 +621,24 @@ def _run_scene(
         segmenter=stacks.segmenter,
         erosion_radius=config.guidance.erosion_radius,
     )
+    # The photo's own class map, for the two instruction baselines: how much of
+    # the frame is the object the instruction removes, and where its windowpanes
+    # are. Restricted to the eroded shell so the window reading shares the
+    # reward's trust boundary at segment edges.
+    with torch.no_grad():
+        photo_segmentation = stacks.segmenter(photo)
+    window_mask = (photo_segmentation == WINDOWPANE_CLASS) & reference.mask
+    photo_removal_fraction = class_area_fraction(
+        photo_segmentation, scene.removal_classes
+    )
     photo_image = f"{scene.photo}_photo.png"
     shell_mask = f"{scene.photo}_shell_mask.png"
+    window_mask_name = f"{scene.photo}_window_mask.png"
     photo_depth_map = f"{scene.photo}_photo_depth.png"
     photo_depth_map_masked = f"{scene.photo}_photo_depth_masked.png"
     _write_image(photo, image_dir / photo_image)
     _write_mask(reference.mask, image_dir / shell_mask)
+    _write_mask(window_mask, image_dir / window_mask_name)
     write_disparity_map(reference.disparity, image_dir / photo_depth_map)
     write_masked_disparity_map(
         reference.disparity,
@@ -568,11 +652,19 @@ def _run_scene(
         depth_estimator=stacks.depth_estimator,
     )
     effective_sigma = _effective_first_sigma(photo, config=config, stacks=stacks)
+    window_fraction = float(window_mask.to(torch.float32).mean())
     print(
         f"[scene] {scene.photo}: shell covers "
         f"{float(reference.mask.to(torch.float32).mean()):.1%} of the frame, "
         f"reconstruction floor {reconstruction:.6f}, effective first sigma "
         f"{config.sampler.start_sigma:g}->{effective_sigma:.4f}"
+    )
+    print(
+        f"[instr] remove the {scene.removal_object} "
+        f"(classes {sorted(scene.removal_classes)}"
+        f"{', substituted' if scene.removal_substituted else ''}): photo share "
+        f"{photo_removal_fraction:.1%}; windowpane covers {window_fraction:.1%} "
+        f"of the frame"
     )
 
     if warm_up:
@@ -586,6 +678,10 @@ def _run_scene(
         )
 
     specs = image_arms(config)
+    # The composites steer under the instruction prompt, so the weights are
+    # measured on the trajectory they will actually walk.
+    if stacks.sampler is not None:
+        select_cached_prompt(stacks.sampler, scene.instruction_prompt)
     sizing = (
         _measure_sizing(
             photo,
@@ -615,6 +711,8 @@ def _run_scene(
         peaks: dict[str, int | None] = {}
         weights: dict[str, float | None] = {}
         for spec in specs:
+            if stacks.sampler is not None:
+                select_cached_prompt(stacks.sampler, spec.steering_prompt(scene))
             reward, weight = _arm_reward(
                 spec,
                 photo=photo,
@@ -642,16 +740,31 @@ def _run_scene(
             peaks[spec.arm] = peak
             _write_image(image, image_dir / f"{scene.photo}_seed{seed}_{spec.arm}.png")
 
+        # Each finished render is segmented once, and that one class map serves
+        # both readings taken off it: the arm's evaluation mask and the share of
+        # frame still labelled as the object the instruction removed.
+        with torch.no_grad():
+            segmentations = {
+                spec.arm: stacks.segmenter(renders[spec.arm]) for spec in specs
+            }
+        removal_fractions = {
+            spec.arm: class_area_fraction(
+                segmentations[spec.arm], scene.removal_classes
+            )
+            for spec in specs
+        }
         # One pixel set for every arm: the reference shell narrowed by each
         # arm's own segmentation, intersected across all of them, so the depth
         # errors are commensurable and covering shell up buys nothing.
         arm_masks = {
-            spec.arm: scorable(
-                renders[spec.arm],
-                stacks=stacks,
-                reference=reference,
-                resegment=config.guidance.resegment,
-                erosion_radius=config.guidance.erosion_radius,
+            spec.arm: (
+                reference.mask
+                & scorable_mask(
+                    segmentations[spec.arm],
+                    erosion_radius=config.guidance.erosion_radius,
+                )
+                if config.guidance.resegment
+                else reference.mask
             )
             for spec in specs
         }
@@ -694,6 +807,7 @@ def _run_scene(
                     arm=spec.arm,
                     kind=spec.kind,
                     model=spec.model,
+                    steering_prompt=spec.steering_prompt(scene),
                     depth_weight=weights[spec.arm],
                     depth_error=depth_error(
                         render,
@@ -703,6 +817,13 @@ def _run_scene(
                     ),
                     shell_coverage=shell_coverage(
                         arm_masks[spec.arm], reference=reference
+                    ),
+                    removal_fraction=removal_fractions[spec.arm],
+                    # The residual map is aligned over the whole common shell;
+                    # the window reading is its mean square over the photo's
+                    # windowpane pixels that survived every arm's mask.
+                    window_depth_error=masked_mean_square(
+                        residuals[spec.arm], window_mask & common
                     ),
                     # Filled in by the deferred judges once sampling is over
                     # and an eval tower can afford to be resident.
@@ -721,7 +842,13 @@ def _run_scene(
             scene=scene.photo,
             seed=seed,
             style_prompt=scene.style_prompt,
+            instruction_prompt=scene.instruction_prompt,
             eval_prompt=scene.eval_prompt,
+            removal_object=scene.removal_object,
+            removal_classes=scene.removal_classes,
+            removal_substituted=scene.removal_substituted,
+            photo_removal_fraction=photo_removal_fraction,
+            window_fraction=window_fraction,
             start_sigma=config.sampler.start_sigma,
             effective_first_sigma=effective_sigma,
             arms=tuple(measurements),
@@ -733,6 +860,7 @@ def _run_scene(
             photo_depth_map=photo_depth_map,
             photo_depth_map_masked=photo_depth_map_masked,
             shell_mask=shell_mask,
+            window_mask=window_mask_name,
             eval_mask_common=eval_mask_common,
         )
         print(f"  [sampled] {result.scene} seed {result.seed}, judges pending")
@@ -940,9 +1068,16 @@ def arm_means(
         similarities = [
             cell.image_similarity for cell in cells if cell.image_similarity is not None
         ]
+        windows = [
+            cell.window_depth_error
+            for cell in cells
+            if cell.window_depth_error is not None
+        ]
         means[spec.arm] = {
             "depth_error": _mean([cell.depth_error for cell in cells]),
             "shell_coverage": _mean([cell.shell_coverage for cell in cells]),
+            "removal_fraction": _mean([cell.removal_fraction for cell in cells]),
+            "window_depth_error": _mean(windows) if windows else None,
             "adherence": _mean([cell.adherence for cell in cells]),
             "image_similarity": _mean(similarities) if similarities else None,
             "preference": _mean([cell.preference for cell in cells]),

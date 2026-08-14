@@ -229,7 +229,12 @@ def test_image_arms_lead_with_the_control_then_anchor_then_models_then_composite
     from framework.image_study import (  # noqa: PLC0415
         CONTROL_ARM as IMAGE_CONTROL_ARM,
     )
-    from framework.image_study import DEPTH_ARM, image_arms  # noqa: PLC0415
+    from framework.image_study import (  # noqa: PLC0415
+        CONTROL_INSTRUCTION_ARM,
+        DEPTH_ARM,
+        DEPTH_INSTRUCTION_ARM,
+        image_arms,
+    )
 
     config = load_study_config(CONF_DIR / "image.yaml")
 
@@ -238,19 +243,78 @@ def test_image_arms_lead_with_the_control_then_anchor_then_models_then_composite
     assert specs[0].arm == IMAGE_CONTROL_ARM
     assert not specs[0].guided
     assert specs[1].arm == DEPTH_ARM
+    # The prompt-matched baselines: without them, instruction-following on the
+    # helper arms could not be attributed to the reward rather than the prompt.
+    assert specs[2].arm == CONTROL_INSTRUCTION_ARM
+    assert not specs[2].guided
+    assert specs[3].arm == DEPTH_INSTRUCTION_ARM
+    assert [spec.instruction for spec in specs[:4]] == [False, False, True, True]
     image_specs = [spec for spec in specs if spec.kind == "image"]
     composite_specs = [spec for spec in specs if spec.kind == "composite"]
     assert [spec.model for spec in image_specs] == list(config.image.models)
     assert [spec.model for spec in composite_specs] == list(
         config.image.composite_models
     )
-    # Every composite must be readable beside its image-only twin.
-    assert {spec.model for spec in composite_specs} <= {
+    # Every helper arm steers under the instruction prompt.
+    assert all(spec.instruction for spec in image_specs + composite_specs)
+    # The completed grid: every helper appears both alone and beside depth.
+    assert [spec.model for spec in composite_specs] == [
         spec.model for spec in image_specs
-    }
+    ]
     # The measured-weight pattern: no configured weight means the ratio is read
     # off the gradients per scene.
     assert config.image.depth_weight is None
+
+
+def test_the_instruction_prompt_wraps_the_style_descriptors_verbatim() -> None:
+    """The owner's template: same style content, plus the keep and remove clauses."""
+    config = load_study_config(CONF_DIR / "image.yaml")
+
+    assert isinstance(config, FmrgImageConfig)
+    for scene in config.scenes:
+        prompt = scene.instruction_prompt
+        assert prompt.startswith(f"renovate this room into {scene.style_prompt}, ")
+        assert "keep the windows, walls, floor and ceiling the same" in prompt
+        assert prompt.endswith(f"remove the {scene.removal_object} in the room")
+        # The judge's text never changes with the steering prompt.
+        assert scene.eval_prompt == scene.style_prompt
+
+
+def test_a_shell_class_as_a_removal_target_is_a_config_error() -> None:
+    """Removing a piece of the shell would contradict the prompt's own keep clause."""
+    from framework.config import ImageSceneConfig  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="contents"):
+        ImageSceneConfig(
+            photo="scandi_living_room",
+            style_prompt="a scandinavian style living room",
+            eval_prompt="a scandinavian style living room",
+            removal_object="wall",
+            removal_classes=(0,),
+        )
+
+
+def test_class_area_fraction_counts_the_named_classes_alone() -> None:
+    from framework.metrics import class_area_fraction  # noqa: PLC0415
+
+    segmentation = torch.zeros(1, 4, 4, dtype=torch.int64)
+    segmentation[0, :2] = 15  # table over the top half
+    segmentation[0, 2, 0] = 33  # one desk pixel
+
+    assert class_area_fraction(segmentation, [15]) == pytest.approx(0.5)
+    assert class_area_fraction(segmentation, [15, 33]) == pytest.approx(9 / 16)
+    assert class_area_fraction(segmentation, [64]) == 0.0
+
+
+def test_masked_mean_square_reads_only_the_mask_and_refuses_an_empty_one() -> None:
+    from framework.metrics import masked_mean_square  # noqa: PLC0415
+
+    field = torch.tensor([[[3.0, -1.0], [100.0, 100.0]]])
+    mask = torch.tensor([[[True, True], [False, False]]])
+
+    assert masked_mean_square(field, mask) == pytest.approx(5.0)
+    # An empty window mask is a scene with no windowpane, not a zero error.
+    assert masked_mean_square(field, torch.zeros_like(mask)) is None
 
 
 def test_a_composite_without_its_image_only_twin_is_a_config_error() -> None:
