@@ -1,0 +1,49 @@
+# One scene, one seed, a short walk on the real stack: does this machine run
+# both stages at all, what does a sample cost, and what do the two energies'
+# gradients actually measure? Everything else matches `study.yaml`, so a pilot
+# that strips, furnishes and scores has validated the whole real path —
+# checkpoints, dtypes, CUDA generator, both CLIPs, artifacts.
+#
+#   uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config pilot
+name: 0003_strip_and_furnish_pilot
+
+seeds: [0]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+  text_energy_checkpoint: openai/clip-vit-base-patch32
+
+strip:
+  prompt: empty room, bare floor, bare wall, no furniture, plain interior
+  negative_prompt: furniture, chair, table, desk, sofa, bed, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  dilation_radius: 8
+  passes: 3
+  steps: 40
+  fill_strength: 0.85
+  guidance_scale: 12.0
+
+furnish:
+  steps: 20
+  noise_strength: 0.8
+  text_guidance_scale: 7.5
+  strength: 40.0
+  clip_step_rms: 0.02
+  depth_weight: null
+  sizing_fraction: 0.5
+  erosion_radius: 2
+  resegment: true
+
+adherence:
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a warm scandinavian living room, pale oak furniture, linen sofa, wool rug, soft daylight

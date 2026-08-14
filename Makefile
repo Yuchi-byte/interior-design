@@ -9,7 +9,12 @@ TESTS := packages/roomgen-geometry/tests packages/roomgen-guide/tests
 # able to land outside the gate.
 EXPERIMENTS := experiments
 LINT_PATHS := conftest.py $(SOURCES) $(TESTS) $(EXPERIMENTS)
-TYPE_PATHS := $(SOURCES) $(EXPERIMENTS)
+# mypy is the one check that cannot take the whole directory at once: every
+# framework owns a top-level `run.py` and a `0003_strip_and_furnish` is not a
+# module name mypy can qualify one with, so a single process sees two modules
+# called `run`. One invocation per framework, discovered rather than listed, so
+# a new NNNN_slug/ is checked the day it is created.
+FRAMEWORKS := $(sort $(wildcard experiments/[0-9]*))
 
 .PHONY: help sync lint format-check format typecheck test check hooks
 
@@ -19,7 +24,7 @@ help:
 	@echo "lint         ruff check"
 	@echo "format       ruff format (rewrites)"
 	@echo "format-check ruff format --check"
-	@echo "typecheck    mypy over both src trees and experiments/"
+	@echo "typecheck    mypy over both src trees, then each experiment framework"
 	@echo "test         pytest, unfiltered (CI deselects the models marker)"
 	@echo "hooks        install the pre-commit hook"
 
@@ -36,7 +41,11 @@ format:
 	uv run ruff format $(LINT_PATHS)
 
 typecheck:
-	uv run mypy $(TYPE_PATHS)
+	uv run mypy $(SOURCES)
+	@for framework in $(FRAMEWORKS); do \
+		echo "uv run mypy $(SOURCES) $$framework"; \
+		uv run mypy $(SOURCES) $$framework || exit 1; \
+	done
 
 # Unfiltered on purpose. CI runs `-m "not models"` because its runner has no
 # weights; a dev machine does, and those tests are the ones that exercise the

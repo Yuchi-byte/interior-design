@@ -1,0 +1,49 @@
+# Plumbing, not a claim: both stages on the weightless test doubles, CPU-only,
+# offline, in seconds. Real photos off disk, real config, real masks, real
+# compositing, real reward and real metrics — only the checkpoints are faked.
+#
+#   uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config smoke
+name: 0003_strip_and_furnish_smoke
+
+seeds: [0, 1]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  # The fake stack ships its own DDIM-shaped scheduler; there is nothing to swap.
+  scheduler: pipeline
+
+strip:
+  prompt: empty room, bare floor, bare wall, no furniture, plain interior
+  negative_prompt: furniture, chair, table, desk, sofa, bed, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  dilation_radius: 2
+  passes: 2
+  steps: 4
+  fill_strength: 0.6
+  guidance_scale: 7.5
+
+furnish:
+  steps: 6
+  noise_strength: 0.8
+  text_guidance_scale: 7.5
+  # Raw-gradient units, which is what this stack's tiny energy gradients ask for.
+  strength: 500.0
+  depth_weight: null
+  sizing_fraction: 0.5
+  erosion_radius: 2
+  resegment: true
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a warm scandinavian living room, pale oak furniture, linen sofa, wool rug, soft daylight
+  - photo: ny_loft_bedroom
+    prompt: a minimalist loft bedroom, low platform bed, linen bedding, paper lantern, potted plant

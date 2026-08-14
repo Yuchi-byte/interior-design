@@ -128,10 +128,16 @@ ban-relative-imports = "parents"
 # rather than the current framework: a new `NNNN_slug/` must not be able to
 # land outside the gate the way `0002` did.
 mypy_path = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
+# The two src trees only. Every numbered framework under `experiments/` is
+# type-checked too, but in an invocation of its own: each one owns a top-level
+# `run.py`, a directory named `0003_strip_and_furnish` is not a valid package
+# name for mypy to qualify it with, and one process therefore sees several
+# modules called `run` and refuses the lot. The Makefile, CI and the pre-commit
+# hook all loop over `experiments/[0-9]*`, so a new framework is inside the gate
+# the day its directory is created.
 files = [
     "packages/roomgen-geometry/src",
     "packages/roomgen-guide/src",
-    "experiments",
 ]
 python_version = "3.12"
 plugins = ["pydantic.mypy"]
@@ -202,6 +208,7 @@ testpaths = [
     "packages/roomgen-geometry/tests",
     "packages/roomgen-guide/tests",
     "experiments/0002_geometric_guidance/tests",
+    "experiments/0003_strip_and_furnish/tests",
 ]
 # `--strict-markers` turns a misspelled marker into a collection error rather
 # than a test CI silently keeps running: `-m "not models"` only protects the
@@ -216,9 +223,13 @@ addopts = "-q --strict-markers --strict-config"
 pythonpath = [
     "packages/roomgen-geometry/tests",
     "packages/roomgen-guide/tests",
-    # `framework` is a package under the experiment directory, not an installed
-    # one: its own suite imports it the same way `run.py` does.
+    # Each framework's machinery is a package under its own experiment
+    # directory, not an installed one: its suite imports it the way `run.py`
+    # does. The package names differ per framework because a top-level import
+    # name is global — two directories named `framework` on this path would
+    # shadow each other.
     "experiments/0002_geometric_guidance",
+    "experiments/0003_strip_and_furnish",
 ]
 markers = [
     "models: requires downloading pretrained model weights from the Hugging Face Hub; excluded from CI, which has no network or GPU",

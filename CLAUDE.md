@@ -58,13 +58,19 @@ uv pip install --torch-backend=auto torch torchvision # layer CUDA wheels on top
 ```bash
 uv run ruff check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests experiments
 uv run ruff format --check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests experiments
-uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src experiments
+uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
+uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src experiments/NNNN_slug  # one per framework
 uv run pytest -q                    # CI runs `-m "not models"`; locally run it unfiltered
 ```
 
 `experiments/` is gated as a whole directory, not per framework: experiment
 code is real code — it loads the checkpoints and computes the numbers a report
-quotes — so a new `NNNN_slug/` is inside the gate the day it is created.
+quotes — so a new `NNNN_slug/` is inside the gate the day it is created. mypy is
+the one check that takes the frameworks one at a time rather than the directory
+at once: each framework owns a top-level `run.py`, a numbered directory is not a
+package name mypy can qualify one with, and a single process therefore sees
+several modules called `run` and refuses them all. `make typecheck` walks
+`experiments/[0-9]*` itself, so the loop is written down once.
 
 `make check` runs exactly those four (see the `Makefile` for the rest of the
 wrappers). `uv run pre-commit install` wires all four into a pre-commit hook; CI

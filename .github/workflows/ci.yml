@@ -65,9 +65,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: uv run ruff format --check conftest.py packages/roomgen-geometry/src packages/roomgen-geometry/tests packages/roomgen-guide/src packages/roomgen-guide/tests experiments
 
-      - name: Mypy (geometry + guide src, experiments)
+      # One invocation per experiment framework, as the Makefile does: each
+      # framework owns a top-level `run.py`, and a single mypy process refuses
+      # two modules of the same name.
+      - name: Mypy (geometry + guide src, then each experiment framework)
         if: ${{ !cancelled() }}
-        run: uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src experiments
+        run: |
+          uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src
+          for framework in experiments/[0-9]*/; do
+            uv run mypy packages/roomgen-geometry/src packages/roomgen-guide/src "$framework"
+          done
 
       # Anything marked `models` downloads pretrained depth/segmentation/diffusion
       # weights from the Hugging Face Hub and wants a GPU to finish in reasonable
