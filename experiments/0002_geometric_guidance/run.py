@@ -33,6 +33,7 @@ from framework.config import (
     FmrgConfig,
     FmrgContextConfig,
     FmrgEtaConfig,
+    FmrgImageConfig,
     FmrgReduxConfig,
     FramingConfig,
     load_study_config,
@@ -63,6 +64,8 @@ from framework.fmrg_study import FmrgSummary, run_fmrg_study
 from framework.framing import ARMS, FramingSummary, framing_comparisons, run_framing
 from framework.framing_gallery import write_framing_gallery
 from framework.gallery import write_gallery
+from framework.image_study import ImageSummary, image_arms, run_image_study
+from framework.image_study import arm_means as image_arm_means
 from framework.redux_study import (
     ReduxSummary,
     redux_arms,
@@ -105,7 +108,11 @@ def main() -> int:
         else f"eta {config.guidance.eta}"
         if isinstance(
             config,
-            FmrgConfig | FmrgContextConfig | FmrgReduxConfig | FmrgAlignmentConfig,
+            FmrgConfig
+            | FmrgContextConfig
+            | FmrgReduxConfig
+            | FmrgAlignmentConfig
+            | FmrgImageConfig,
         )
         else f"strength {config.guidance.strength}"
     )
@@ -139,6 +146,11 @@ def main() -> int:
         # No HTML gallery of its own: the study's record is its results.json
         # and the renders, depth maps and residual maps beside it.
         _report_fmrg_alignment(run_fmrg_alignment_study(config, settings))
+        gallery = None
+    elif isinstance(config, FmrgImageConfig):
+        # No HTML gallery of its own: the study's record is its results.json
+        # and the renders, depth maps and residual maps beside it.
+        _report_image(run_image_study(config, settings))
         gallery = None
     elif isinstance(config, FramingConfig):
         framing_summary = run_framing(config, settings)
@@ -367,6 +379,66 @@ def _report_eta(summary: EtaSummary) -> None:
         print(
             f"{spec.arm:<9}{row['eta']:>7.1f}{row['depth_error']:>10.5f}"
             f"{row['adherence']:>9.4f}"
+            f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
+        )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
+
+
+_IMAGE_COLUMNS = (
+    f"{'arm':<16}{'depth':>10}{'vs ctl':>9}{'adher':>9}{'ratio':>8}"
+    f"{'imgsim':>9}{'pref':>9}{'shell':>7}{'sec':>7}"
+)
+
+
+def _report_image(summary: ImageSummary) -> None:
+    """The image-reward study's numbers per (scene, seed, arm) and in the mean. No claim is made."""
+    specs = image_arms(summary.config)
+    print(
+        f"\n[metrics] {len(summary.results)} (scene, seed) tuples x "
+        f"{len(specs)} arms, one common mask each"
+    )
+    for result in summary.results:
+        print(f"{result.scene} seed {result.seed}:\n{_IMAGE_COLUMNS}")
+        for cell in result.arms:
+            similarity = (
+                "n/a"
+                if cell.image_similarity is None
+                else f"{cell.image_similarity:.4f}"
+            )
+            print(
+                f"{cell.arm:<16}{cell.depth_error:>10.5f}"
+                f"{_signed(result.depth_delta_vs_control(cell.arm)):>9}"
+                f"{cell.adherence:>9.4f}"
+                f"{_share(result.adherence_ratio_vs_control(cell.arm)):>8}"
+                f"{similarity:>9}{cell.preference:>9.3f}"
+                f"{cell.shell_coverage:>6.0%} {cell.seconds:>6.1f}"
+            )
+        if result.sizing is not None:
+            weights = ", ".join(
+                f"{model} {weight:.3g}"
+                for model, weight in result.sizing.weights.items()
+            )
+            print(f"{'measured depth weights':<25}{weights}")
+        print(f"{'common mask':<25}{'':>32}{result.common_coverage:>16.0%}")
+    means = image_arm_means(summary.results, specs)
+    print("\n[means]   per arm, over every (scene, seed)")
+    for spec in specs:
+        row = means[spec.arm]
+        similarity = (
+            "n/a"
+            if row["image_similarity"] is None
+            else f"{row['image_similarity']:.4f}"
+        )
+        print(
+            f"{spec.arm:<16}{row['depth_error']:>10.5f}{row['adherence']:>9.4f}"
+            f"{similarity:>9}{row['preference']:>9.3f}"
             f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
         )
     print(

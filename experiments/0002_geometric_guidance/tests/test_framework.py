@@ -21,6 +21,7 @@ from framework.config import (
     FmrgConfig,
     FmrgContextConfig,
     FmrgEtaConfig,
+    FmrgImageConfig,
     FmrgReduxConfig,
     FramingConfig,
     load_study_config,
@@ -58,6 +59,7 @@ def test_every_shipped_variant_validates(variant: str) -> None:
         | FmrgReduxConfig
         | FmrgEtaConfig
         | FmrgAlignmentConfig
+        | FmrgImageConfig
         | FramingConfig
         | AlignmentStudyConfig,
     )
@@ -218,6 +220,63 @@ def test_an_unguided_eta_in_the_sweep_is_a_config_error() -> None:
     """Eta 0 in the sweep would duplicate the baseline under a guided arm's name."""
     with pytest.raises(ValueError, match="etas must be positive"):
         load_study_config(CONF_DIR / "eta.yaml", ["etas=[0.0, 5.0]"])
+
+
+def test_image_arms_lead_with_the_control_then_anchor_then_models_then_composites() -> (
+    None
+):
+    """The pairwise readings need all four kinds: control, depth, per-model, composite."""
+    from framework.image_study import (  # noqa: PLC0415
+        CONTROL_ARM as IMAGE_CONTROL_ARM,
+    )
+    from framework.image_study import DEPTH_ARM, image_arms  # noqa: PLC0415
+
+    config = load_study_config(CONF_DIR / "image.yaml")
+
+    assert isinstance(config, FmrgImageConfig)
+    specs = image_arms(config)
+    assert specs[0].arm == IMAGE_CONTROL_ARM
+    assert not specs[0].guided
+    assert specs[1].arm == DEPTH_ARM
+    image_specs = [spec for spec in specs if spec.kind == "image"]
+    composite_specs = [spec for spec in specs if spec.kind == "composite"]
+    assert [spec.model for spec in image_specs] == list(config.image.models)
+    assert [spec.model for spec in composite_specs] == list(
+        config.image.composite_models
+    )
+    # Every composite must be readable beside its image-only twin.
+    assert {spec.model for spec in composite_specs} <= {
+        spec.model for spec in image_specs
+    }
+    # The measured-weight pattern: no configured weight means the ratio is read
+    # off the gradients per scene.
+    assert config.image.depth_weight is None
+
+
+def test_a_composite_without_its_image_only_twin_is_a_config_error() -> None:
+    with pytest.raises(ValueError, match="image-only arm"):
+        load_study_config(CONF_DIR / "image.yaml", ["image.models=[clip]"])
+
+
+def test_no_image_study_judge_may_share_a_steered_checkpoint() -> None:
+    """The self-grading rule: the checkpoint an energy descends never scores it."""
+    with pytest.raises(ValueError, match="independent"):
+        load_study_config(
+            CONF_DIR / "image.yaml",
+            ["adherence.checkpoint=openai/clip-vit-base-patch32"],
+        )
+    with pytest.raises(ValueError, match="independent"):
+        load_study_config(
+            CONF_DIR / "image.yaml",
+            ["image_similarity_checkpoint=openai/clip-vit-base-patch32"],
+        )
+    # The rule binds through the steering config, not the literal default: an
+    # eval judge promoted to a steering checkpoint is caught the same way.
+    with pytest.raises(ValueError, match="independent"):
+        load_study_config(
+            CONF_DIR / "image.yaml",
+            ["image.clip_checkpoint=openai/clip-vit-large-patch14"],
+        )
 
 
 def test_the_context_adherence_judge_may_not_be_the_guidance_clip() -> None:

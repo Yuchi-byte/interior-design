@@ -33,8 +33,16 @@ from roomgen_guide.adapters.fmrg_flux import (
 )
 from roomgen_guide.config import Config
 from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
+from roomgen_guide.eval import (
+    DEFAULT_IMAGE_SIMILARITY_CHECKPOINT as IMAGE_SIMILARITY_CHECKPOINT,
+)
 from roomgen_guide.experiment import ExperimentConfig
 from roomgen_guide.guidance.clip import DEFAULT_CHECKPOINT as GUIDANCE_CLIP_CHECKPOINT
+from roomgen_guide.guidance.image_reference import (
+    DEFAULT_DINOV2_CHECKPOINT,
+    DEFAULT_SIGLIP_CHECKPOINT,
+    DEFAULT_VGG_INPUT_SIZE,
+)
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 
 DTypeName = Literal["float32", "float16", "bfloat16"]
@@ -664,6 +672,61 @@ class FmrgAlignmentConfig(ExperimentConfig):
         return self
 
 
+ImageModelName = Literal["clip", "dinov2", "siglip", "vgg"]
+
+
+class ImageGuidanceConfig(Config):
+    """Which frozen vision models steer the render toward the reference photo.
+
+    Args:
+        models: the helper models under comparison, one image-only guided arm
+            each. `clip`/`siglip` descend a pooled-embedding cosine, `dinov2` a
+            cosine over its spatial patch-token grid, `vgg` an LPIPS-shaped
+            perceptual distance.
+        composite_models: the models that also run an image-plus-depth arm; a
+            subset of `models`, so every composite has its image-only twin.
+        depth_weight: the depth term's weight beside an image term held at 1.0;
+            `None` measures it per (scene, model) as the ratio of the two
+            terms' gradient RMS at a midpoint step, the unit conversion between
+            a cosine and a masked squared disparity.
+        sizing_fraction: how far into the guided window the sizing gradient is
+            taken, on a real partially denoised sample.
+        siglip_checkpoint: defaults to FLUX.1-Redux-dev, whose snapshot already
+            carries the SigLIP tower — no extra download.
+        vgg_input_size: the square side the render is resized to before the VGG
+            pyramid; the model has no fixed input size of its own.
+    """
+
+    models: Annotated[tuple[ImageModelName, ...], Field(min_length=1)] = (
+        "clip",
+        "dinov2",
+        "siglip",
+        "vgg",
+    )
+    composite_models: tuple[ImageModelName, ...] = ("clip", "dinov2")
+    depth_weight: Annotated[float, Field(gt=0.0)] | None = None
+    sizing_fraction: Annotated[float, Field(gt=0.0, le=1.0)] = 0.5
+    clip_checkpoint: Annotated[str, Field(min_length=1)] = GUIDANCE_CLIP_CHECKPOINT
+    dinov2_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_DINOV2_CHECKPOINT
+    siglip_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_SIGLIP_CHECKPOINT
+    vgg_input_size: Annotated[int, Field(ge=32)] = DEFAULT_VGG_INPUT_SIZE
+
+    @model_validator(mode="after")
+    def _every_composite_has_its_image_only_twin(self) -> ImageGuidanceConfig:
+        missing = [model for model in self.composite_models if model not in self.models]
+        if missing:
+            raise ValueError(
+                f"composite_models {missing} are not in models: an image-plus-"
+                f"depth arm is only readable beside the same model's image-only "
+                f"arm"
+            )
+        return self
+
+    def steering_checkpoints(self) -> tuple[str, ...]:
+        """Every checkpoint some arm descends — what no eval judge may share."""
+        return (self.clip_checkpoint, self.dinov2_checkpoint, self.siglip_checkpoint)
+
+
 class PreferenceConfig(Config):
     """Which human-preference model scores the finished renders — eval only, never guidance.
 
@@ -684,6 +747,70 @@ class PreferenceConfig(Config):
     processor_checkpoint: Annotated[str, Field(min_length=1)] = (
         "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
     )
+
+
+class FmrgImageConfig(ExperimentConfig):
+    """The image-reward study: the user's photo at the reward point, per helper model.
+
+    Per scene at one seed off one transformer load: an unguided control, a
+    depth-only anchor, one image-only guided arm per helper model, and an
+    image-plus-depth composite (measured weight) for each `composite_models`
+    entry. Every arm is scored on the one pixel set all arms left visible, by
+    judges independent of every feature space any arm descended.
+
+    Args:
+        image_similarity_checkpoint: the eval judge of render-to-photo cosine;
+            `None` skips the metric, which is what the offline smoke variant
+            does. Never a checkpoint any arm steers by.
+    """
+
+    study: Literal["fmrg_image"]
+    scenes: Annotated[tuple[EtaSceneConfig, ...], Field(min_length=1)]
+    resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    backends: FmrgBackendConfig
+    sampler: FmrgSamplerConfig = FmrgSamplerConfig()
+    guidance: FmrgGuidanceConfig = FmrgGuidanceConfig()
+    image: ImageGuidanceConfig = ImageGuidanceConfig()
+    adherence: AdherenceConfig
+    image_similarity_checkpoint: Annotated[str, Field(min_length=1)] | None = (
+        IMAGE_SIMILARITY_CHECKPOINT
+    )
+    preference: PreferenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
+        if resolution % FLUX_LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
+                f"FLUX's packed latent grid, got {resolution}"
+            )
+        return resolution
+
+    @model_validator(mode="after")
+    def _no_judge_shares_a_steered_checkpoint(self) -> FmrgImageConfig:
+        # The self-grading rule: the checkpoint an energy descends must never be
+        # the checkpoint that scores it. Both judges are checked against every
+        # steering checkpoint, plus the repo's guidance CLIP as the standing
+        # pattern from every other study.
+        steered = {*self.image.steering_checkpoints(), GUIDANCE_CLIP_CHECKPOINT}
+        if self.adherence.kind == "clip" and self.adherence.checkpoint in steered:
+            raise ValueError(
+                f"adherence.checkpoint is {self.adherence.checkpoint!r}, a "
+                f"checkpoint some arm descends: score adherence with an "
+                f"independent checkpoint (e.g. openai/clip-vit-large-patch14)."
+            )
+        if (
+            self.image_similarity_checkpoint is not None
+            and self.image_similarity_checkpoint in steered
+        ):
+            raise ValueError(
+                f"image_similarity_checkpoint is "
+                f"{self.image_similarity_checkpoint!r}, a checkpoint some arm "
+                f"descends: judge image similarity with an independent "
+                f"checkpoint (e.g. openai/clip-vit-large-patch14)."
+            )
+        return self
 
 
 class FramingConfig(ExperimentConfig):
@@ -789,6 +916,7 @@ def load_study_config(
     | FmrgReduxConfig
     | FmrgEtaConfig
     | FmrgAlignmentConfig
+    | FmrgImageConfig
     | FramingConfig
     | AlignmentStudyConfig
 ):
@@ -815,6 +943,8 @@ def load_study_config(
             return FmrgEtaConfig.from_file(path, overrides)
         case "fmrg_da3_alignment":
             return FmrgAlignmentConfig.from_file(path, overrides)
+        case "fmrg_image":
+            return FmrgImageConfig.from_file(path, overrides)
         case "framing":
             return FramingConfig.from_file(path, overrides)
         case "da3_alignment":
@@ -823,5 +953,6 @@ def load_study_config(
             raise ValueError(
                 f"{path} declares unknown study {study!r}; "
                 "known studies: benchmark, fmrg, fmrg_context, fmrg_redux, "
-                "fmrg_eta, fmrg_da3_alignment, framing, da3_alignment"
+                "fmrg_eta, fmrg_da3_alignment, fmrg_image, framing, "
+                "da3_alignment"
             )

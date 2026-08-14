@@ -61,6 +61,7 @@ from roomgen_guide.eval import (
     shell_coverage,
     signed_depth_residual_map,
 )
+from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.metrics import RunMetrics
 from roomgen_guide.process.driver import sample_endpoint_process
@@ -535,6 +536,7 @@ def sample_walk(
     window: GuidanceWindow | bool | None = True,
     depth_estimator: DepthEstimator | None = None,
     alignment: AlignmentMode = "scale_shift",
+    reward: Guidance | None = None,
 ) -> tuple[Float[Tensor, "1 3 height width"], float, int | None]:
     """One walk at `seed`; `eta` 0 is the control on the identical trajectory.
 
@@ -546,6 +548,9 @@ def sample_walk(
             stack's own (DA2); the alignment study steers by DA3 metric instead.
         alignment: the fit the reward's energy runs through, as
             `GeometricGuidance` takes it — the alignment study's variable.
+        reward: the energy the walk descends in place of the geometric one it
+            otherwise builds — how a study steers by an image-reference term, or
+            a weighted sum carrying one, over the identical trajectory.
     """
     generator = torch.Generator(device=stacks.device).manual_seed(seed)
     resolved_window = (
@@ -576,16 +581,19 @@ def sample_walk(
         anneal_steps=process.steps,
         iterations=guidance.iterations,
     )
-    reward = GeometricGuidance(
-        depth_estimator=(
-            depth_estimator if depth_estimator is not None else stacks.depth_estimator
-        ),
-        reference=reference,
-        segmenter=stacks.segmenter if guidance.resegment else None,
-        erosion_radius=(guidance.erosion_radius if guidance.resegment else None),
-        on_mask=on_mask,
-        alignment=alignment,
-    )
+    if reward is None:
+        reward = GeometricGuidance(
+            depth_estimator=(
+                depth_estimator
+                if depth_estimator is not None
+                else stacks.depth_estimator
+            ),
+            reference=reference,
+            segmenter=stacks.segmenter if guidance.resegment else None,
+            erosion_radius=(guidance.erosion_radius if guidance.resegment else None),
+            on_mask=on_mask,
+            alignment=alignment,
+        )
     on_cuda = stacks.device.type == "cuda"
     if on_cuda:
         torch.cuda.synchronize(stacks.device)
