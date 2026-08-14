@@ -89,7 +89,12 @@ class GradientSizing:
 
 @dataclass(frozen=True)
 class ArmRender:
-    """One arm's finished render and the pixels it left the score to read."""
+    """One arm's finished render and the pixels its own segmentation left scorable.
+
+    `scorable` is the render's side of the mask alone — it is intersected with
+    whichever reference is doing the scoring at scoring time, since one render
+    is read against two of them.
+    """
 
     image: Float[Tensor, "1 3 height width"]
     scorable: Bool[Tensor, "1 height width"]
@@ -98,21 +103,32 @@ class ArmRender:
 
 @dataclass(frozen=True)
 class FurnishResult:
-    """One (scene, seed): three renders, the one mask they were compared over, the numbers."""
+    """One (scene, seed): three renders, the numbers, under both references.
+
+    The primary numbers — `depth_errors`, `common_coverage`,
+    `reconstruction_depth_error` — are read against the photograph's retained
+    reference, the one the guided arm descends. The `empty_room_*` fields are
+    the same measurements against the stripped room's reference, the previous
+    protocol's, kept as a diagnostic; each reference scores all three arms over
+    its own common mask.
+    """
 
     scene: str
     prompt: str
     seed: int
     depth_errors: dict[str, float]
+    empty_room_depth_errors: dict[str, float]
     adherences: dict[str, float]
     arm_coverages: dict[str, float]
     seconds: dict[str, float]
     common_coverage: float
+    empty_room_common_coverage: float
     reconstruction_depth_error: float
+    empty_room_reconstruction_depth_error: float
     images: dict[str, str]
 
     def metrics(self, guided: Arm, control: Arm) -> RunMetrics:
-        """One arm read against another over the pair's common mask."""
+        """One arm read against another, on the photo reference's common mask."""
         return RunMetrics(
             guided_depth_error=self.depth_errors[guided],
             control_depth_error=self.depth_errors[control],
@@ -139,10 +155,15 @@ class FurnishResult:
             "prompt": self.prompt,
             "seed": self.seed,
             "depth_error": self.depth_errors,
+            "depth_error_empty_room": self.empty_room_depth_errors,
             "adherence": self.adherences,
             "arm_shell_coverage": self.arm_coverages,
             "common_coverage": self.common_coverage,
+            "common_coverage_empty_room": self.empty_room_common_coverage,
             "reconstruction_depth_error": self.reconstruction_depth_error,
+            "reconstruction_depth_error_empty_room": (
+                self.empty_room_reconstruction_depth_error
+            ),
             "seconds": self.seconds,
             "comparisons": comparisons,
             "images": self.images,
@@ -156,14 +177,29 @@ _COMPARISONS: Final[tuple[tuple[Arm, Arm], ...]] = (
 )
 
 
+def guidance_reference(strip: StripResult) -> GeometricReference:
+    """The geometry the furnishing must keep: the *photograph's*, retained from stage 1.
+
+    The strip already froze the photo's shell depth to score itself against
+    (`StripResult.reference`), and the masked reward is blind to furniture by
+    construction, so that same reference is a legitimate stage-2 target. Reusing
+    it — rather than re-estimating depth from the inpainted room — means the
+    guidance inherits nothing the inpainting got wrong. The trade is coverage:
+    shell pixels the photograph's furniture occluded are outside its mask, so
+    this reference covers less shell than one read off the empty room.
+    """
+    return strip.reference
+
+
 def empty_room_reference(
     strip: StripResult, *, config: StudyConfig, backends: Backends
 ) -> GeometricReference:
-    """The geometry the furnishing must keep: the *stripped* room, not the photograph.
+    """The stripped room's geometry, kept as the secondary yardstick.
 
-    Stage 2 is asked to put furniture into an empty room without moving it, so
-    the reference is frozen from the empty room the strip produced — the same
-    frame, one VAE round trip and one repaint later.
+    Guidance no longer descends this — it is steered by the photograph's own
+    shell depth (`guidance_reference`) — but every arm is still scored against
+    it, so the run stays comparable with the previous protocol, whose reference
+    this was.
     """
     return GeometricReference.from_photo(
         strip.empty_room,
@@ -253,14 +289,25 @@ def furnish_scene(
     backends: Backends,
     adherence: PromptAdherence,
     reference: GeometricReference,
+    empty_reference: GeometricReference,
     energies: Energies,
     gallery: Path,
 ) -> list[FurnishResult]:
-    """Every seed of one scene, all three arms, scored over one common mask per seed."""
+    """Every seed of one scene, all three arms, one common mask per seed per reference.
+
+    Args:
+        reference: the photograph's retained shell depth — what the guided arm
+            descends and what the primary numbers are read against.
+        empty_reference: the stripped room's, scored beside it as a diagnostic.
+    """
+    roundtrip = vae_roundtrip(
+        backends.pipeline.vae, strip.empty_room, device=backends.device
+    )
     reconstruction = depth_error(
-        vae_roundtrip(backends.pipeline.vae, strip.empty_room, device=backends.device),
-        reference=reference,
-        depth_estimator=backends.depth_estimator,
+        roundtrip, reference=reference, depth_estimator=backends.depth_estimator
+    )
+    empty_reconstruction = depth_error(
+        roundtrip, reference=empty_reference, depth_estimator=backends.depth_estimator
     )
     guidance: dict[Arm, Guidance] = {
         "text_only": energies.text_only,
@@ -282,15 +329,16 @@ def furnish_scene(
                 strength=0.0 if arm == "control" else config.furnish.strength,
                 config=config,
                 backends=backends,
-                reference=reference,
                 seed=seed,
             )
             for arm in ARMS
         }
-        # One pixel set for all three arms: scoring each on its own shell makes
-        # the numbers incommensurable and pays an arm for hiding the geometry it
-        # moved, since a mask that shrinks takes the evidence with it.
+        # One pixel set for all three arms, per reference: scoring each arm on
+        # its own shell makes the numbers incommensurable and pays an arm for
+        # hiding the geometry it moved, since a mask that shrinks takes the
+        # evidence with it.
         common = _common_mask(renders, reference=reference)
+        empty_common = _common_mask(renders, reference=empty_reference)
         results.append(
             FurnishResult(
                 scene=scene.photo,
@@ -302,6 +350,15 @@ def furnish_scene(
                         reference=reference,
                         depth_estimator=backends.depth_estimator,
                         mask=common,
+                    )
+                    for arm, render in renders.items()
+                },
+                empty_room_depth_errors={
+                    arm: depth_error(
+                        render.image,
+                        reference=empty_reference,
+                        depth_estimator=backends.depth_estimator,
+                        mask=empty_common,
                     )
                     for arm, render in renders.items()
                 },
@@ -320,7 +377,11 @@ def furnish_scene(
                 },
                 seconds={arm: render.seconds for arm, render in renders.items()},
                 common_coverage=shell_coverage(common, reference=reference),
+                empty_room_common_coverage=shell_coverage(
+                    empty_common, reference=empty_reference
+                ),
                 reconstruction_depth_error=reconstruction,
+                empty_room_reconstruction_depth_error=empty_reconstruction,
                 images=_write_gallery(
                     scene.photo,
                     seed=seed,
@@ -343,7 +404,6 @@ def _render(
     strength: float,
     config: StudyConfig,
     backends: Backends,
-    reference: GeometricReference,
     seed: int,
 ) -> ArmRender:
     # The generator lives on the sampling device: the loop draws its noise with
@@ -369,7 +429,7 @@ def _render(
     _synchronize(backends.device)
     seconds = time.perf_counter() - started
     with torch.no_grad():
-        scorable = reference.mask & scorable_mask(
+        scorable = scorable_mask(
             backends.segmenter(image), erosion_radius=config.furnish.erosion_radius
         )
     return ArmRender(image=image, scorable=scorable, seconds=seconds)

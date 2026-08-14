@@ -61,17 +61,23 @@ def main() -> int:
 
 
 _COLUMNS = (
-    f"{'arm':<16}{'depth':>11}{'Δ vs ctl':>10}{'adherence':>11}"
+    f"{'arm':<16}{'depth':>11}{'Δ vs ctl':>10}{'depth(empty)':>13}{'adherence':>11}"
     f"{'vs ctl':>9}{'coverage':>10}{'sec':>8}"
 )
 
 
 def _report(summary: Summary) -> None:
-    """The study's numbers in the mean, per arm. No claim is made about them."""
+    """The study's numbers in the mean, per arm. No claim is made about them.
+
+    `depth` is read against the photograph's retained reference — the one the
+    guided arm descends — and `depth(empty)` against the stripped room's, the
+    previous protocol's reference, kept as a diagnostic. Each reference scores
+    all arms of a pair on its own common mask.
+    """
     results = summary.furnishes
     print(
         f"\n[stage 2 mean] over {len(results)} (scene, seed) pairs, one common "
-        f"mask each\n{_COLUMNS}"
+        f"mask each per reference\n{_COLUMNS}"
     )
     for arm in ARMS:
         reduction = _optional_mean(
@@ -83,13 +89,18 @@ def _report(summary: Summary) -> None:
         print(
             f"{arm:<16}{_mean(_depth(results, arm)):>11.6f}"
             f"{_signed(reduction):>10}"
+            f"{_mean(result.empty_room_depth_errors[arm] for result in results):>13.6f}"
             f"{_mean(_adherence(results, arm)):>11.4f}{_share(ratio):>9}"
             f"{_mean(result.arm_coverages[arm] for result in results):>10.0%}"
             f"{_mean(result.seconds[arm] for result in results):>8.1f}"
         )
     print(
-        f"{'common mask':<16}{'':>11}{'':>10}{'':>11}{'':>9}"
+        f"{'common (photo)':<16}{'':>11}{'':>10}{'':>13}{'':>11}{'':>9}"
         f"{_mean(result.common_coverage for result in results):>10.0%}"
+    )
+    print(
+        f"{'common (empty)':<16}{'':>11}{'':>10}{'':>13}{'':>11}{'':>9}"
+        f"{_mean(result.empty_room_common_coverage for result in results):>10.0%}"
     )
     print(
         f"[weights] depth term {summary.depth_weight:.6g}, text term 1.0 "

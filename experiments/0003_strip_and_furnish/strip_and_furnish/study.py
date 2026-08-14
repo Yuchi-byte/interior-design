@@ -1,8 +1,11 @@
 """The study: strip every scene, size the composite's weight, furnish under both energies.
 
 Two stages, two galleries, one `results.json`. Stage 1 never sees the depth
-energy and stage 2 never sees the photograph — its reference is the empty room
-stage 1 produced, which is the geometry a furnishing is asked to keep.
+energy. Stage 2 is steered by the *photograph's* shell depth, retained from the
+reference stage 1 froze to score itself — never re-estimated from the inpainted
+room, so guidance inherits nothing the inpainting got wrong. The stripped
+room's own reference is still computed and every arm scored against it too, as
+the diagnostic that keeps the run comparable with the previous protocol.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from strip_and_furnish.furnish import (
     build_energies,
     empty_room_reference,
     furnish_scene,
+    guidance_reference,
     measure_gradient_sizing,
 )
 from strip_and_furnish.images import write_image
@@ -101,7 +105,11 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
     if backends.device.type == "cuda":
         torch.cuda.empty_cache()
 
-    references = {
+    # The guidance target is the photograph's shell depth, retained from the
+    # reference each strip froze — not re-estimated from the inpainted room.
+    # The stripped room's reference is computed beside it purely for scoring.
+    references = {strip.scene: guidance_reference(strip) for strip in strips}
+    empty_references = {
         strip.scene: empty_room_reference(strip, config=config, backends=backends)
         for strip in strips
     }
@@ -163,7 +171,8 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
 
     print(
         f"\n[stage 2] furnish: {len(config.scenes)} scenes x {len(config.seeds)} seeds "
-        f"x {len(ARMS)} arms, reference = the stripped room"
+        f"x {len(ARMS)} arms, reference = the photograph's shell (retained from "
+        f"stage 1; the stripped room's is scored as a diagnostic)"
     )
     furnishes: list[FurnishResult] = []
     for scene, strip in zip(config.scenes, strips, strict=True):
@@ -177,6 +186,7 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
             backends=backends,
             adherence=adherence,
             reference=references[scene.photo],
+            empty_reference=empty_references[scene.photo],
             energies=energies_by_scene[scene.photo],
             gallery=gallery_b,
         )
@@ -271,16 +281,20 @@ def _format_furnish(result: FurnishResult) -> str:
     against_control = result.metrics("text_and_depth", "control")
     against_text = result.metrics("text_and_depth", "text_only")
     return (
-        f"{result.scene} seed {result.seed}: depth "
+        f"{result.scene} seed {result.seed}: depth vs photo "
         f"A {result.depth_errors['text_only']:.6f} / "
         f"B {result.depth_errors['text_and_depth']:.6f} / "
         f"ctl {result.depth_errors['control']:.6f} "
         f"(B vs ctl {_signed(against_control.depth_error_reduction)}, "
-        f"B vs A {_signed(against_text.depth_error_reduction)}), adherence "
+        f"B vs A {_signed(against_text.depth_error_reduction)}), vs empty room "
+        f"A {result.empty_room_depth_errors['text_only']:.6f} / "
+        f"B {result.empty_room_depth_errors['text_and_depth']:.6f} / "
+        f"ctl {result.empty_room_depth_errors['control']:.6f}, adherence "
         f"A {result.adherences['text_only']:.4f} / "
         f"B {result.adherences['text_and_depth']:.4f} / "
         f"ctl {result.adherences['control']:.4f}, shell scored "
-        f"{result.common_coverage:.0%} in common"
+        f"{result.common_coverage:.0%} in common vs photo, "
+        f"{result.empty_room_common_coverage:.0%} vs empty room"
     )
 
 
@@ -338,6 +352,10 @@ def _write_results(summary: Summary, settings: RoomgenSettings) -> None:
                     "strip": str(summary.output_dir / GALLERY_A),
                     "furnish": str(summary.output_dir / GALLERY_B),
                 },
+                # What steered stage 2 and what the primary numbers are read
+                # against; the `*_empty_room` fields are the previous
+                # protocol's reference, scored as a diagnostic.
+                "guidance_reference": "photo",
                 "depth_weight": summary.depth_weight,
                 "weight_sizing": {
                     scene: sizing.as_row() for scene, sizing in summary.sizings.items()
