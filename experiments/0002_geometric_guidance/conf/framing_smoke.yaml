@@ -1,0 +1,48 @@
+# Plumbing, not a claim: the whole framing 2x2 on the weightless test doubles,
+# CPU-only, offline, in seconds — real photos, real config, real reference,
+# real reward, real metrics shape; the checkpoints are faked and the
+# preference stand-in is checkpoint-free.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config framing_smoke
+name: 0002_prompt_framing_smoke
+study: framing
+
+seeds: [0]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: pipeline
+
+sampler:
+  steps: 6
+  noise_strength: 0.9
+  text_guidance_scale: 7.5
+
+guidance:
+  # Raw-gradient units, which is what the fake stack's ~3e-5 energy gradient
+  # asks for.
+  strength: 500.0
+  erosion_radius: 2
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+preference:
+  kind: contrast
+
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    renovation_prompt: renovate this furnished room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: ny_loft_bedroom
+    style_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    renovation_prompt: renovate this furnished room into a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    eval_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami

@@ -1,0 +1,40 @@
+# One scene, one seed, real checkpoints: the sizing sanity check before the
+# full da3_alignment grid. Same knobs as da3_alignment in every other respect,
+# so a pilot number is a preview of a grid number, not a different experiment.
+study: da3_alignment
+name: 0002_da3_alignment_pilot
+
+seeds: [0]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+
+sampler:
+  steps: 30
+  noise_strength: 0.9
+  text_guidance_scale: 7.5
+
+guidance:
+  # The grid's operating point; the sweep that chose it is recorded in
+  # da3_alignment.yaml and was run off this file with --set overrides.
+  strength: 300.0
+  clip: 0.02
+  erosion_radius: 2
+  resegment: true
+  arms: [none, shift]
+
+adherence:
+  kind: clip
+  checkpoint: openai/clip-vit-base-patch32
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight

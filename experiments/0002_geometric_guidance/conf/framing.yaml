@@ -1,0 +1,77 @@
+# The question: does phrasing the prompt as an explicit renovation instruction
+# — rather than a plain style description — buy anything, with and without the
+# geometric term? A 2x2 per scene at matched seeds: {style, renovation} x
+# {unguided, guided}. Style content is identical between the two framings (the
+# renovation prompt is the style text behind a fixed instruction prefix), so
+# the prompt axis varies framing alone; adherence and preference are scored
+# against the one neutral style text for every arm, never an arm's own prompt.
+#
+# Noise 0.9, not benchmark.yaml's frozen 0.6: at 0.6 the unguided control sits
+# at the metric's noise floor and nothing measured there separates two prompts
+# (`docs/research/geometric-guidance.md` — new comparisons run at 0.9 or from
+# pure noise). Guidance settings are benchmark.yaml's clipped-raw arm.
+name: 0002_prompt_framing
+study: framing
+
+seeds: [0, 1]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  # float16 sampler because the card is shared: the fp32 guided VAE backward
+  # peaks ~24GiB and OOMs beside a concurrent run, fp16 measured 15.5GiB at
+  # this exact config. The reward's reduction and the step's RMS sizing are
+  # float32 by contract (cosine 0.99998 against fp32, per benchmark.yaml), and
+  # all four arms share the dtype, so the 2x2's comparisons are unaffected.
+  dtype: float16
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+
+sampler:
+  steps: 30
+  noise_strength: 0.9
+  text_guidance_scale: 7.5
+
+guidance:
+  strength: 10.0
+  clip: 0.02
+  erosion_radius: 2
+
+adherence:
+  kind: clip
+  checkpoint: openai/clip-vit-base-patch32
+
+preference:
+  # PickScore v1 as an eval metric (never guidance): CLIP-H fine-tuned on human
+  # choices, ~3.9GB fetched into ROOMGEN_HF_HOME on first use.
+  kind: pickscore
+
+# Five scenes over the three room types of the benchmark set. `style_prompt` is
+# the exact prompt benchmark.yaml has always run; `renovation_prompt` is the
+# same style text behind one fixed instruction prefix; `eval_prompt` is the
+# neutral style description both framings are judged against.
+scenes:
+  - photo: hotel_suite_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    renovation_prompt: renovate this furnished room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    renovation_prompt: renovate this furnished room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: bedroom_warm_ensuite
+    style_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    renovation_prompt: renovate this furnished room into a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    eval_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: ny_loft_bedroom
+    style_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    renovation_prompt: renovate this furnished room into a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    eval_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: hostel_kitchen
+    style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    renovation_prompt: renovate this furnished room into a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

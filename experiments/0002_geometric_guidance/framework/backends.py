@@ -11,9 +11,10 @@ from typing import Final
 import torch
 from diffusers import DDIMScheduler
 
-from framework.config import TORCH_DTYPES, BackendConfig
+from framework.config import TORCH_DTYPES, AlignmentBackendConfig, BackendConfig
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.depth.depth_anything import DepthAnythingV2
+from roomgen_geometry.depth.depth_anything_v3 import DepthAnythingV3Metric
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_geometry.segmentation.eomt import EoMT
 from roomgen_guide.determinism import enable_determinism
@@ -38,6 +39,56 @@ class Backends:
     segmenter: Segmenter
     device: torch.device
     dtype: torch.dtype
+
+
+@dataclass(frozen=True)
+class AlignmentBackends:
+    """The benchmark's stack plus the metric judge, and the two named for what they do.
+
+    `metric_depth` (DA3 metric) both steers the guided arms and scores the
+    study's primary matrix; `judge_depth` (V2, affine-invariant) never steers
+    anything and scores every arm under the full fit — the second judge that
+    keeps the comparison from being read through one backend's eyes.
+    """
+
+    pipeline: Img2ImgPipeline
+    metric_depth: DepthEstimator
+    judge_depth: DepthEstimator
+    segmenter: Segmenter
+    device: torch.device
+    dtype: torch.dtype
+
+
+def build_alignment_backends(
+    config: AlignmentBackendConfig, *, cache_dir: Path
+) -> AlignmentBackends:
+    """The alignment study's stack: everything the benchmark loads, plus DA3 metric."""
+    base = build_backends(config, cache_dir=cache_dir)
+    metric_depth: DepthEstimator
+    match config.kind:
+        case "real":
+            metric_depth = DepthAnythingV3Metric(
+                config.metric_depth_checkpoint,
+                device=base.device,
+                dtype=TORCH_DTYPES[config.depth_dtype],
+                cache_dir=cache_dir,
+                input_size=config.metric_input_size,
+            )
+        case "fake":
+            # `build_backends` has already put the doubles on the path. A
+            # deliberately different affine frame from the judge's double, so a
+            # smoke run exercises exactly the disagreement the modes are about.
+            from roomgen_fakes import FakeDepthEstimator  # noqa: PLC0415
+
+            metric_depth = FakeDepthEstimator(scale=2.0, shift=0.25)
+    return AlignmentBackends(
+        pipeline=base.pipeline,
+        metric_depth=metric_depth,
+        judge_depth=base.depth_estimator,
+        segmenter=base.segmenter,
+        device=base.device,
+        dtype=base.dtype,
+    )
 
 
 def build_backends(config: BackendConfig, *, cache_dir: Path) -> Backends:

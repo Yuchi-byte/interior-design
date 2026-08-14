@@ -1,0 +1,44 @@
+# One scene, one seed, ten steps on the real stack: does the framing study run
+# end to end on this machine — checkpoints, PickScore download, CUDA generator,
+# depth-map artifacts — and what does one 2x2 cost? Everything else matches
+# `framing.yaml`.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config framing_pilot
+name: 0002_prompt_framing_pilot
+study: framing
+
+seeds: [0]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  # float16 for the same shared-card reason as framing.yaml.
+  dtype: float16
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+
+sampler:
+  steps: 10
+  noise_strength: 0.9
+  text_guidance_scale: 7.5
+
+guidance:
+  strength: 10.0
+  clip: 0.02
+  erosion_radius: 2
+
+adherence:
+  kind: clip
+  checkpoint: openai/clip-vit-base-patch32
+
+preference:
+  kind: pickscore
+
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    renovation_prompt: renovate this furnished room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight

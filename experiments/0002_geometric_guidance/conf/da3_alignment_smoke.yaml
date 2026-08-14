@@ -1,0 +1,43 @@
+# Plumbing, not a claim: the whole alignment study on the weightless doubles,
+# CPU-only, offline, in seconds. The fake metric backend sits in a deliberately
+# different affine frame from the fake judge, so the three-mode score matrix is
+# exercised on maps that actually disagree.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config da3_alignment_smoke
+study: da3_alignment
+name: 0002_da3_alignment_smoke
+
+seeds: [0]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  # The fake stack ships its own DDIM-shaped scheduler; there is nothing to swap.
+  scheduler: pipeline
+
+sampler:
+  steps: 6
+  noise_strength: 0.9
+  text_guidance_scale: 7.5
+
+guidance:
+  # Raw-gradient units, which is what this stack's ~3e-5 energy gradient asks for.
+  strength: 500.0
+  erosion_radius: 2
+  resegment: true
+  arms: [none, shift]
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: ny_loft_bedroom
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami

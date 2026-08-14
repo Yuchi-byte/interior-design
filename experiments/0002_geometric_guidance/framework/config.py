@@ -1,13 +1,29 @@
-"""The typed configuration of the geometric-guidance benchmark; one variant per `conf/` file."""
+"""The typed configuration of this framework's studies; one variant per `conf/` file.
+
+Two study shapes share the machinery: `benchmark` is guided-vs-control at one
+prompt per scene, `framing` is the prompt-framing 2x2 (style description vs
+renovation instruction, each unguided and guided). A `conf/` file names its
+shape in a top-level `study` key and `load_study_config` dispatches on it.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Annotated, Final, Literal
 
 import torch
+from omegaconf import DictConfig, OmegaConf
 from pydantic import Field, field_validator
 
+from roomgen_geometry.alignment import AlignmentMode
 from roomgen_geometry.depth.depth_anything import DEFAULT_CHECKPOINT as DEPTH_CHECKPOINT
+from roomgen_geometry.depth.depth_anything_v3 import (
+    DEFAULT_CHECKPOINT as METRIC_DEPTH_CHECKPOINT,
+)
+from roomgen_geometry.depth.depth_anything_v3 import (
+    DEFAULT_INPUT_SIZE as METRIC_INPUT_SIZE,
+)
 from roomgen_geometry.segmentation.eomt import (
     DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
 )
@@ -150,6 +166,7 @@ class BenchmarkConfig(ExperimentConfig):
             to, a multiple of 64.
     """
 
+    study: Literal["benchmark"] = "benchmark"
     scenes: Annotated[tuple[SceneConfig, ...], Field(min_length=1)]
     resolution: Annotated[int, Field(ge=LATENT_ALIGNMENT)] = 512
     backends: BackendConfig
@@ -160,9 +177,169 @@ class BenchmarkConfig(ExperimentConfig):
     @field_validator("resolution")
     @classmethod
     def _aligned_to_the_latent_grid(cls, resolution: int) -> int:
-        if resolution % LATENT_ALIGNMENT:
+        return _validate_resolution(resolution)
+
+
+class FramingSceneConfig(Config):
+    """One photo, the two framings of one renovation, and the text every arm is judged on.
+
+    Args:
+        photo: id of an entry in `experiments/assets/photos.json`.
+        style_prompt: the plain style description — the prompt shape this repo
+            has sampled with since the start.
+        renovation_prompt: the same style content phrased as an explicit
+            renovation instruction over the furnished photo. Only the framing
+            may differ from `style_prompt`, or the comparison stops being about
+            framing.
+        eval_prompt: the one neutral style description the adherence and
+            preference metrics score *every* arm against — never the arm's own
+            prompt, which would grade the two framings on different text.
+    """
+
+    photo: Annotated[str, Field(min_length=1)]
+    style_prompt: Annotated[str, Field(min_length=1)]
+    renovation_prompt: Annotated[str, Field(min_length=1)]
+    eval_prompt: Annotated[str, Field(min_length=1)]
+
+
+class PreferenceConfig(Config):
+    """Which human-preference model scores the finished renders — eval only, never guidance.
+
+    Args:
+        kind: `pickscore` loads PickScore v1, a CLIP-H fine-tuned on human
+            choices, through transformers; `contrast` is a checkpoint-free
+            stand-in (per-image pixel spread) that lets the smoke variant
+            exercise the plumbing offline — it cannot read beauty.
+        checkpoint: Hugging Face Hub id of the scoring model, read only by
+            `pickscore`.
+        processor_checkpoint: Hub id the tokenizer and image statistics come
+            from — PickScore ships no processor of its own, so upstream points
+            at the CLIP-H it was fine-tuned from.
+    """
+
+    kind: Literal["pickscore", "contrast"]
+    checkpoint: Annotated[str, Field(min_length=1)] = "yuvalkirstain/PickScore_v1"
+    processor_checkpoint: Annotated[str, Field(min_length=1)] = (
+        "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+    )
+
+
+class FramingConfig(ExperimentConfig):
+    """The prompt-framing 2x2: {style, renovation} x {unguided, guided} at matched seeds.
+
+    Args:
+        scenes: each photo with both framings of one renovation; every scene
+            runs all four arms at every seed.
+        resolution: side of the square the photos are centre-cropped and resized
+            to, a multiple of 64.
+    """
+
+    study: Literal["framing"]
+    scenes: Annotated[tuple[FramingSceneConfig, ...], Field(min_length=1)]
+    resolution: Annotated[int, Field(ge=LATENT_ALIGNMENT)] = 512
+    backends: BackendConfig
+    sampler: SamplerConfig = SamplerConfig()
+    guidance: GuidanceConfig
+    adherence: AdherenceConfig
+    preference: PreferenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_latent_grid(cls, resolution: int) -> int:
+        return _validate_resolution(resolution)
+
+
+class AlignmentBackendConfig(BackendConfig):
+    """The benchmark's stack plus the metric depth judge the alignment study steers by.
+
+    Args:
+        metric_depth_checkpoint: the Depth Anything 3 *metric* tier — the only
+            backend for which raw or shift-only comparison is meaningful at all.
+            `depth_checkpoint` (V2, affine-invariant) stays loaded beside it as
+            the neutral second judge every arm is also scored under.
+        metric_input_size: the square edge DA3 resamples to, a multiple of its
+            14-pixel patch.
+    """
+
+    metric_depth_checkpoint: Annotated[str, Field(min_length=1)] = (
+        METRIC_DEPTH_CHECKPOINT
+    )
+    metric_input_size: Annotated[int, Field(ge=14)] = METRIC_INPUT_SIZE
+
+
+class AlignmentGuidanceConfig(GuidanceConfig):
+    """The benchmark's guidance term, run once per alignment mode under test.
+
+    Args:
+        arms: the alignment modes the guided arms are steered under, one arm
+            per mode at every (scene, seed), beside the shared unguided control.
+            Loosening the fit is only meaningful for the metric backend the
+            study steers by; the affine-invariant second judge always scores
+            under the full fit.
+    """
+
+    arms: Annotated[tuple[AlignmentMode, ...], Field(min_length=1)] = ("none", "shift")
+
+
+class AlignmentStudyConfig(ExperimentConfig):
+    """The DA3 alignment-mode study: raw against shift-only, beside one control.
+
+    Tests the claim that a metric backend guides better under a shift-only fit
+    than under no fit at all — until now a code comment, not a measurement.
+    Every arm is scored under *all three* modes plus the affine-invariant
+    second judge, so no arm is read solely through its own objective.
+
+    Args:
+        scenes: the (photo, prompt) pairs the study measures, each at every seed.
+        resolution: side of the square the photos are centre-cropped and resized
+            to, a multiple of 64.
+    """
+
+    study: Literal["da3_alignment"]
+    scenes: Annotated[tuple[SceneConfig, ...], Field(min_length=1)]
+    resolution: Annotated[int, Field(ge=LATENT_ALIGNMENT)] = 512
+    backends: AlignmentBackendConfig
+    sampler: SamplerConfig = SamplerConfig()
+    guidance: AlignmentGuidanceConfig
+    adherence: AdherenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_latent_grid(cls, resolution: int) -> int:
+        return _validate_resolution(resolution)
+
+
+def _validate_resolution(resolution: int) -> int:
+    if resolution % LATENT_ALIGNMENT:
+        raise ValueError(
+            f"resolution must be a multiple of {LATENT_ALIGNMENT} for Stable "
+            f"Diffusion 1.5's latent grid, got {resolution}"
+        )
+    return resolution
+
+
+def load_study_config(
+    path: Path, overrides: Sequence[str] | None = None
+) -> BenchmarkConfig | FramingConfig | AlignmentStudyConfig:
+    """Load whichever study shape `path` declares in its top-level `study` key.
+
+    The key is peeked before validation because the shapes are different
+    pydantic models; a missing key means `benchmark`, which is what every
+    variant predating the other studies is.
+    """
+    raw = OmegaConf.load(path)
+    if not isinstance(raw, DictConfig):
+        raise TypeError(f"Expected a mapping at {path}, got {type(raw).__name__}")
+    study = raw.get("study", "benchmark")
+    match study:
+        case "benchmark":
+            return BenchmarkConfig.from_file(path, overrides)
+        case "framing":
+            return FramingConfig.from_file(path, overrides)
+        case "da3_alignment":
+            return AlignmentStudyConfig.from_file(path, overrides)
+        case _:
             raise ValueError(
-                f"resolution must be a multiple of {LATENT_ALIGNMENT} for Stable "
-                f"Diffusion 1.5's latent grid, got {resolution}"
+                f"{path} declares unknown study {study!r}; "
+                "known studies: benchmark, framing, da3_alignment"
             )
-        return resolution
