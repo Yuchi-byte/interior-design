@@ -18,9 +18,9 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from roomgen_geometry.masking import (
-    contents_mask,
     erode_boundaries,
     fill_mask,
+    removable_mask,
     scorable_mask,
     structural_mask,
 )
@@ -81,8 +81,9 @@ class StripNumbers:
             between them reports how much of the hole passed only as
             railing/column/stairs-shaped shell.
         residual_contents_fraction: the subset the segmenter affirmatively
-            calls furniture (`CONTENTS_CLASSES`, undilated) — the "recognisable
-            furniture" slice of the categorical numbers above.
+            calls something a strip removes (`REMOVABLE_CLASSES`: the contents
+            plus curtain and rug, undilated) — the "recognisable furniture"
+            slice of the categorical numbers above.
         pass_residual_fractions: after each inpainting pass, the share of the
             cut region the acceptance still refused — not-whitelisted, grown by
             the dilation radius — which is exactly what the next pass repaints.
@@ -172,7 +173,9 @@ def strip_scene(
         erosion_radius=erosion_radius,
     )
     with torch.no_grad():
-        contents = contents_mask(
+        # The removal set, not the reward's contents: curtains and rugs count
+        # as shell for the depth score, and a stripped room still has neither.
+        contents = removable_mask(
             backends.segmenter(photo), dilation_radius=strip.dilation_radius
         )
 
@@ -195,7 +198,7 @@ def strip_scene(
     # it, so what the whitelist alone refused is a gap and not a guess.
     hole_not_fill = contents & ~fill_mask(final_segmentation, erosion_radius=0)
     hole_not_shell = contents & ~structural_mask(final_segmentation, erosion_radius=0)
-    residual_contents = contents & contents_mask(final_segmentation, dilation_radius=0)
+    residual_contents = contents & removable_mask(final_segmentation, dilation_radius=0)
 
     # The shell the mask never reached: those pixels are the photograph's own,
     # so any depth error over them is the network reading a room that has lost

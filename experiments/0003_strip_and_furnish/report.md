@@ -46,7 +46,9 @@ doubles, `conf/pilot.yaml` one scene on the real stack.
   prompt each.
 - **Seeds.** `[0, 1]`, explicit `torch.Generator`s on the sampling device. The
   strip runs at seed 0.
-- **Strip.** Contents mask dilated 8 px; up to 5 inpainting passes at
+- **Strip.** Removal mask (`REMOVABLE_CLASSES`: the contents plus curtain and
+  rug, which are reward shell but still get stripped) dilated 8 px; up to 5
+  inpainting passes at
   `fill_strength=0.85`, 40 steps, CFG 12.0 on a bare-room prompt with the
   observed hallucination families (furniture, radiator, heater, appliance,
   ledge, machine, cart, wheels, …) refused by name in the negative prompt. The

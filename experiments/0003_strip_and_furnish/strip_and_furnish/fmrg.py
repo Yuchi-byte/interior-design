@@ -34,6 +34,11 @@ from torch import Tensor
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.masking import scorable_mask
 from roomgen_geometry.reference import GeometricReference
+from roomgen_geometry.segmentation.ade20k import (
+    ADE20K_LABELS,
+    ARCHITECTURAL_CLASSES,
+    FILL_CLASSES,
+)
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.adapters.flow_map import (
     FlowMapBackend,
@@ -973,6 +978,15 @@ def _write_results(summary: FmrgSummary, settings: RoomgenSettings) -> None:
                 # the stripped empty room's shell depth, intersected per step
                 # and per eval with the prediction's own shell.
                 "guidance_reference": "empty_room",
+                # The shell definition every mask in this run was read under,
+                # and the strict whitelist the strip acceptance re-checked —
+                # spelled out because both changed across runs of this study.
+                "shell_classes": [
+                    ADE20K_LABELS[index] for index in sorted(ARCHITECTURAL_CLASSES)
+                ],
+                "fill_classes": [
+                    ADE20K_LABELS[index] for index in sorted(FILL_CLASSES)
+                ],
                 "galleries": {
                     "strip": str(summary.output_dir / GALLERY_A),
                     "furnish": str(summary.output_dir / GALLERY_B),

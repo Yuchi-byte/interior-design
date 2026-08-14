@@ -1,10 +1,13 @@
-"""The ADE20K-150 label table and its two affirmative class lists.
+"""The ADE20K-150 label table and its affirmative class lists.
 
-The shell is the set of surfaces a renovation must leave where they are; the
-contents are the objects a renovation is free to move, replace, or delete. Both
-are named class by class and neither is the other's complement: the ids in
-neither list — outdoors, people, stuff — are the ones a mask has to decide about
-without being told, which is the whole reason to spell the two lists out.
+The shell is the set of surfaces whose depth a renovation must leave where it
+is; the contents are the objects a renovation is free to move, replace, or
+delete. Both are named class by class and neither is the other's complement:
+the ids in neither list — outdoors, people, stuff — are the ones a mask has to
+decide about without being told, which is the whole reason to spell the lists
+out. The derived sets answer narrower questions: what keeps its identity
+(structural), what a strip removes (removable), what an inpainted hole may be
+filled with (fill).
 """
 
 from typing import Final
@@ -176,8 +179,8 @@ NUM_CLASSES: Final[int] = len(ADE20K_LABELS)
 
 # The load-bearing surfaces and fixed openings of a room, the geometry a
 # renovation is not allowed to move. Membership is deliberately narrow: a class
-# admitted here freezes its depth, so a wrongly admitted movable object (a rug,
-# a fireplace surround, a shower enclosure) would forbid exactly the change the
+# admitted here freezes its depth, so a wrongly admitted movable object (a
+# fireplace surround, a shower enclosure) would forbid exactly the change the
 # renovation is for. Everything seen *through* a window is excluded —
 # "building", "sky", "tree": monocular depth answers those pixels with the
 # depth of the outdoor scene, so scoring them scores the view rather than the
@@ -186,7 +189,14 @@ NUM_CLASSES: Final[int] = len(ADE20K_LABELS)
 # rather than masked out. What a monocular network reads on glass is ambiguous —
 # the pane, or the scene beyond it — and that ambiguity is accepted: whatever
 # the network reads there, it must read the *same* thing on a render that kept
-# the window, and a render that walled it over is caught either way.
+# the window, and a render that walled it over is caught either way. The two
+# soft furnishings (curtain, rug) are shell by the same owner's later decision:
+# their pixels read the depth of the window and the floor they dress, and
+# masking them out was shrinking the valid comparison area for no geometric
+# gain. The accepted trade: a curtain hangs proud of the window plane and a
+# renovation may legitimately add or remove curtains and rugs, so reference and
+# render can honestly disagree on those pixels — the larger valid area is worth
+# that noise, by owner decision.
 ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
     {
         0,  # wall
@@ -194,12 +204,28 @@ ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
         5,  # ceiling
         8,  # windowpane
         14,  # door
+        18,  # curtain
+        28,  # rug
         38,  # railing
         42,  # column
         53,  # stairs
         59,  # stairway
         95,  # bannister
         121,  # step
+    }
+)
+
+
+# The soft furnishings inside the shell: reward-valid depth (their pixels read
+# the floor and window planes they dress) yet still something a renovation adds
+# or removes at will — so a strip must keep cutting them, their identity is
+# never frozen by the class term, and an inpainted hole may not be filled with
+# them. Every set below that needs one of those three answers derives it from
+# this pair rather than restating it.
+SOFT_FURNISHING_CLASSES: Final[frozenset[int]] = frozenset(
+    {
+        18,  # curtain
+        28,  # rug
     }
 )
 
@@ -259,8 +285,11 @@ def _named_contents(ids: set[int]) -> frozenset[int]:
 # `subtract_contents` excuses a pixel from the reward only where the segmenter
 # commits to one of these, so a class in neither list (sky, tree, person,
 # water, road: what a window shows, or what walks through the frame) is never
-# excused here. Borderline calls:
-#   curtain, blind: hang off the wall and swing clear of it, so a new window
+# excused here. Curtain and rug are deliberately absent: they moved to the
+# shell (see `SOFT_FURNISHING_CLASSES`) so their depth is scored rather than
+# excused, while `REMOVABLE_CLASSES` below keeps them strippable. Borderline
+# calls:
+#   blind: hangs off the wall and swings clear of it, so a new window
 #     dressing is not held to the old one's depth.
 #   painting, poster, mirror, bulletin board: on the wall plane, but depth
 #     reads the canvas, or the reflected room, not the wall behind it.
@@ -276,13 +305,11 @@ CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
         10,  # cabinet
         15,  # table
         17,  # plant
-        18,  # curtain
         19,  # chair
         22,  # painting
         23,  # sofa
         24,  # shelf
         27,  # mirror
-        28,  # rug
         30,  # armchair
         31,  # seat
         33,  # desk
@@ -369,14 +396,23 @@ def _disjoint_from_contents(ids: frozenset[int]) -> frozenset[int]:
     return ids
 
 
-# The classes whose *identity* a renovation may not change. Historically the
-# shell plus the glazing, back when the glazing's depth was not scored; since
-# windowpane joined `ARCHITECTURAL_CLASSES` the two sets coincide, and the name
-# is kept because the two lists still answer different questions about a pixel —
-# where it is (depth) versus what it is (class). The class term still earns its
-# keep on the openings: depth pins the plane a door or a window sits in, which a
-# flat wall painted over the opening satisfies almost exactly, while its class
-# does not.
+# The classes whose *identity* a renovation may not change: the shell minus its
+# soft furnishings. The two lists answer different questions about a pixel —
+# where it is (depth) versus what it is (class) — and they no longer coincide:
+# a curtain or a rug is scored for depth (it reads the plane it dresses) but a
+# renovation may re-dress a window or bare a floor, so freezing their *class*
+# would forbid exactly that change. The class term still earns its keep on the
+# openings: depth pins the plane a door or a window sits in, which a flat wall
+# painted over the opening satisfies almost exactly, while its class does not.
 STRUCTURAL_CLASSES: Final[frozenset[int]] = _disjoint_from_contents(
-    ARCHITECTURAL_CLASSES
+    ARCHITECTURAL_CLASSES - SOFT_FURNISHING_CLASSES
 )
+
+
+# What a strip removes: everything a renovation replaces, plus the soft
+# furnishings that are reward-valid shell yet must still leave an emptied room —
+# a stripped room has no curtains and no rugs, whatever the reward scores them
+# as. Kept beside the two lists it is built from so the three questions a
+# curtain raises (score it? cut it? accept it as fill?) each have exactly one
+# written answer: yes, yes, no.
+REMOVABLE_CLASSES: Final[frozenset[int]] = CONTENTS_CLASSES | SOFT_FURNISHING_CLASSES

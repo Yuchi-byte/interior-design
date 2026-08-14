@@ -4,6 +4,8 @@ from roomgen_geometry.segmentation.ade20k import (
     CONTENTS_CLASSES,
     FILL_CLASSES,
     NUM_CLASSES,
+    REMOVABLE_CLASSES,
+    SOFT_FURNISHING_CLASSES,
     STRUCTURAL_CLASSES,
 )
 
@@ -54,19 +56,32 @@ def test_the_openings_are_shell_and_never_contents() -> None:
 
 def test_the_furniture_a_renovation_replaces_is_named_contents() -> None:
     assert {
-        ADE20K_LABELS.index(name)
-        for name in ("sofa", "bed", "table", "chair", "lamp", "rug", "curtain")
+        ADE20K_LABELS.index(name) for name in ("sofa", "bed", "table", "chair", "lamp")
     } <= CONTENTS_CLASSES
 
 
-def test_the_structural_classes_hold_the_whole_shell_glazing_included() -> None:
+def test_the_structural_classes_are_the_shell_minus_its_soft_furnishings() -> None:
     # The class term's set: what a renovation may not turn into something else.
-    # It coincides with the shell now that the glazing is shell, and the two
-    # names stay separate because they answer different questions — where a
-    # pixel is (depth) versus what it is (class).
-    assert ARCHITECTURAL_CLASSES <= STRUCTURAL_CLASSES
+    # Depth and class part ways exactly at the soft furnishings — a curtain's
+    # depth is scored, its identity is the renovation's to change.
+    assert STRUCTURAL_CLASSES == ARCHITECTURAL_CLASSES - SOFT_FURNISHING_CLASSES
     assert ADE20K_LABELS.index("windowpane") in STRUCTURAL_CLASSES
     assert ADE20K_LABELS.index("door") in STRUCTURAL_CLASSES
+
+
+def test_the_soft_furnishings_are_scored_stripped_and_never_frozen() -> None:
+    # Owner decision: a rug reads the floor's depth and a curtain the window's,
+    # so masking them out was surrendering valid comparison area. They are
+    # scored as shell, still cut by a strip, never held to their photographed
+    # identity, and never an acceptable inpainting fill.
+    assert {
+        ADE20K_LABELS.index(name) for name in ("curtain", "rug")
+    } == SOFT_FURNISHING_CLASSES
+    assert SOFT_FURNISHING_CLASSES <= ARCHITECTURAL_CLASSES
+    assert not SOFT_FURNISHING_CLASSES & CONTENTS_CLASSES
+    assert not SOFT_FURNISHING_CLASSES & STRUCTURAL_CLASSES
+    assert not SOFT_FURNISHING_CLASSES & FILL_CLASSES
+    assert REMOVABLE_CLASSES == CONTENTS_CLASSES | SOFT_FURNISHING_CLASSES
 
 
 def test_the_fill_whitelist_is_the_five_bare_surfaces_and_nothing_else() -> None:

@@ -11,6 +11,7 @@ from roomgen_geometry.segmentation.ade20k import (
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
     FILL_CLASSES,
+    REMOVABLE_CLASSES,
     STRUCTURAL_CLASSES,
 )
 
@@ -66,11 +67,10 @@ def structural_mask(
     """The pixels whose class a renovation may not change: the reference side of the class term.
 
     True on :data:`~roomgen_geometry.segmentation.ade20k.STRUCTURAL_CLASSES` —
-    the same set the shell mask reads now that the glazing is shell, kept as its
-    own name because class and depth remain different questions — and eroded
-    like every other mask, because a class label flickers in the band either
-    side of a segment edge and a term that chases the flicker is charging for
-    noise.
+    the shell minus its soft furnishings, because a curtain's depth is scored
+    while its identity is a renovation's to change — and eroded like every
+    other mask, because a class label flickers in the band either side of a
+    segment edge and a term that chases the flicker is charging for noise.
 
     Read one way only, from the photo, exactly as `architectural_mask` is: what a
     *prediction's* segmentation is allowed to excuse is a separate question,
@@ -119,6 +119,20 @@ def contents_mask(
     the object it removed.
     """
     return _dilate(_is_any_of(segmentation, CONTENTS_CLASSES), radius=dilation_radius)
+
+
+def removable_mask(
+    segmentation: Int[Tensor, "batch height width"], *, dilation_radius: int
+) -> Bool[Tensor, "batch height width"]:
+    """The pixels a *strip* removes, grown by `dilation_radius`.
+
+    True on :data:`~roomgen_geometry.segmentation.ade20k.REMOVABLE_CLASSES`:
+    the contents plus the soft furnishings (curtain, rug) that count as shell
+    for the reward — their pixels read the planes they dress — but must still
+    leave an emptied room. Dilated for the same contact-shadow reason as
+    :func:`contents_mask`, which remains the reward-side exemption.
+    """
+    return _dilate(_is_any_of(segmentation, REMOVABLE_CLASSES), radius=dilation_radius)
 
 
 def _dilate(

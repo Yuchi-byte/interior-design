@@ -65,10 +65,11 @@ class StructuralReference:
 
     The class term's target, and the counterpart to `GeometricReference`:
     together they say a renovation may not move the shell (depth) and may not
-    change what its surfaces and openings *are* (class). The two halves now
-    cover the same classes — the glazing is shell too, by owner decision — but
-    ask different questions of them: a flat wall painted over a doorway keeps
-    the plane's depth and still fails the class term.
+    change what its surfaces and openings *are* (class). The class half covers
+    the shell minus its soft furnishings — a curtain's depth is scored but a
+    renovation may re-dress the window — and asks a different question of the
+    pixels it shares with the depth half: a flat wall painted over a doorway
+    keeps the plane's depth and still fails the class term.
     """
 
     classes: Int[Tensor, "batch height width"]

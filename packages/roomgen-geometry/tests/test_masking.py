@@ -8,6 +8,7 @@ from roomgen_geometry.masking import (
     contents_mask,
     erode_boundaries,
     fill_mask,
+    removable_mask,
     scorable_mask,
 )
 from roomgen_geometry.segmentation.ade20k import (
@@ -249,6 +250,20 @@ def test_dilation_grows_the_furniture_by_exactly_the_radius(radius: int) -> None
 
     assert int(dilated.sum()) == (4 + 2 * radius) ** 2
     assert bool(dilated[:, 6 - radius : 10 + radius, 6 - radius : 10 + radius].all())
+
+
+def test_a_rug_is_scored_as_shell_yet_still_cut_by_the_strip() -> None:
+    # Owner decision: a rug reads the floor's depth (a curtain the window's), so
+    # the reward keeps the pixel — but a stripped room still has no rug, and the
+    # reward-side exemption no longer excuses one a render paints in.
+    segmentation = _room_with_block(ADE20K_LABELS.index("rug"))
+
+    assert bool(architectural_mask(segmentation, erosion_radius=0).all())
+    assert bool(scorable_mask(segmentation, erosion_radius=0).all())
+    assert not bool(contents_mask(segmentation, dilation_radius=0).any())
+    removable = removable_mask(segmentation, dilation_radius=0)
+    assert bool(removable[:, 6:10, 6:10].all())
+    assert int(removable.sum()) == 16
 
 
 def test_the_strip_removes_exactly_what_the_reward_declines_to_score(
