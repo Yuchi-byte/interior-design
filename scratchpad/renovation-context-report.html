@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Renovation context: does telling FLUX it is renovating keep the room?</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #ddd;
+    --accent: #0b6e4f; --warn: #a05a00; --card: #f7f7f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --fg: #e6e4de; --muted: #9a9890; --line: #33363c;
+            --accent: #5bc79a; --warn: #e0a458; --card: #1e2126; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2rem 1.25rem 5rem;
+         background: var(--bg); color: var(--fg);
+         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.25rem; margin: 2.8rem 0 .5rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1.02rem; margin: 1.8rem 0 .4rem; }
+  p  { margin: .55rem 0; }
+  .sub { color: var(--muted); font-size: .92rem; }
+  .headline { background: var(--card); border-left: 4px solid var(--accent);
+              padding: .8rem 1rem; margin: 1.2rem 0; border-radius: 0 6px 6px 0; }
+  .caveat { background: var(--card); border-left: 4px solid var(--warn);
+            padding: .8rem 1rem; margin: 1.2rem 0; border-radius: 0 6px 6px 0; }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: .88em; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .88rem; }
+  th, td { border: 1px solid var(--line); padding: .35rem .55rem; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: var(--card); font-weight: 600; }
+  .best { color: var(--accent); font-weight: 700; }
+  .bad  { color: var(--warn); font-weight: 700; }
+  .tablewrap { overflow-x: auto; }
+  .row { display: grid; gap: 6px; margin: .6rem 0 1.2rem; }
+  .row3 { grid-template-columns: repeat(3, 1fr); }
+  .row5 { grid-template-columns: repeat(5, 1fr); }
+  .armgrid { display: grid; gap: 8px; margin: .6rem 0 1.4rem;
+             grid-template-columns: repeat(3, 1fr); }
+  @media (min-width: 720px) { .armgrid { grid-template-columns: repeat(5, 1fr); } }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; display: block; border-radius: 4px; border: 1px solid var(--line); }
+  figure img + img { margin-top: 4px; }
+  figcaption { font-size: .74rem; color: var(--muted); text-align: center; padding-top: .25rem; line-height: 1.35; }
+  .arm-g figcaption { color: var(--accent); font-weight: 600; }
+  .arm-bad figcaption { color: var(--warn); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>Renovation context: does telling FLUX it is renovating keep the room?</h1>
+<p class="sub">Study <span class="mono">fmrg_context</span> in framework <span class="mono">0002_geometric_guidance</span> ·
+2026-08-14, local RTX 5090 · FLUX flow-map + LoRA, 2 scenes × 8 arms × seed 0 ·
+commit <span class="mono">8567ab6</span> · run 19:08–19:11 (~3&nbsp;min), peak 28.17&nbsp;GiB</p>
+
+<div class="headline">
+<p><strong>No — context alone does not keep the layout, and the depth reward stays additive at every init strength.</strong>
+At renovation-strength init (σ&nbsp;0.9, effectively <em>0.944</em> after FLUX's mu-shift — ~6% photo signal), phrasing the
+prompt as "renovate this room … keep the room structure, layout, viewpoint and camera angle" bought
+<strong>−3.6%</strong> (scandi) and <strong>−5.2%</strong> (kitchen) depth error against the style-prompt baseline —
+statistically nothing; the renders confirm FLUX invents a different room either way. Adding the depth reward on top of
+the instruction cut the same arms' error <strong>−89%</strong> and <strong>−84%</strong> further, landing where the plain
+guided arm C lands (−86…−89% vs A).</p>
+<p><strong>Stronger image context (lower σ) "wins" depth mostly by not renovating.</strong> On the kitchen — the scene
+whose style actually has to change — the σ≤0.75 instruction arms return the photo lightly retextured: depth error
+collapses to ~0.003, but adherence collapses with it, to <strong>54–59%</strong> of baseline. The one regime where
+context genuinely helped is scandi at σ&nbsp;0.75: a real renovation (adherence 122% of A) at −43% depth error — and the
+reward still removed <strong>99%</strong> of what remained (0.0799&nbsp;→&nbsp;0.0007) at unchanged adherence. Image
+context sets how much room there is to lose; the depth reward is what actually holds it.</p>
+</div>
+
+<h2>Design</h2>
+<p>Per scene, one seed (0), eight arms off one transformer load, all scored on the one shell-pixel set every arm left
+visible, and all judged against the scene's neutral style text (never an arm's own prompt):</p>
+<ul>
+  <li><strong>A</strong> — style prompt, σ&nbsp;0.9, no reward (baseline; the FMRG default control);</li>
+  <li><strong>C</strong> — style prompt, σ&nbsp;0.9, depth reward (the current default guided arm);</li>
+  <li><strong>B@σ</strong> — renovation instruction, no reward, σ ∈ {0.6, 0.75, 0.9};</li>
+  <li><strong>D@σ</strong> — renovation instruction, depth reward, same sweep.</li>
+</ul>
+<p class="sub">σ is the pre-shift request; FLUX's resolution-dependent mu-shift warps the 512² grid, so the walks
+actually start at <strong>0.6&nbsp;→&nbsp;0.738, 0.75&nbsp;→&nbsp;0.849, 0.9&nbsp;→&nbsp;0.944</strong> (read off the
+resolved schedule, not the config). Scenes: <span class="mono">scandi_living_room</span> (FMRG's best-behaved scene) and
+<span class="mono">blue_white_kitchen</span> (its weakest by guided depth error: 0.391 at seed 0 in the 0002 FMRG run,
+vs 0.018–0.07 elsewhere).</p>
+
+<h2>Numbers (every arm, seed 0)</h2>
+<p class="sub">Depth error is shell-masked, scale-and-shift aligned (DA2), on the common mask; Δ vs A is that error
+relative to arm A's. Adherence is CLIP ViT-L/14 against the neutral style text; ratio is vs arm A. Shell is each arm's
+own coverage of the photographed shell; the common mask covers 46% (scandi) / 60% (kitchen). σ<sub>eff</sub> is the
+first sigma of the actual schedule.</p>
+
+<h3>scandi_living_room <span class="sub">(recon floor 0.00026)</span></h3>
+<div class="tablewrap"><table>
+<tr><th>Arm</th><th>σ</th><th>σ<sub>eff</sub></th><th>Depth err</th><th>Δ vs A</th><th>Adherence</th><th>ratio vs A</th><th>Shell</th><th>sec</th></tr>
+<tr><td>A · style, unguided</td><td>0.90</td><td>0.944</td><td>0.1394</td><td>—</td><td>0.2225</td><td>100.0%</td><td>57%</td><td>7.8</td></tr>
+<tr><td>C · style, guided</td><td>0.90</td><td>0.944</td><td class="best">0.0155</td><td>−88.9%</td><td>0.2338</td><td>105.1%</td><td>76%</td><td>12.6</td></tr>
+<tr><td>B@0.6 · renovate, unguided</td><td>0.60</td><td>0.738</td><td>0.0055</td><td>−96.1%</td><td>0.2311</td><td>103.9%</td><td>93%</td><td>7.9</td></tr>
+<tr><td>D@0.6 · renovate, guided</td><td>0.60</td><td>0.738</td><td class="best">0.0006</td><td>−99.5%</td><td>0.2339</td><td>105.1%</td><td>93%</td><td>12.7</td></tr>
+<tr><td>B@0.75 · renovate, unguided</td><td>0.75</td><td>0.849</td><td>0.0799</td><td>−42.7%</td><td>0.2711</td><td>121.9%</td><td>89%</td><td>7.9</td></tr>
+<tr><td>D@0.75 · renovate, guided</td><td>0.75</td><td>0.849</td><td class="best">0.0007</td><td>−99.5%</td><td>0.2654</td><td>119.3%</td><td>91%</td><td>12.8</td></tr>
+<tr><td>B@0.9 · renovate, unguided</td><td>0.90</td><td>0.944</td><td>0.1344</td><td>−3.6%</td><td>0.2484</td><td>111.7%</td><td>75%</td><td>8.0</td></tr>
+<tr><td>D@0.9 · renovate, guided</td><td>0.90</td><td>0.944</td><td class="best">0.0148</td><td>−89.4%</td><td>0.2382</td><td>107.1%</td><td>74%</td><td>12.8</td></tr>
+</table></div>
+
+<h3>blue_white_kitchen <span class="sub">(recon floor 0.00010)</span></h3>
+<div class="tablewrap"><table>
+<tr><th>Arm</th><th>σ</th><th>σ<sub>eff</sub></th><th>Depth err</th><th>Δ vs A</th><th>Adherence</th><th>ratio vs A</th><th>Shell</th><th>sec</th></tr>
+<tr><td>A · style, unguided</td><td>0.90</td><td>0.944</td><td class="bad">1.2832</td><td>—</td><td>0.3126</td><td>100.0%</td><td>72%</td><td>8.0</td></tr>
+<tr><td>C · style, guided</td><td>0.90</td><td>0.944</td><td class="best">0.1791</td><td>−86.0%</td><td>0.3231</td><td>103.4%</td><td>69%</td><td>12.8</td></tr>
+<tr><td>B@0.6 · renovate, unguided</td><td>0.60</td><td>0.738</td><td>0.0029</td><td>−99.8%</td><td>0.1680</td><td class="bad">53.7%</td><td>96%</td><td>8.0</td></tr>
+<tr><td>D@0.6 · renovate, guided</td><td>0.60</td><td>0.738</td><td>0.0002</td><td>−100.0%</td><td>0.1685</td><td class="bad">53.9%</td><td>96%</td><td>12.9</td></tr>
+<tr><td>B@0.75 · renovate, unguided</td><td>0.75</td><td>0.849</td><td>0.0023</td><td>−99.8%</td><td>0.1807</td><td class="bad">57.8%</td><td>88%</td><td>8.1</td></tr>
+<tr><td>D@0.75 · renovate, guided</td><td>0.75</td><td>0.849</td><td>0.0004</td><td>−100.0%</td><td>0.1848</td><td class="bad">59.1%</td><td>91%</td><td>12.9</td></tr>
+<tr><td>B@0.9 · renovate, unguided</td><td>0.90</td><td>0.944</td><td class="bad">1.2166</td><td>−5.2%</td><td>0.2798</td><td>89.5%</td><td>74%</td><td>8.1</td></tr>
+<tr><td>D@0.9 · renovate, guided</td><td>0.90</td><td>0.944</td><td class="best">0.1923</td><td>−85.0%</td><td>0.2903</td><td>92.9%</td><td>72%</td><td>12.9</td></tr>
+</table></div>
+<p class="sub">Kitchen σ≤0.75 rows: the −100% depth column and the 54–59% adherence column are the same fact — the room
+was not renovated (see confounds). Even guided at full strength this stays FMRG's hardest scene: D@0.9's 0.19 is ~2000×
+the VAE floor, and the renders below show why.</p>
+
+<h2>Depth: what each arm did to the room</h2>
+<p class="sub">Per arm: masked depth map (top — inverse depth over the scored shell, furniture grey) and signed depth
+error vs the reference (bottom — red reads closer than the photo, blue further, on arm A's colour scale; pale = geometry
+held). Reference first.</p>
+
+<h3>scandi_living_room</h3>
+<div class="armgrid">
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_photo_depth_masked.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_evalmask_common.png" alt="">
+    <figcaption>reference depth · common mask (46%)</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_A_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_A_residual.png" alt="">
+    <figcaption>A · E 0.1394 · adh 100%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_C_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_C_residual.png" alt="">
+    <figcaption>C · E 0.0155 (−89%) · adh 105%</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.9_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.9_residual.png" alt="">
+    <figcaption>B@0.9 · E 0.1344 (−4%) · adh 112%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.9_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.9_residual.png" alt="">
+    <figcaption>D@0.9 · E 0.0148 (−89%) · adh 107%</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.75_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.75_residual.png" alt="">
+    <figcaption>B@0.75 · E 0.0799 (−43%) · adh 122%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.75_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.75_residual.png" alt="">
+    <figcaption>D@0.75 · E 0.0007 (−99%) · adh 119%</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.6_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.6_residual.png" alt="">
+    <figcaption>B@0.6 · E 0.0055 (−96%) · adh 104%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.6_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.6_residual.png" alt="">
+    <figcaption>D@0.6 · E 0.0006 (−100%) · adh 105%</figcaption></figure>
+</div>
+
+<h3>blue_white_kitchen</h3>
+<div class="armgrid">
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_photo_depth_masked.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_evalmask_common.png" alt="">
+    <figcaption>reference depth · common mask (60%)</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_A_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_A_residual.png" alt="">
+    <figcaption>A · E 1.2832 · adh 100%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_C_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_C_residual.png" alt="">
+    <figcaption>C · E 0.1791 (−86%) · adh 103%</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.9_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.9_residual.png" alt="">
+    <figcaption>B@0.9 · E 1.2166 (−5%) · adh 90%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.9_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.9_residual.png" alt="">
+    <figcaption>D@0.9 · E 0.1923 (−85%) · adh 93%</figcaption></figure>
+  <figure class="arm-bad"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.75_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.75_residual.png" alt="">
+    <figcaption>B@0.75 · E 0.0023 · adh 58% ⚠ unrenovated</figcaption></figure>
+  <figure class="arm-bad"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.75_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.75_residual.png" alt="">
+    <figcaption>D@0.75 · E 0.0004 · adh 59% ⚠ unrenovated</figcaption></figure>
+  <figure class="arm-bad"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.6_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.6_residual.png" alt="">
+    <figcaption>B@0.6 · E 0.0029 · adh 54% ⚠ unrenovated</figcaption></figure>
+  <figure class="arm-bad"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.6_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.6_residual.png" alt="">
+    <figcaption>D@0.6 · E 0.0002 · adh 54% ⚠ unrenovated</figcaption></figure>
+</div>
+
+<h2>Renders</h2>
+<h3>scandi_living_room</h3>
+<div class="row row5">
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_photo.png" alt=""><figcaption>photo</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_A.png" alt=""><figcaption>A</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_C.png" alt=""><figcaption>C</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.9.png" alt=""><figcaption>B@0.9</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.9.png" alt=""><figcaption>D@0.9</figcaption></figure>
+</div>
+<div class="row row5">
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_shell_mask.png" alt=""><figcaption>shell mask</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.75.png" alt=""><figcaption>B@0.75</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.75.png" alt=""><figcaption>D@0.75</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_B_0.6.png" alt=""><figcaption>B@0.6</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/scandi_living_room_seed0_D_0.6.png" alt=""><figcaption>D@0.6</figcaption></figure>
+</div>
+<h3>blue_white_kitchen</h3>
+<div class="row row5">
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_photo.png" alt=""><figcaption>photo</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_A.png" alt=""><figcaption>A</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_C.png" alt=""><figcaption>C</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.9.png" alt=""><figcaption>B@0.9</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.9.png" alt=""><figcaption>D@0.9</figcaption></figure>
+</div>
+<div class="row row5">
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_shell_mask.png" alt=""><figcaption>shell mask</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.75.png" alt=""><figcaption>B@0.75</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.75.png" alt=""><figcaption>D@0.75</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_B_0.6.png" alt=""><figcaption>B@0.6</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_context/images/blue_white_kitchen_seed0_D_0.6.png" alt=""><figcaption>D@0.6</figcaption></figure>
+</div>
+<p class="sub">What the renders show: kitchen A and B@0.9 are both entirely invented tall galley kitchens — at effective
+sigma 0.944 the instruction changed style compliance, not geometry. Kitchen B@0.6/D@0.6 are the original room with the
+palette gently shifted — no industrial renovation happened. Scandi B@0.75/D@0.75 are genuine renovations of the same
+room (window, radiator, curtains kept), and the D arm's error map is visibly paler where B's sofa wall drifted.</p>
+
+<h2>Confounds, honestly</h2>
+<div class="caveat">
+<p><strong>The not-renovating trap is live in this data.</strong> Every kitchen arm at σ≤0.75 posted a near-zero depth
+error <em>and</em> an adherence ratio collapsed to 54–59% of baseline: those arms won depth by returning the photo. The
+depth column alone would call them the best arms of the study; the adherence column is what exposes them. Their shell
+coverage also <em>rose</em> (88–96%) — an untouched room segments cleanly — which is why coverage is a diagnostic, not a
+guard.</p>
+<p><strong>Scandi adherence cannot fully expose that trap.</strong> The scandi scene's photo already matches its own
+style prompt ("scandinavian living room" → scandinavian living room), so a copied photo still scores well on CLIP there
+— B@0.6's 104% ratio is not proof it renovated. The renders say it changed furniture modestly; the kitchen, whose style
+had to move, is the informative scene for this confound.</p>
+<p><strong>One seed, two scenes.</strong> This is the owner's fast-iteration setting; the σ0.9 conclusions match the
+0002 FMRG benchmark's 32-pair direction, but the σ-sweep findings rest on single samples.</p>
+<p><strong>Adherence judge changed vs older reports.</strong> This study scores with ViT-L/14 (eval-only, never the
+guidance CLIP — now enforced by a config validator); 0002's FMRG run used ViT-B/32, so absolute adherence values are not
+comparable across reports. Ratios vs each study's own arm A are.</p>
+</div>
+
+<h2>Methods</h2>
+<p class="sub">Config <span class="mono">experiments/0002_geometric_guidance/conf/context.yaml</span>; runner
+<span class="mono">run.py --config context</span>; results
+<span class="mono">outputs/0002_fmrg_context/results.json</span>. Sampler: FMRG <span class="mono">fmrgj_nfe100</span>
+point — 208-sigma grid truncated at 51, one terminal jump, endpoint-reuse stepping, decoder-only pullback, eta 5.0,
+resegment on, erosion 2. Seed 0 via an explicit per-walk <span class="mono">torch.Generator</span>; deterministic
+kernels requested. Style prompts are 0002's verbatim: <em>"a scandinavian style living room, pale oak furniture, linen
+upholstery, soft daylight"</em> / <em>"a modern industrial kitchen, matte black cabinetry, steel shelving, concrete
+worktops"</em>. Renovation prompts prepend/append the instruction only: <em>"renovate this room into &lt;style&gt;, keep
+the room structure, layout, viewpoint and camera angle"</em> — style descriptors identical, so the prompt axis varies
+framing alone. Adherence: CLIP ViT-L/14 (<span class="mono">openai/clip-vit-large-patch14</span>) against the neutral
+style text for every arm, loaded only after the last walk (a resident ViT-L beside FLUX's backward transient OOM'd a
+32&nbsp;GB card on the first attempt). Depth: DA2-Small, scale-and-shift aligned via
+<span class="mono">align_scale_shift</span> over the common shell mask. Unguided walks 8.0&nbsp;s, guided 12.8&nbsp;s;
+whole run ≈3&nbsp;min wall-clock; peak 28.17&nbsp;GiB (guided arms), 24.7&nbsp;GiB (unguided).</p>
+
+</body>
+</html>
