@@ -130,6 +130,10 @@ The guided sampler and the experiment harness shared with `experiments/`.
   scored through EoMT's `class_logits` and differentiated back to the latent
   while both masks stay detached constants. It is the term that charges for a
   window painted over as flat wall, which the depth energy scores as perfect.
+- `guidance/clip.py`: `ClipTextGuidance`, the differentiable text energy — a
+  frozen CLIP scoring the decoded x̂₀ against a prompt embedding with the
+  gradient kept alive through tensor-op preprocessing — and `ClipTextEnergies`,
+  the loaded-once model that turns each prompt into one.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
   re-runs the depth model, and scores it against a `GeometricReference` over the
   reference's shell — intersected, whenever a segmenter is configured, with the

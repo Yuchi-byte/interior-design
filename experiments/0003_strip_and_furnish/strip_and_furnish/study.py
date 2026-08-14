@@ -74,6 +74,7 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
         torch.cuda.reset_peak_memory_stats(backends.device)
 
     print(f"\n[stage 1] strip: {len(config.scenes)} scenes, no depth guidance")
+    inpainter = backends.build_inpainter()
     strips = tuple(
         strip_scene(
             scene,
@@ -85,6 +86,7 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
             ),
             config=config,
             backends=backends,
+            inpainter=inpainter,
             seed=config.seeds[0],
             gallery=gallery_a,
         )
@@ -92,6 +94,12 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
     )
     for strip in strips:
         print(f"  {_format_strip(strip)}")
+    # Stage 2 never inpaints, and a guided step's VAE backward is the largest
+    # allocation in the run: holding a second pipeline through it is what turns
+    # a 512px study into an out-of-memory error.
+    del inpainter
+    if backends.device.type == "cuda":
+        torch.cuda.empty_cache()
 
     references = {
         strip.scene: empty_room_reference(strip, config=config, backends=backends)

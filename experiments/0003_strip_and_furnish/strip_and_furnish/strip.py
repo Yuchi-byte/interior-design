@@ -21,7 +21,7 @@ from roomgen_geometry.masking import contents_mask, scorable_mask
 from roomgen_geometry.reference import GeometricReference
 from roomgen_guide.eval import depth_error, shell_coverage
 from roomgen_guide.sampling.guided import decode_latent
-from roomgen_guide.sampling.inpaint import inpaint_masked_region
+from roomgen_guide.sampling.inpaint import InpaintPipeline, inpaint_masked_region
 from roomgen_guide.sampling.pipeline import LatentAutoencoder
 from strip_and_furnish.backends import Backends
 from strip_and_furnish.config import SceneConfig, StudyConfig
@@ -124,6 +124,7 @@ def strip_scene(
     *,
     config: StudyConfig,
     backends: Backends,
+    inpainter: InpaintPipeline,
     seed: int,
     gallery: Path,
 ) -> StripResult:
@@ -143,7 +144,12 @@ def strip_scene(
     _synchronize(backends.device)
     started = time.perf_counter()
     empty_room, first_generated, residual = _repaint(
-        photo, contents, config=config, backends=backends, generator=generator
+        photo,
+        contents,
+        config=config,
+        backends=backends,
+        inpainter=inpainter,
+        generator=generator,
     )
     _synchronize(backends.device)
     seconds = time.perf_counter() - started
@@ -216,6 +222,7 @@ def _repaint(
     *,
     config: StudyConfig,
     backends: Backends,
+    inpainter: InpaintPipeline,
     generator: torch.Generator,
 ) -> tuple[Float[Tensor, "1 3 height width"], Float[Tensor, "1 3 height width"], float]:
     """Repaint the cut region until the segmenter stops calling what is in it furniture.
@@ -230,7 +237,7 @@ def _repaint(
         inpainting = inpaint_masked_region(
             image,
             remaining,
-            pipeline=backends.inpainter,
+            pipeline=inpainter,
             prompt=config.strip.prompt,
             negative_prompt=config.strip.negative_prompt,
             steps=config.strip.steps,

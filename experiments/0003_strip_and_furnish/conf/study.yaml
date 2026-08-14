@@ -18,10 +18,13 @@ backends:
   kind: real
   device: cuda
   deterministic: true
-  # float32 throughout: the study's headline numbers are a comparison between
-  # two energies, and quantising either of them moves the weight that was sized
-  # between them rather than only the render.
-  dtype: float32
+  # float16 for the UNet and VAE alone, because VRAM forces it: arm B holds the
+  # decoder, the depth network and CLIP on one graph, and at float32 that peaks
+  # over this 32GB card. The two judges stay at float32, so what is quantised is
+  # the sampler and the image handed to them, not the energies compared over it
+  # — and the reward's own reduction and the step's RMS sizing are float32 by
+  # contract whatever dtype the maps arrive in.
+  dtype: float16
   depth_dtype: float32
   segmentation_dtype: float32
   scheduler: ddim
@@ -52,9 +55,12 @@ strip:
 
 furnish:
   steps: 50
-  # High enough that the empty room is actually furnished — at 0.6 the sampler
-  # returns the empty room and there is nothing for either energy to hold.
-  noise_strength: 0.8
+  # High enough that the empty room is actually furnished, low enough that the
+  # room is still recognisably there for an energy to hold: measured on one
+  # scene, 0.6 puts a bench in an otherwise untouched room, and 0.8 furnishes a
+  # different room in every arm — including the guided one, which then wins
+  # 77% of a depth error that is enormous in absolute terms.
+  noise_strength: 0.7
   text_guidance_scale: 7.5
   # Raw-gradient units, shared by both guided arms so arm B is arm A plus a
   # depth term rather than arm A at a different temperature. Sized against the

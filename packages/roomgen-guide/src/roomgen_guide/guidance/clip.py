@@ -1,5 +1,6 @@
 """The text energy: how far the render is from the prompt, in CLIP's embedding space."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, cast, runtime_checkable
@@ -103,6 +104,16 @@ class _ClipEncoders(Protocol):
     def get_text_features(self, **tokens: Tensor) -> object: ...
 
 
+class _Tokens(Protocol):
+    def to(self, device: torch.device) -> Mapping[str, Tensor]: ...
+
+
+class _Tokenizer(Protocol):
+    def __call__(
+        self, prompts: list[str], *, padding: bool, return_tensors: str
+    ) -> _Tokens: ...
+
+
 @dataclass(frozen=True)
 class _ImageTower:
     model: _ClipEncoders
@@ -113,22 +124,48 @@ class _ImageTower:
         return _projected(self.model.get_image_features(pixel_values=pixel_values))
 
 
-def load_clip_text_guidance(
+@dataclass(frozen=True)
+class ClipTextEnergies:
+    """One loaded CLIP, turning any prompt into the energy that pulls a render towards it.
+
+    A whole study's prompts share one set of weights: the image tower is what
+    every scene differentiates through, and only the frozen text embedding
+    differs between them.
+    """
+
+    encoders: _ClipEncoders
+    tokenizer: _Tokenizer
+    preprocessing: ClipPreprocessing
+    device: torch.device
+
+    def __call__(self, prompt: str) -> ClipTextGuidance:
+        tokens = self.tokenizer([prompt], padding=True, return_tensors="pt").to(
+            self.device
+        )
+        with torch.no_grad():
+            text_features = _projected(self.encoders.get_text_features(**tokens))
+        return ClipTextGuidance(
+            encoder=_ImageTower(self.encoders),
+            text_features=text_features.detach(),
+            preprocessing=self.preprocessing,
+        )
+
+
+def load_clip_text_energies(
     checkpoint: str = DEFAULT_CHECKPOINT,
     *,
-    prompt: str,
     device: torch.device,
     dtype: torch.dtype = torch.float32,
     cache_dir: Path | None = None,
-) -> ClipTextGuidance:
-    """The text energy on `prompt`, from a Hub CLIP checkpoint.
+) -> ClipTextEnergies:
+    """A Hub CLIP checkpoint, frozen and ready to score any prompt.
 
     Args:
         checkpoint: Hugging Face Hub id; weights are fetched on demand, never
             vendored. A run that also *scores* adherence with CLIP must score it
             with a different checkpoint from this one, or it is grading the
             sampler on the very model the sampler optimised.
-        dtype: parameter dtype of the tower and the dtype the render is cast to
+        dtype: parameter dtype of the towers and the dtype the render is cast to
             before it is encoded.
         cache_dir: Hub snapshot cache the weights are read from and downloaded
             into (`RoomgenSettings.hub_cache`); `None` follows the Hub client's
@@ -141,17 +178,13 @@ def load_clip_text_guidance(
     encoders = cast(
         _ClipEncoders, model.to(device=device, dtype=dtype).eval().requires_grad_(False)
     )
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint, cache_dir=cache_dir)
-    tokens = tokenizer([prompt], padding=True, return_tensors="pt").to(device)
-    with torch.no_grad():
-        text_features = _projected(encoders.get_text_features(**tokens))
     # The processor is read for its input size and normalisation statistics
     # only; the preprocessing itself is tensor ops, so no image round-trips
     # through PIL and the gradient survives the resize.
     processor = CLIPImageProcessor.from_pretrained(checkpoint, cache_dir=cache_dir)
-    return ClipTextGuidance(
-        encoder=_ImageTower(encoders),
-        text_features=text_features.detach(),
+    return ClipTextEnergies(
+        encoders=encoders,
+        tokenizer=AutoTokenizer.from_pretrained(checkpoint, cache_dir=cache_dir),
         preprocessing=ClipPreprocessing(
             size=int(processor.crop_size["height"]),
             image_mean=torch.tensor(
@@ -161,6 +194,7 @@ def load_clip_text_guidance(
                 processor.image_std, device=device, dtype=dtype
             ).view(1, 3, 1, 1),
         ),
+        device=device,
     )
 
 

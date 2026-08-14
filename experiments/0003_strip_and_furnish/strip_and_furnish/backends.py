@@ -22,7 +22,11 @@ from roomgen_guide.eval import (
     ContentsChangeAdherence,
     PromptAdherence,
 )
-from roomgen_guide.guidance.clip import ClipTextGuidance, load_clip_text_guidance
+from roomgen_guide.guidance.clip import (
+    ClipTextEnergies,
+    ClipTextGuidance,
+    load_clip_text_energies,
+)
 from roomgen_guide.renovate import load_pipeline
 from roomgen_guide.sampling.inpaint import InpaintPipeline, load_inpaint_pipeline
 from roomgen_guide.sampling.pipeline import Img2ImgPipeline
@@ -44,13 +48,21 @@ _TEXT_ENERGY_DTYPE: Final = torch.float32
 TextEnergy = Callable[[str], ClipTextGuidance]
 """One prompt in, the energy that pulls a render towards it out."""
 
+BuildInpainter = Callable[[], InpaintPipeline]
+"""Stage 1's pipeline, built when the strip runs and dropped when it is over."""
+
 
 @dataclass(frozen=True)
 class Backends:
-    """Everything the two stages need, already on the target device."""
+    """Everything the two stages need, already on the target device.
+
+    The inpainter is a factory rather than a loaded pipeline: it is the one
+    model nothing after stage 1 uses, and a guided step's VAE backward wants
+    every gigabyte the two stages are not both holding.
+    """
 
     pipeline: Img2ImgPipeline
-    inpainter: InpaintPipeline
+    build_inpainter: BuildInpainter
     depth_estimator: DepthEstimator
     segmenter: Segmenter
     text_energy: TextEnergy
@@ -115,23 +127,26 @@ def _real_backends(
             " whose step() cannot take the loop's generator; use 'ddim'"
         )
 
-    def text_energy(prompt: str) -> ClipTextGuidance:
-        return load_clip_text_guidance(
-            config.text_energy_checkpoint,
-            prompt=prompt,
-            device=device,
-            dtype=_TEXT_ENERGY_DTYPE,
-            cache_dir=cache_dir,
-        )
-
-    return Backends(
-        pipeline=pipeline,
-        inpainter=load_inpaint_pipeline(
+    def build_inpainter() -> InpaintPipeline:
+        return load_inpaint_pipeline(
             config.inpainting_checkpoint,
             device=device,
             dtype=dtype,
             cache_dir=cache_dir,
-        ),
+        )
+
+    # One CLIP for every scene: the image tower is what each of them
+    # differentiates through, and only the frozen text embedding differs.
+    energies: ClipTextEnergies = load_clip_text_energies(
+        config.text_energy_checkpoint,
+        device=device,
+        dtype=_TEXT_ENERGY_DTYPE,
+        cache_dir=cache_dir,
+    )
+
+    return Backends(
+        pipeline=pipeline,
+        build_inpainter=build_inpainter,
         depth_estimator=DepthAnythingV2(
             config.depth_checkpoint,
             device=device,
@@ -144,7 +159,7 @@ def _real_backends(
             dtype=TORCH_DTYPES[config.segmentation_dtype],
             cache_dir=cache_dir,
         ),
-        text_energy=text_energy,
+        text_energy=energies,
         device=device,
         dtype=dtype,
     )
@@ -180,9 +195,13 @@ def _fake_backends(
         )
         return energy
 
+    def build_inpainter() -> InpaintPipeline:
+        inpainter: InpaintPipeline = FakeInpaintPipeline()
+        return inpainter
+
     return Backends(
         pipeline=FakePipeline(),
-        inpainter=FakeInpaintPipeline(),
+        build_inpainter=build_inpainter,
         depth_estimator=FakeDepthEstimator(),
         segmenter=FakeSegmenter(),
         text_energy=text_energy,
