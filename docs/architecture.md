@@ -61,12 +61,16 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   reads the view, not the room) — the domain-knowledge file. Windows and doors
   are shell by owner decision: the openings may not move during a renovation,
   so their depth is scored, and what a monocular network reads on glass (pane
-  or view) is accepted as ambiguous. `STRUCTURAL_CLASSES` coincides with the
-  shell and keeps its own name because the class term asks a different question
-  of the same pixels than the depth term does. `FILL_CLASSES` is the strict
-  whitelist of what an inpainted hole may be filled with — wall, floor,
-  ceiling, windowpane, door, and nothing else, a proper subset of the shell by
-  owner decision.
+  or view) is accepted as ambiguous. Curtain and rug are shell too
+  (`SOFT_FURNISHING_CLASSES`, owner decision): their pixels read the planes
+  they dress, so scoring them enlarges the valid area, at the accepted cost
+  that a renovation may legitimately re-dress them. `STRUCTURAL_CLASSES` is
+  the shell minus those soft furnishings — identity is frozen only where the
+  renovation may not change it; `REMOVABLE_CLASSES` (contents + soft
+  furnishings) is what a strip cuts; `FILL_CLASSES` is the strict whitelist of
+  what an inpainted hole may be filled with — wall, floor, ceiling,
+  windowpane, door, and nothing else, a proper subset of the shell by owner
+  decision.
 - `masking.py`: `scorable_mask`, the one place a segmentation is turned into the
   pixels a reward may score, under either `MaskMode` polarity —
   `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts
@@ -77,8 +81,9 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   segment edge where monocular depth is unreliable — a max-pool over the
   inverted mask (Chebyshev radius in pixels); the image border is not treated as
   a segment edge. `structural_mask` is the class term's reference side, read the
-  same way and eroded the same way over `STRUCTURAL_CLASSES`; `fill_mask` is a
-  strip acceptance's side, read the same way over `FILL_CLASSES`.
+  same way and eroded the same way over `STRUCTURAL_CLASSES`; `removable_mask`
+  is a strip's cut, dilated over `REMOVABLE_CLASSES`; `fill_mask` is a strip
+  acceptance's side, read the same way over `FILL_CLASSES`.
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels, at a
   non-negative scale.
@@ -120,7 +125,10 @@ The guided sampler and the experiment harness shared with `experiments/`.
   sampler, the one module that reaches the vendored tree — by deferred import
   only, and never at test time — whose loader stages the ~33GB load to fit a
   32GB card, encodes every prompt a run will ever condition on up front
-  (`additional_prompts` / `select_cached_prompt`), and frees the text encoders. `mfm_composite.py`'s `MfmWeightedReward` sums
+  (`additional_prompts` / `select_cached_prompt`), frees the text encoders, and
+  can append a reference photo to any cached prompt as FLUX.1-Redux image
+  tokens (`encode_redux_image_tokens` / `register_image_context_prompt`, the
+  scale multiplying the image tokens alone). `mfm_composite.py`'s `MfmWeightedReward` sums
   several of those `score(images, prompts)` rewards per image, so the depth
   energy rides beside one of MFM's own preference models (HPSv2) as a single
   reward, with `gradient_scale` for sizing the weight between two terms whose
