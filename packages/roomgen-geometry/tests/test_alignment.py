@@ -320,7 +320,22 @@ def test_shift_only_refuses_to_absorb_a_scale_the_full_fit_would_swallow(
     assert float(charged) > 0.05
 
 
-@pytest.mark.parametrize("mode", ["scale_shift", "shift"])
+def test_fitting_nothing_returns_the_identity_and_scores_the_maps_as_they_stand(
+    generator: Generator,
+) -> None:
+    prediction, mask = _room(generator)
+    target = prediction + 0.25
+
+    fit = align_scale_shift(prediction, target, mask, mode="none")
+
+    _assert_is_identity_fit(fit.scale, fit.shift)
+    assert torch.equal(fit.refused_variance, torch.zeros(2))
+    # The offset `shift` mode exists to remove is charged in full here: raw
+    # residuals are the whole point of the mode.
+    assert torch.equal(apply_scale_shift(prediction, fit), prediction)
+
+
+@pytest.mark.parametrize("mode", ["scale_shift", "shift", "none"])
 def test_every_mode_leaves_an_empty_mask_alone(mode: str) -> None:
     prediction = torch.full((1, 4, 4), 3.0)
     target = torch.zeros((1, 4, 4))
@@ -332,7 +347,7 @@ def test_every_mode_leaves_an_empty_mask_alone(mode: str) -> None:
     assert torch.equal(fit.refused_variance, torch.zeros(1))
 
 
-@pytest.mark.parametrize("mode", ["scale_shift", "shift"])
+@pytest.mark.parametrize("mode", ["scale_shift", "shift", "none"])
 def test_every_mode_keeps_the_prediction_on_the_graph(
     mode: str, generator: Generator
 ) -> None:

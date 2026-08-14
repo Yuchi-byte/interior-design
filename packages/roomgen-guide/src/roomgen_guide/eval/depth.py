@@ -8,7 +8,11 @@ import torch
 from jaxtyping import Bool, Float
 from torch import Tensor
 
-from roomgen_geometry.alignment import align_scale_shift, apply_scale_shift
+from roomgen_geometry.alignment import (
+    AlignmentMode,
+    align_scale_shift,
+    apply_scale_shift,
+)
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.reward import masked_depth_error
@@ -26,6 +30,7 @@ def depth_error(
     reference: GeometricReference,
     depth_estimator: DepthEstimator,
     mask: Bool[Tensor, "batch height width"] | None = None,
+    alignment: AlignmentMode = "scale_shift",
 ) -> float:
     """Masked, scale-and-shift-invariant depth error of `image` against `reference`.
 
@@ -41,6 +46,11 @@ def depth_error(
             which polarity the guidance was steered under. Always read
             :func:`shell_coverage` beside the score: a mask that exempts the
             frame scores a perfect zero.
+        alignment: how much affine freedom the comparison hands back, as
+            :func:`roomgen_geometry.reward.masked_depth_error` takes it. The
+            default is the only correct mode for an affine-invariant backend;
+            a metric backend's render may also be judged under `shift` or
+            `none`.
 
     The score is a plain number, taken under ``no_grad``: nothing downstream of
     a finished render is differentiated.
@@ -48,7 +58,9 @@ def depth_error(
     scored = reference.mask if mask is None else mask
     with torch.no_grad():
         disparity = depth_estimator(image)
-        error = masked_depth_error(disparity, reference.disparity, scored)
+        error = masked_depth_error(
+            disparity, reference.disparity, scored, alignment=alignment
+        )
     return float(error.mean())
 
 
@@ -79,6 +91,7 @@ def signed_depth_residual_map(
     reference: GeometricReference,
     depth_estimator: DepthEstimator,
     mask: Bool[Tensor, "batch height width"] | None = None,
+    alignment: AlignmentMode = "scale_shift",
 ) -> Float[Tensor, "batch height width"]:
     """Which way `image` bent the room, pixel by pixel: aligned disparity minus reference.
 
@@ -88,6 +101,8 @@ def signed_depth_residual_map(
         mask: the pixels to score, as :func:`depth_error` takes it and with the
             same default; the map is zero outside it, and the alignment is fitted
             over it, so a map and a score only agree when both were given it.
+        alignment: as :func:`depth_error` takes it, and matching for the same
+            reason: the map must square to the score it sits beside.
 
     Positive where the render's inverse depth sits above the photo's — the
     surface reads closer than it was — negative where it reads further away,
@@ -109,7 +124,7 @@ def signed_depth_residual_map(
         # Affine-invariant inverse depth shares no frame with the reference
         # until it is fitted onto it, exactly as `masked_depth_error` does.
         aligned = apply_scale_shift(
-            disparity, align_scale_shift(disparity, target, scored)
+            disparity, align_scale_shift(disparity, target, scored, mode=alignment)
         )
         # Replaced rather than weighted, since `0 * NaN` is NaN: a non-finite
         # pixel the mask excludes must not decide the map the score is read from.

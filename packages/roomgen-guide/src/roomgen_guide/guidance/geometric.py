@@ -7,6 +7,7 @@ import torch
 from jaxtyping import Bool, Float
 from torch import Tensor
 
+from roomgen_geometry.alignment import AlignmentMode
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.masking import scorable_mask
 from roomgen_geometry.reference import GeometricReference
@@ -37,6 +38,10 @@ class GeometricGuidance:
         on_mask: called with the mask after each evaluation decides what it
             scores, for a caller that wants to record it. Observation only —
             the energy is what it would be without one.
+        alignment: how much affine freedom the comparison hands back, as
+            :func:`roomgen_geometry.reward.masked_depth_error` takes it. The
+            default is the full scale-and-shift fit an affine-invariant backend
+            requires; only a metric backend may be scored under a looser mode.
     """
 
     depth_estimator: DepthEstimator
@@ -44,6 +49,7 @@ class GeometricGuidance:
     segmenter: Segmenter | None = None
     erosion_radius: int | None = None
     on_mask: MaskObserver | None = None
+    alignment: AlignmentMode = "scale_shift"
 
     def __post_init__(self) -> None:
         if (self.segmenter is None) != (self.erosion_radius is None):
@@ -59,7 +65,9 @@ class GeometricGuidance:
         if self.on_mask is not None:
             self.on_mask(scored)
         disparity = self.depth_estimator(predicted_image)
-        return masked_depth_error(disparity, self.reference.disparity, scored)
+        return masked_depth_error(
+            disparity, self.reference.disparity, scored, alignment=self.alignment
+        )
 
     def _scored_pixels(
         self, predicted_image: Float[Tensor, "batch 3 height width"]

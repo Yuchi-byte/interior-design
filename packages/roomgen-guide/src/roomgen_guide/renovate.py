@@ -20,6 +20,7 @@ from diffusers import StableDiffusionImg2ImgPipeline
 from jaxtyping import Float
 from torch import Tensor
 
+from roomgen_geometry.alignment import AlignmentMode
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.segmentation.base import Segmenter
@@ -76,6 +77,7 @@ def renovate(
     resegment: bool = True,
     extra_rewards: Sequence[WeightedTerm] = (),
     on_mask: MaskObserver | None = None,
+    alignment: AlignmentMode = "scale_shift",
 ) -> Float[Tensor, "batch 3 height width"]:
     """Restyle the room in `photo` under `prompt` while holding its geometry.
 
@@ -102,6 +104,9 @@ def renovate(
             :func:`renovate_flow_map` takes them.
         on_mask: called with the mask each guided step scored, for a caller
             recording what the reward actually saw.
+        alignment: how much affine freedom the energy's depth comparison hands
+            back, as :class:`~roomgen_guide.guidance.geometric.GeometricGuidance`
+            takes it; only a metric `depth_estimator` may loosen the default.
 
     Samples against the photo's frozen
     :class:`~roomgen_geometry.reference.GeometricReference` with the same
@@ -120,6 +125,7 @@ def renovate(
             resegment=resegment,
             extra_rewards=extra_rewards,
             on_mask=on_mask,
+            alignment=alignment,
         ),
         strength=strength,
         steps=steps,
@@ -235,6 +241,7 @@ def geometric_reward(
     resegment: bool = True,
     extra_rewards: Sequence[WeightedTerm] = (),
     on_mask: MaskObserver | None = None,
+    alignment: AlignmentMode = "scale_shift",
 ) -> Guidance:
     """The energy both samplers descend: the depth term, plus whatever rides beside it.
 
@@ -255,6 +262,7 @@ def geometric_reward(
         segmenter=segmenter if resegment else None,
         erosion_radius=erosion_radius if resegment else None,
         on_mask=on_mask,
+        alignment=alignment,
     )
     if not extra_rewards:
         return geometric

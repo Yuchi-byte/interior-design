@@ -407,8 +407,8 @@ def test_the_class_energy_rejects_a_margin_outside_the_unit_interval() -> None:
 
 @pytest.mark.parametrize(
     ("alignment", "scored"),
-    [("scale_shift", False), ("shift", True)],
-    ids=["the default absorbs it", "shift charges it"],
+    [("scale_shift", False), ("shift", True), ("none", True)],
+    ids=["the default absorbs it", "shift charges it", "none charges it"],
 )
 def test_only_the_default_alignment_forgives_a_uniformly_rescaled_room(
     alignment: str, scored: bool, generator: Generator
@@ -423,6 +423,26 @@ def test_only_the_default_alignment_forgives_a_uniformly_rescaled_room(
 
     error = float(
         masked_depth_error(2.0 * target, target, mask, alignment=alignment)  # type: ignore[arg-type]
+    )
+
+    assert (error > 0.05) is scored
+
+
+@pytest.mark.parametrize(
+    ("alignment", "scored"),
+    [("scale_shift", False), ("shift", False), ("none", True)],
+    ids=["the default absorbs it", "shift absorbs it", "none charges it"],
+)
+def test_only_the_raw_mode_charges_a_uniform_offset(
+    alignment: str, scored: bool, generator: Generator
+) -> None:
+    # What separates the two metric modes: a global disparity offset is free
+    # under a shift fit and is the raw residual's whole business.
+    target = torch.rand((1, 16, 16), generator=generator) + 0.5
+    mask = torch.ones((1, 16, 16), dtype=torch.bool)
+
+    error = float(
+        masked_depth_error(target + 0.3, target, mask, alignment=alignment)  # type: ignore[arg-type]
     )
 
     assert (error > 0.05) is scored

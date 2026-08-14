@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field, replace
 from typing import Final
 
+import pytest
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Generator, Tensor
@@ -221,6 +222,42 @@ def test_the_energy_ignores_the_affine_freedom_the_depth_backend_leaves(
         rescaled_backend(drifted),
         geometric_guidance(drifted),
     )
+
+
+@pytest.mark.parametrize("alignment", ["shift", "none"])
+def test_a_loosened_alignment_charges_the_affine_freedom_the_default_absorbs(
+    geometric_guidance: GeometricGuidance, room_photo: Tensor, alignment: str
+) -> None:
+    # The same affinely-rescaled backend the invariance test above scores at
+    # zero under the default fit: the looser modes exist precisely to stop
+    # absorbing that freedom, so under them the mismatch is an energy.
+    rescaled_backend = replace(
+        geometric_guidance,
+        depth_estimator=FakeDepthEstimator(scale=3.0, shift=-2.0),
+        alignment=alignment,  # type: ignore[arg-type]
+    )
+
+    assert float(rescaled_backend(room_photo).sum()) > 0.0
+
+
+@pytest.mark.parametrize("alignment", ["shift", "none"])
+def test_the_loosened_energy_gradient_still_reaches_the_latent(
+    geometric_guidance: GeometricGuidance,
+    fake_pipeline: FakePipeline,
+    generator: Generator,
+    alignment: str,
+) -> None:
+    # A detached graph yields a zero gradient and guidance silently becomes a
+    # no-op, so the assertion is on the gradient, not on the loop running.
+    loosened = replace(geometric_guidance, alignment=alignment)  # type: ignore[arg-type]
+    latent = torch.randn(
+        (1, LATENT_CHANNELS, 8, 8), generator=generator, requires_grad=True
+    )
+
+    energy = loosened(decode_latent(fake_pipeline.vae, latent))
+
+    gradient = assert_gradient_is_finite_and_nonzero(energy.mean(), latent)
+    assert gradient.shape == latent.shape
 
 
 def test_the_energy_scores_only_the_masked_shell(
