@@ -105,6 +105,41 @@ def _walk(
     )
 
 
+def test_the_finished_image_is_off_the_graph_even_when_the_state_is_not(
+    room_photo: Tensor,
+) -> None:
+    # The real sampler's last advance can leave the state on a graph, and an
+    # image decoded from it would pin the final decode's activations for as
+    # long as the caller holds the render — gigabytes at full resolution, held
+    # several arms at a time by any framework laying renders side by side.
+    class _GraphCarrying(ToyFlowMapProcess):
+        def advance(
+            self,
+            state: Float[Tensor, "batch 3 height width"],
+            step: StepContext,
+            *,
+            prediction: Float[Tensor, "batch 3 height width"] | None,
+            steering: Float[Tensor, "batch 3 height width"] | None,
+        ) -> Float[Tensor, "batch 3 height width"]:
+            advanced = super().advance(
+                state, step, prediction=prediction, steering=steering
+            )
+            return advanced.clone().requires_grad_(True)
+
+    process = _GraphCarrying(
+        room_photo, class_label=_CLASS_LABEL, steps=_STEPS, generator=_seeded()
+    )
+
+    image = sample_endpoint_process(
+        process,
+        reward=_PerElementEnergy(torch.ones(room_photo.shape[0])),
+        tilt=ClippedGradientTilt(strength=_STRENGTH),
+    )
+
+    assert not image.requires_grad
+    assert image.grad_fn is None
+
+
 def test_both_backends_are_the_same_kind_of_process(
     fake_pipeline: FakePipeline, room_photo: Tensor
 ) -> None:

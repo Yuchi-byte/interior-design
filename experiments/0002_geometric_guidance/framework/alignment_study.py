@@ -13,6 +13,7 @@ scale per scene so an absolute offset stays visible.
 
 from __future__ import annotations
 
+import gc
 import json
 import time
 from dataclasses import dataclass
@@ -428,6 +429,18 @@ def _run_scene(
         )
         print(f"  {_format_result(result)}")
         results.append(result)
+        # A tuple's eval interleaves CLIP, segmenter and depth allocations with
+        # the sampler's; at float32 the walk peaks within a few GiB of the card,
+        # and what those leave behind is what ran the first full grid out of
+        # memory one scene in. The collect sweeps reference cycles that may pin
+        # tensors, the cache release returns the freed blocks, and the live
+        # figure is printed so a leak shows up as growth across tuples rather
+        # than as an OOM two scenes later.
+        if backends.device.type == "cuda":
+            gc.collect()
+            torch.cuda.empty_cache()
+            live = torch.cuda.memory_allocated(backends.device) / 2**30
+            print(f"  [memory] {live:.2f} GiB live after seed {seed}")
     return results
 
 

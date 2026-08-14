@@ -53,7 +53,16 @@ def sample_endpoint_process[Prediction](
             state=state,
             step=_context(process, index),
         )
-    return process.to_image(state)
+    # The walk is over and the image is a product, not a variable: decoded on
+    # the graph, the render would ride out of here dragging the final decode's
+    # activations behind it — gigabytes at 512² — for as long as the caller
+    # holds it, which is how a benchmark that keeps three arms' renders for one
+    # comparison runs a 32GB card out of memory. Nothing downstream of a
+    # finished render is differentiated, by the eval package's own contract.
+    # `no_grad` spares building the decode's graph; the detach covers a backend
+    # whose `to_image` returns the state itself rather than an op on it.
+    with torch.no_grad():
+        return process.to_image(state).detach()
 
 
 def _context[Prediction](
