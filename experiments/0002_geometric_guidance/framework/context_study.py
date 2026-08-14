@@ -13,7 +13,8 @@ reference, all on arm A's colour scale.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal
@@ -225,30 +226,39 @@ def run_context_study(
         text_guidance_scale=config.sampler.text_guidance_scale,
         settings=settings,
     )
-    adherence = build_adherence(
-        config.adherence, device=stacks.device, cache_dir=settings.hub_cache
-    )
     if stacks.device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(stacks.device)
 
-    results: list[ContextSceneResult] = []
+    pending: list[_PendingScene] = []
     for index, scene in enumerate(config.scenes):
         if scene.photo not in photo_paths:
             raise ValueError(
                 f"scene photo {scene.photo!r} is not in experiments/assets/"
                 f"photos.json; known ids: {', '.join(sorted(photo_paths))}"
             )
-        results.extend(
+        pending.extend(
             _run_scene(
                 scene,
                 config=config,
                 stacks=stacks,
-                adherence=adherence,
                 photo_path=photo_paths[scene.photo],
                 image_dir=image_dir,
                 warm_up=index == 0,
             )
         )
+
+    # Loaded only after the last walk: beside the transformer and the guided
+    # decode's backward transient, a resident ViT-L/14 is exactly what tipped a
+    # 32GB card into out-of-memory. Renders wait on the CPU; scoring one at a
+    # time through a frozen encoder is cheap.
+    adherence = build_adherence(
+        config.adherence, device=stacks.device, cache_dir=settings.hub_cache
+    )
+    results = [
+        _scored(entry, adherence=adherence, device=stacks.device) for entry in pending
+    ]
+    for result in results:
+        print(f"  {_format_result(result)}")
 
     on_cuda = stacks.device.type == "cuda"
     summary = ContextSummary(
@@ -267,16 +277,45 @@ def run_context_study(
     return summary
 
 
+@dataclass(frozen=True)
+class _PendingScene:
+    """One scene measured on everything but adherence, its renders parked on the CPU."""
+
+    result: ContextSceneResult
+    renders: dict[str, Float[Tensor, "1 3 height width"]]
+    photo: Float[Tensor, "1 3 height width"]
+    reference: GeometricReference
+
+
+def _scored(
+    entry: _PendingScene, *, adherence: PromptAdherence, device: torch.device
+) -> ContextSceneResult:
+    """The scene with its adherence filled in, every arm against the neutral text."""
+    result = entry.result
+    arms = tuple(
+        replace(
+            cell,
+            adherence=adherence(
+                entry.renders[cell.arm].to(device),
+                prompt=result.eval_prompt,
+                photo=entry.photo,
+                reference=entry.reference,
+            ),
+        )
+        for cell in result.arms
+    )
+    return replace(result, arms=arms)
+
+
 def _run_scene(
     scene: FramingSceneConfig,
     *,
     config: FmrgContextConfig,
     stacks: Stacks,
-    adherence: PromptAdherence,
     photo_path: Path,
     image_dir: Path,
     warm_up: bool,
-) -> list[ContextSceneResult]:
+) -> list[_PendingScene]:
     photo = load_photo(
         photo_path,
         resolution=config.resolution,
@@ -330,7 +369,7 @@ def _run_scene(
         )
 
     specs = context_arms(config)
-    results: list[ContextSceneResult] = []
+    results: list[_PendingScene] = []
     for seed in config.seeds:
         renders: dict[str, Float[Tensor, "1 3 height width"]] = {}
         seconds: dict[str, float] = {}
@@ -417,12 +456,9 @@ def _run_scene(
                     shell_coverage=shell_coverage(
                         arm_masks[spec.arm], reference=reference
                     ),
-                    adherence=adherence(
-                        render,
-                        prompt=scene.eval_prompt,
-                        photo=photo,
-                        reference=reference,
-                    ),
+                    # Filled in by `_scored` once sampling is over and the
+                    # adherence CLIP can afford to be resident.
+                    adherence=math.nan,
                     render=f"{scene.photo}_seed{seed}_{spec.arm}.png",
                     depth_map=depth_map,
                     residual_map=residual_map,
@@ -447,8 +483,18 @@ def _run_scene(
             shell_mask=shell_mask,
             eval_mask_common=eval_mask_common,
         )
-        print(f"  {_format_result(result)}")
-        results.append(result)
+        print(f"  [sampled] {result.scene} seed {result.seed}, adherence pending")
+        results.append(
+            _PendingScene(
+                result=result,
+                renders={
+                    arm: image.detach().to(device="cpu", dtype=torch.float32)
+                    for arm, image in renders.items()
+                },
+                photo=photo,
+                reference=reference,
+            )
+        )
     return results
 
 
