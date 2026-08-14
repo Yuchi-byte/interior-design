@@ -18,6 +18,8 @@ from pathlib import Path
 
 import torch
 
+from roomgen_geometry.reference import GeometricReference
+
 # `_renoised_timesteps` is imported rather than restated so the number of steps
 # a run records having walked cannot drift from the number the sampler walks.
 from roomgen_guide.sampling.guided import _renoised_timesteps
@@ -45,13 +47,22 @@ GALLERY_B = "gallery_b_furnish"
 
 @dataclass(frozen=True)
 class Summary:
-    """What the study measured, where its artifacts landed, and the code that produced them."""
+    """What the study measured, where its artifacts landed, and the code that produced them.
+
+    Args:
+        shell_fractions: per scene, the share of the frame each reference's
+            shell mask covers, keyed `photo` and `empty_room`. The coverages in
+            the furnish rows are fractions of each reference's *own* shell, so
+            without these two denominators the retained reference's smaller
+            shell — furniture occluded part of it — would be invisible.
+    """
 
     config: StudyConfig
     strips: tuple[StripResult, ...]
     sizings: dict[str, GradientSizing]
     depth_weight: float
     furnishes: tuple[FurnishResult, ...]
+    shell_fractions: dict[str, dict[str, float]]
     output_dir: Path
     peak_vram_bytes: int | None
     started_at: str
@@ -113,6 +124,21 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
         strip.scene: empty_room_reference(strip, config=config, backends=backends)
         for strip in strips
     }
+    shell_fractions = {
+        scene_id: {
+            "photo": _mask_fraction(references[scene_id]),
+            "empty_room": _mask_fraction(empty_references[scene_id]),
+        }
+        for scene_id in references
+    }
+    for scene_id, fractions in shell_fractions.items():
+        # The retained reference's inherent cost, stated per scene: shell the
+        # furniture occluded is outside the photo's mask, so it holds less of
+        # the frame than the empty room's.
+        print(
+            f"  {scene_id}: photo shell {fractions['photo']:.0%} of the frame, "
+            f"empty room's {fractions['empty_room']:.0%}"
+        )
     texts = {scene.photo: backends.text_energy(scene.prompt) for scene in config.scenes}
 
     print("\n[sizing]  gradient RMS of each term on a real sample, per scene")
@@ -201,6 +227,7 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
         sizings=sizings,
         depth_weight=depth_weight,
         furnishes=tuple(furnishes),
+        shell_fractions=shell_fractions,
         output_dir=output_dir,
         peak_vram_bytes=(
             torch.cuda.max_memory_allocated(backends.device) if on_cuda else None
@@ -212,6 +239,11 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
     )
     _write_results(summary, settings)
     return summary
+
+
+def _mask_fraction(reference: GeometricReference) -> float:
+    """The share of the frame a reference's shell mask covers."""
+    return float(reference.mask.to(torch.float32).mean())
 
 
 def _chosen_weight(config: StudyConfig, sizings: dict[str, GradientSizing]) -> float:
@@ -356,6 +388,7 @@ def _write_results(summary: Summary, settings: RoomgenSettings) -> None:
                 # against; the `*_empty_room` fields are the previous
                 # protocol's reference, scored as a diagnostic.
                 "guidance_reference": "photo",
+                "reference_shell_fractions": summary.shell_fractions,
                 "depth_weight": summary.depth_weight,
                 "weight_sizing": {
                     scene: sizing.as_row() for scene, sizing in summary.sizings.items()
