@@ -742,6 +742,13 @@ class ImageGuidanceConfig(Config):
             taken, on a real partially denoised sample.
         siglip_checkpoint: defaults to FLUX.1-Redux-dev, whose snapshot already
             carries the SigLIP tower — no extra download.
+        siglip_dtype: the so400m tower's parameter dtype, separate from the
+            other helpers' (which run in `backends.depth_dtype`): at float32
+            its composite arm — the 428M tower beside FLUX, the depth term's
+            backward and the per-step resegmentation — allocates past a 32GB
+            card's ceiling, measured, not estimated. Half precision costs the
+            walk nothing it can see: the energy still scores and reduces in
+            float32, and FMRG's tilt keeps only the gradient's sign.
         vgg_input_size: the square side the render is resized to before the VGG
             pyramid; the model has no fixed input size of its own.
     """
@@ -758,6 +765,7 @@ class ImageGuidanceConfig(Config):
     clip_checkpoint: Annotated[str, Field(min_length=1)] = GUIDANCE_CLIP_CHECKPOINT
     dinov2_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_DINOV2_CHECKPOINT
     siglip_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_SIGLIP_CHECKPOINT
+    siglip_dtype: DTypeName = "bfloat16"
     vgg_input_size: Annotated[int, Field(ge=32)] = DEFAULT_VGG_INPUT_SIZE
 
     @model_validator(mode="after")

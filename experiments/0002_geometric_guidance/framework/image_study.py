@@ -400,7 +400,7 @@ def build_energy_bank(
                 factories[model] = load_siglip_image_reference_energies(
                     config.image.siglip_checkpoint,
                     device=device,
-                    dtype=dtype,
+                    dtype=TORCH_DTYPES[config.image.siglip_dtype],
                     cache_dir=settings.hub_cache,
                 )
             case "vgg":
