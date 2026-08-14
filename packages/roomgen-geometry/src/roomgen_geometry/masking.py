@@ -65,10 +65,11 @@ def structural_mask(
     """The pixels whose class a renovation may not change: the reference side of the class term.
 
     True on :data:`~roomgen_geometry.segmentation.ade20k.STRUCTURAL_CLASSES` —
-    the shell plus the glazing `architectural_mask` leaves out, since a window's
-    depth is the view's but its identity is the room's — and eroded like every
-    other mask, because a class label flickers in the band either side of a
-    segment edge and a term that chases the flicker is charging for noise.
+    the same set the shell mask reads now that the glazing is shell, kept as its
+    own name because class and depth remain different questions — and eroded
+    like every other mask, because a class label flickers in the band either
+    side of a segment edge and a term that chases the flicker is charging for
+    noise.
 
     Read one way only, from the photo, exactly as `architectural_mask` is: what a
     *prediction's* segmentation is allowed to excuse is a separate question,

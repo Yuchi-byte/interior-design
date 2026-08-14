@@ -80,7 +80,7 @@ def test_the_mask_is_true_on_exactly_the_shell_classes() -> None:
     assert torch.equal(mask[0, 1], torch.zeros_like(mask[0, 1]))
 
 
-def test_the_mask_keeps_the_room_shell_and_drops_the_furniture_and_the_glazing(
+def test_the_mask_keeps_the_shell_and_the_glazing_and_drops_the_furniture(
     fake_segmenter: FakeSegmenter, room_photo: Tensor
 ) -> None:
     segmentation = fake_segmenter(room_photo)
@@ -88,13 +88,12 @@ def test_the_mask_keeps_the_room_shell_and_drops_the_furniture_and_the_glazing(
     mask = architectural_mask(segmentation, erosion_radius=0)
 
     sofa = segmentation == ADE20K_LABELS.index("sofa")
-    # The glass goes for the opposite reason to the sofa: not because a
-    # renovation may move it, but because the depth read there is the outdoor
-    # scene's. The wall around it still holds the opening in place.
+    # The glass stays, by owner decision: a window is an opening a renovation
+    # must leave where it is, so its depth is scored like the wall around it.
     glass = segmentation == ADE20K_LABELS.index("windowpane")
     assert not bool(mask[sofa].any())
-    assert not bool(mask[glass].any())
-    assert bool(mask[~(sofa | glass)].all())
+    assert bool(mask[glass].all())
+    assert bool(mask[~sofa].all())
 
 
 def test_eroding_the_room_mask_drops_the_band_around_the_furniture(
@@ -148,11 +147,12 @@ def test_an_id_neither_list_names_is_the_photo_s_to_drop_and_a_render_s_to_keep(
     assert bool(scorable.all())
 
 
-def test_the_glass_and_what_it_shows_stay_scored_on_a_render() -> None:
+def test_the_glass_is_shell_while_the_view_through_it_is_not() -> None:
     # A wall with a window onto sky and a tree, a sofa in front of it, and a
-    # person crossing the room. The sofa is contents on either side; the glazing,
-    # what it shows, and the person are named by neither list, so a render's mask
-    # keeps them and the photo's shell does not claim them.
+    # person crossing the room. The sofa is contents on either side; the view
+    # and the person are named by neither list, so a render's mask keeps them
+    # and the photo's shell does not claim them. The glazing itself is shell on
+    # both sides now — the window is an opening the renovation must keep.
     segmentation = torch.full((1, 16, 16), _WALL)
     segmentation[:, 2:8, 2:8] = ADE20K_LABELS.index("windowpane")
     segmentation[:, 3:5, 3:7] = ADE20K_LABELS.index("sky")
@@ -176,13 +176,12 @@ def test_the_glass_and_what_it_shows_stay_scored_on_a_render() -> None:
     assert bool(scorable[person].all())
     assert not bool(shell[sofa].any())
     assert not bool(scorable[sofa].any())
-    # The glass sits with the view rather than with the frame: the reference
-    # photo's mask does not score the window at all, because the depth read there
-    # is the outdoor scene's.
-    assert not bool(shell[glass].any())
+    # The glass sits with the frame: whatever depth a monocular network reads on
+    # it (the pane or the scene beyond), a render that kept the window reads the
+    # same thing, so the pixel is held rather than excused.
+    assert bool(shell[glass].all())
     assert bool(scorable[glass].all())
-    # What still pins where the window is: the wall it is cut into, which is
-    # shell on both sides.
+    # And the wall the opening is cut into is shell on both sides, as ever.
     assert bool(shell[wall_above].all())
     assert bool(scorable[wall_above].all())
 

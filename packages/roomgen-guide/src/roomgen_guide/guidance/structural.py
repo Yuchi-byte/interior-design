@@ -22,12 +22,11 @@ class StructuralGuidance:
     """Masked class error of the current sample against the reference photo.
 
     The term depth cannot express. A depth energy pins where the wall plane is,
-    and a render that paints flat wall over the window or over the doorway
-    satisfies it exactly — the geometry is unchanged, the room is not. This
-    energy asks the second question about the same pixels: whatever was
-    structure in the photo must still read as *that* structure, which is why
-    windowpane, excluded from the depth mask because depth behind glass is the
-    view's, is scored here.
+    and a render that paints flat wall over the window or over the doorway can
+    come close to satisfying it — the geometry barely moves, the room does.
+    This energy asks the second question about the same pixels: whatever was
+    structure in the photo must still read as *that* structure, glazing and
+    doorways included.
 
     Args:
         segmenter: the same segmentation backend, used twice and differently.

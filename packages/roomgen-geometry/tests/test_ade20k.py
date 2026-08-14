@@ -35,14 +35,20 @@ def test_the_two_lists_deliberately_leave_the_rest_of_the_table_unclaimed() -> N
     } <= unclaimed
 
 
-def test_the_glass_a_window_is_made_of_is_scored_as_neither() -> None:
-    # Depth behind glass is the outdoor scene's, not the room's, so the glazing
-    # is not shell; it is not contents either, or a prediction's window would
-    # excuse itself from the reward under `subtract_contents`.
+def test_the_openings_are_shell_and_never_contents() -> None:
+    # Owner decision: a window and a door are openings a renovation must leave
+    # where they are, so their depth is scored rather than masked out — whatever
+    # a monocular network reads on glass (the pane or the view beyond), a render
+    # that kept the window reads the same thing, and one that walled it over is
+    # caught. Contents membership would instead *excuse* a prediction's glazing
+    # under `subtract_contents`.
     windowpane = ADE20K_LABELS.index("windowpane")
+    door = ADE20K_LABELS.index("door")
 
-    assert windowpane not in ARCHITECTURAL_CLASSES
+    assert windowpane in ARCHITECTURAL_CLASSES
+    assert door in ARCHITECTURAL_CLASSES
     assert windowpane not in CONTENTS_CLASSES
+    assert door not in CONTENTS_CLASSES
 
 
 def test_the_furniture_a_renovation_replaces_is_named_contents() -> None:
@@ -52,11 +58,12 @@ def test_the_furniture_a_renovation_replaces_is_named_contents() -> None:
     } <= CONTENTS_CLASSES
 
 
-def test_the_structural_classes_hold_the_shell_and_the_glazing_together() -> None:
+def test_the_structural_classes_hold_the_whole_shell_glazing_included() -> None:
     # The class term's set: what a renovation may not turn into something else.
-    # Windowpane is in it and not in the shell, because the two lists answer
-    # different questions — depth behind glass is the view's, identity is not.
-    assert ARCHITECTURAL_CLASSES < STRUCTURAL_CLASSES
+    # It coincides with the shell now that the glazing is shell, and the two
+    # names stay separate because they answer different questions — where a
+    # pixel is (depth) versus what it is (class).
+    assert ARCHITECTURAL_CLASSES <= STRUCTURAL_CLASSES
     assert ADE20K_LABELS.index("windowpane") in STRUCTURAL_CLASSES
     assert ADE20K_LABELS.index("door") in STRUCTURAL_CLASSES
 

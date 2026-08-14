@@ -56,12 +56,14 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   `no_grad`. Weights are frozen, so that backward accumulates nothing.
 - `segmentation/ade20k.py`: the 150-class label table and the
   `ARCHITECTURAL_CLASSES`/`CONTENTS_CLASSES` partition (wall, floor, ceiling,
-  door, column, stairs, ... vs. furniture, furnishings, decor; the glazing
-  itself is in neither, since depth behind glass reads the view, not the room)
-  — the domain-knowledge file. `STRUCTURAL_CLASSES` is the shell *plus* the
-  glazing: the class term asks a different question of a glazed pixel than the
-  depth term does, and identity behind glass is the room's even though depth
-  behind it is the view's.
+  windowpane, door, column, stairs, ... vs. furniture, furnishings, decor; what
+  a window *shows* — sky, tree, building — is in neither, since depth there
+  reads the view, not the room) — the domain-knowledge file. Windows and doors
+  are shell by owner decision: the openings may not move during a renovation,
+  so their depth is scored, and what a monocular network reads on glass (pane
+  or view) is accepted as ambiguous. `STRUCTURAL_CLASSES` coincides with the
+  shell and keeps its own name because the class term asks a different question
+  of the same pixels than the depth term does.
 - `masking.py`: `scorable_mask`, the one place a segmentation is turned into the
   pixels a reward may score, under either `MaskMode` polarity —
   `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts

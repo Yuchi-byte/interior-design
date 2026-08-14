@@ -48,7 +48,7 @@ def test_from_photo_leaves_the_reference_off_the_graph_a_gradient_could_reach(
     assert reference.mask.dtype == torch.bool
 
 
-def test_from_photo_scores_the_shell_and_ignores_the_furniture_and_the_glazing(
+def test_from_photo_scores_the_shell_and_glazing_and_ignores_the_furniture(
     fake_depth_estimator: FakeDepthEstimator,
     fake_segmenter: FakeSegmenter,
     room_photo: Tensor,
@@ -62,10 +62,12 @@ def test_from_photo_scores_the_shell_and_ignores_the_furniture_and_the_glazing(
 
     segmentation = fake_segmenter(room_photo)
     sofa = segmentation == ADE20K_LABELS.index("sofa")
+    # The glazing is shell by owner decision: a window's depth is held rather
+    # than masked out, since the opening may not move during a renovation.
     glass = segmentation == ADE20K_LABELS.index("windowpane")
     assert not bool(reference.mask[sofa].any())
-    assert not bool(reference.mask[glass].any())
-    assert bool(reference.mask[~(sofa | glass)].all())
+    assert bool(reference.mask[glass].all())
+    assert bool(reference.mask[~sofa].all())
 
 
 def test_the_reward_scores_an_affine_rescale_of_the_reference_as_no_drift(
@@ -86,7 +88,7 @@ def test_the_reward_scores_an_affine_rescale_of_the_reference_as_no_drift(
     torch.testing.assert_close(error, torch.zeros(1), atol=1e-10, rtol=0.0)
 
 
-def test_the_structural_reference_holds_the_glazing_the_depth_reference_drops(
+def test_the_structural_reference_holds_the_glazing_beside_the_shell(
     fake_segmenter: FakeSegmenter, room_photo: Tensor
 ) -> None:
     reference = StructuralReference.from_photo(

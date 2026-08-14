@@ -178,21 +178,21 @@ NUM_CLASSES: Final[int] = len(ADE20K_LABELS)
 # renovation is not allowed to move. Membership is deliberately narrow: a class
 # admitted here freezes its depth, so a wrongly admitted movable object (a rug,
 # a fireplace surround, a shower enclosure) would forbid exactly the change the
-# renovation is for. Everything seen *through* a window is excluded for the
-# opposite reason — "building", "sky", "tree", and the "windowpane" itself:
-# monocular depth answers a glazed pixel with the depth of the outdoor scene, so
-# scoring it scores the view rather than the room. The opening is still held in
-# place by the wall around it, and the boundary erosion drops the band either
-# side of the glazing, so the frame transition is never scored either.
-# Windowpane is deliberately in neither list rather than moved to contents: a
-# window is not furniture a renovation adds, and contents membership would
-# *exempt* a prediction's glazing under `subtract_contents` instead of merely
-# declining to score it.
+# renovation is for. Everything seen *through* a window is excluded —
+# "building", "sky", "tree": monocular depth answers those pixels with the
+# depth of the outdoor scene, so scoring them scores the view rather than the
+# room. The windowpane itself is shell, by owner decision: a window and a door
+# are openings a renovation must leave where they are, so their depth is scored
+# rather than masked out. What a monocular network reads on glass is ambiguous —
+# the pane, or the scene beyond it — and that ambiguity is accepted: whatever
+# the network reads there, it must read the *same* thing on a render that kept
+# the window, and a render that walled it over is caught either way.
 ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
     {
         0,  # wall
         3,  # floor
         5,  # ceiling
+        8,  # windowpane
         14,  # door
         38,  # railing
         42,  # column
@@ -228,9 +228,9 @@ def _named_contents(ids: set[int]) -> frozenset[int]:
 # furnishings, appliances, decor, lighting, textiles, potted plants,
 # electronics. Named affirmatively, never as the complement of the shell —
 # `subtract_contents` excuses a pixel from the reward only where the segmenter
-# commits to one of these, so a class in neither list (windowpane, sky, tree,
-# person, water, road: the glass, what it shows, or what walks through the
-# frame) is never excused here. Borderline calls:
+# commits to one of these, so a class in neither list (sky, tree, person,
+# water, road: what a window shows, or what walks through the frame) is never
+# excused here. Borderline calls:
 #   curtain, blind: hang off the wall and swing clear of it, so a new window
 #     dressing is not held to the old one's depth.
 #   painting, poster, mirror, bulletin board: on the wall plane, but depth
@@ -340,15 +340,14 @@ def _disjoint_from_contents(ids: frozenset[int]) -> frozenset[int]:
     return ids
 
 
-# The classes whose *identity* a renovation may not change — the shell, plus the
-# glazing. Windowpane is here and deliberately not in `ARCHITECTURAL_CLASSES`,
-# because the two lists answer different questions about the same pixel. Depth
-# behind glass reads the outdoor view, so scoring a glazed pixel's *depth*
-# scores the view rather than the room; its *class* is still the room's, and
-# "there is still a window here" is exactly the constraint depth cannot express
-# and a renovation must not break. A door is the same case in weaker form: depth
-# pins the plane the door sits in, which a flat wall painted over the doorway
-# satisfies exactly, while its class does not.
+# The classes whose *identity* a renovation may not change. Historically the
+# shell plus the glazing, back when the glazing's depth was not scored; since
+# windowpane joined `ARCHITECTURAL_CLASSES` the two sets coincide, and the name
+# is kept because the two lists still answer different questions about a pixel —
+# where it is (depth) versus what it is (class). The class term still earns its
+# keep on the openings: depth pins the plane a door or a window sits in, which a
+# flat wall painted over the opening satisfies almost exactly, while its class
+# does not.
 STRUCTURAL_CLASSES: Final[frozenset[int]] = _disjoint_from_contents(
-    ARCHITECTURAL_CLASSES | {ADE20K_LABELS.index("windowpane")}
+    ARCHITECTURAL_CLASSES
 )
