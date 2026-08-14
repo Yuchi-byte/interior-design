@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eta sweep: how hard can the depth reward push before it costs the renovation?</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #ddd;
+    --accent: #0b6e4f; --warn: #a05a00; --card: #f7f7f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --fg: #e6e4de; --muted: #9a9890; --line: #33363c;
+            --accent: #5bc79a; --warn: #e0a458; --card: #1e2126; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2rem 1.25rem 5rem;
+         background: var(--bg); color: var(--fg);
+         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.25rem; margin: 2.8rem 0 .5rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1.02rem; margin: 1.8rem 0 .4rem; }
+  p  { margin: .55rem 0; }
+  .sub { color: var(--muted); font-size: .92rem; }
+  .headline { background: var(--card); border-left: 4px solid var(--accent);
+              padding: .8rem 1rem; margin: 1.2rem 0; border-radius: 0 6px 6px 0; }
+  .caveat { background: var(--card); border-left: 4px solid var(--warn);
+            padding: .8rem 1rem; margin: 1.2rem 0; border-radius: 0 6px 6px 0; }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: .88em; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .88rem; }
+  th, td { border: 1px solid var(--line); padding: .35rem .55rem; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: var(--card); font-weight: 600; }
+  .best { color: var(--accent); font-weight: 700; }
+  .bad  { color: var(--warn); font-weight: 700; }
+  .tablewrap { overflow-x: auto; }
+  .armgrid { display: grid; gap: 8px; margin: .6rem 0 1.4rem;
+             grid-template-columns: repeat(3, 1fr); }
+  @media (min-width: 720px) { .armgrid { grid-template-columns: repeat(5, 1fr); } }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; display: block; border-radius: 4px; border: 1px solid var(--line); }
+  figure img + img { margin-top: 4px; }
+  figcaption { font-size: .74rem; color: var(--muted); text-align: center; padding-top: .25rem; line-height: 1.35; }
+  .arm-g figcaption { color: var(--accent); font-weight: 600; }
+  .arm-bad figcaption { color: var(--warn); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>Eta sweep: how hard can the depth reward push before it costs the renovation?</h1>
+<p class="sub">Study <span class="mono">fmrg_eta</span> in framework <span class="mono">0002_geometric_guidance</span> ·
+2026-08-14, local RTX 5090 · FLUX flow-map + LoRA, 2 scenes × 4 arms × seed 0 ·
+commit <span class="mono">b5411b9</span> · ~1m44s wall including model load, peak 28.16&nbsp;GiB</p>
+
+<div class="headline">
+<p><strong>Yes — raising eta buys an order of magnitude more geometry per 3× step, essentially for free up to
+eta&nbsp;15; the ceiling sits between 15 and 45, and it is a render-quality ceiling, not a NaN one.</strong>
+Mean shell depth error over both scenes: 0.6996 (unguided) → 0.0896 (eta&nbsp;5, the never-tuned default) →
+<strong>0.0050</strong> (eta&nbsp;15) → 0.0009 (eta&nbsp;45). Eta&nbsp;15 costs the easy scene nothing (adherence
+<em>105%</em> of baseline) and the hard scene 4% (96%); eta&nbsp;45 still gains on scandi (108%) but drops the kitchen
+to <span class="bad">79%</span> with visible degradation — washed-out painterly textures, a smudged ceiling, scribble
+artefacts, a stray stainless slab. No NaNs or divergence anywhere; walk time and VRAM are flat across the sweep.</p>
+<p><strong>Recommended: eta&nbsp;15 as the new default operating point.</strong> It is ~18× less depth error than
+eta&nbsp;5 on the sweep mean, the guidance effect finally becomes visible in RGB (window grids, radiators and ceiling
+height snap to the photo's), and it stays on the safe side of the kitchen's quality collapse. Eta&nbsp;45 is usable on
+easy scenes when geometry is paramount, but it is past the ceiling on the hard one.</p>
+</div>
+
+<h2>Numbers (every arm, seed 0)</h2>
+<p class="sub">One unguided baseline A (eta&nbsp;0) beside guided arms at eta 5 / 15 / 45; style prompt, start_sigma
+0.9 (effective 0.9441 after FLUX's mu-shift), everything else fixed. Depth error is shell-masked, scale-and-shift
+aligned (DA2), on the one common pixel set every arm left visible; Δ vs A is that error relative to A's. Adherence is
+CLIP ViT-L/14 against the neutral style text; ratio is vs A. Shell is each arm's own coverage of the photographed
+shell.</p>
+
+<h3>scandi_living_room <span class="sub">(recon floor 0.00026 · common mask 51%)</span></h3>
+<div class="tablewrap"><table>
+<tr><th>Arm</th><th>eta</th><th>Depth err</th><th>Δ vs A</th><th>Adherence</th><th>ratio vs A</th><th>Shell</th><th>s/walk</th></tr>
+<tr><td>A · unguided</td><td>0</td><td>0.16764</td><td>—</td><td>0.2225</td><td>100.0%</td><td>57%</td><td>7.8</td></tr>
+<tr><td>G5 · current default</td><td>5</td><td>0.01679</td><td>−90.0%</td><td>0.2338</td><td>105.1%</td><td>76%</td><td>12.6</td></tr>
+<tr><td>G15</td><td>15</td><td>0.00543</td><td>−96.8%</td><td>0.2346</td><td>105.4%</td><td>76%</td><td>12.6</td></tr>
+<tr><td>G45</td><td>45</td><td class="best">0.00143</td><td>−99.1%</td><td class="best">0.2407</td><td>108.2%</td><td>74%</td><td>12.7</td></tr>
+</table></div>
+
+<h3>blue_white_kitchen <span class="sub">(recon floor 0.00010 · common mask 57%)</span></h3>
+<div class="tablewrap"><table>
+<tr><th>Arm</th><th>eta</th><th>Depth err</th><th>Δ vs A</th><th>Adherence</th><th>ratio vs A</th><th>Shell</th><th>s/walk</th></tr>
+<tr><td>A · unguided</td><td>0</td><td class="bad">1.23155</td><td>—</td><td>0.3126</td><td>100.0%</td><td>72%</td><td>7.9</td></tr>
+<tr><td>G5 · current default</td><td>5</td><td>0.16231</td><td>−86.8%</td><td>0.3233</td><td>103.4%</td><td>69%</td><td>12.7</td></tr>
+<tr><td>G15</td><td>15</td><td>0.00464</td><td>−99.6%</td><td>0.2997</td><td>95.9%</td><td>68%</td><td>12.8</td></tr>
+<tr><td>G45</td><td>45</td><td class="best">0.00042</td><td>−100.0%</td><td class="bad">0.2461</td><td class="bad">78.7%</td><td>67%</td><td>12.8</td></tr>
+</table></div>
+<p class="sub">The kitchen is FMRG's hardest scene (unguided it invents a double-height loft). Its G45 row is the
+ceiling: the depth column reaches ~4× the VAE floor, but the adherence column and the render (below) show what it
+paid. A guided walk costs a flat ~4.9s over unguided regardless of eta; per-arm peak VRAM is 24.7&nbsp;GiB unguided,
+28.2&nbsp;GiB guided, invariant across the sweep.</p>
+
+<h2>Depth: what each arm did to the room</h2>
+<p class="sub">Per arm: masked depth map (top — inverse depth over the scored shell, furniture grey) and signed depth
+error vs the reference (bottom — red reads closer than the photo, blue further, on arm A's colour scale; pale =
+geometry held). Reference first, with the common mask under it.</p>
+
+<h3>scandi_living_room</h3>
+<div class="armgrid">
+  <figure><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_photo_depth_masked.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_evalmask_common.png" alt="">
+    <figcaption>reference depth · common mask (51%)</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_A_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_A_residual.png" alt="">
+    <figcaption>A (eta 0) · E 0.1676 · adh 100%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G5_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G5_residual.png" alt="">
+    <figcaption>G5 · E 0.0168 (−90%) · adh 105%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G15_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G15_residual.png" alt="">
+    <figcaption>G15 · E 0.0054 (−97%) · adh 105%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G45_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G45_residual.png" alt="">
+    <figcaption>G45 · E 0.0014 (−99%) · adh 108%</figcaption></figure>
+</div>
+
+<h3>blue_white_kitchen</h3>
+<div class="armgrid">
+  <figure><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_photo_depth_masked.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_evalmask_common.png" alt="">
+    <figcaption>reference depth · common mask (57%)</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_A_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_A_residual.png" alt="">
+    <figcaption>A (eta 0) · E 1.2316 · adh 100%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G5_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G5_residual.png" alt="">
+    <figcaption>G5 · E 0.1623 (−87%) · adh 103%</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G15_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G15_residual.png" alt="">
+    <figcaption>G15 · E 0.0046 (−100%) · adh 96%</figcaption></figure>
+  <figure class="arm-bad"><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G45_depth.png" alt="">
+    <img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G45_residual.png" alt="">
+    <figcaption>G45 · E 0.0004 (−100%) · adh 79% · degraded</figcaption></figure>
+</div>
+<p class="sub">The residual maps read the sweep at a glance: A's map is saturated red/blue (the invented loft ceiling
+reads far, the counters near), G5 still carries structured error, and by G15 both scenes are almost uniformly pale —
+the shell geometry is where the photo put it.</p>
+
+<h2>Renders: the eta progression side by side</h2>
+<p class="sub">Photo first, then eta 0 → 5 → 15 → 45 left to right. This is the axis the owner's complaint lives on.</p>
+
+<h3>scandi_living_room</h3>
+<div class="armgrid">
+  <figure><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_photo.png" alt="">
+    <figcaption>photo</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_A.png" alt="">
+    <figcaption>A · eta 0</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G5.png" alt="">
+    <figcaption>G5</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G15.png" alt="">
+    <figcaption>G15</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/scandi_living_room_seed0_G45.png" alt="">
+    <figcaption>G45</figcaption></figure>
+</div>
+<p class="sub">What to eyeball: the window. A invents a tall two-pane window; along the sweep the mullion grid,
+window width and radiator pull back to the photo's, and at G45 the top-left wall picks up the photo's ceiling slope.
+The renovation itself (grey sofa, coffee table, plants) survives untouched — adherence <em>rises</em> with eta here.
+G45 shows the first hint of the high-eta texture: slightly painterly fabric and mottled wall, still a plausible room.</p>
+
+<h3>blue_white_kitchen</h3>
+<div class="armgrid">
+  <figure><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_photo.png" alt="">
+    <figcaption>photo</figcaption></figure>
+  <figure><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_A.png" alt="">
+    <figcaption>A · eta 0</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G5.png" alt="">
+    <figcaption>G5</figcaption></figure>
+  <figure class="arm-g"><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G15.png" alt="">
+    <figcaption>G15</figcaption></figure>
+  <figure class="arm-bad"><img src="../outputs/0002_fmrg_eta/images/blue_white_kitchen_seed0_G45.png" alt="">
+    <figcaption>G45 · degraded</figcaption></figure>
+</div>
+<p class="sub">A through G15 all render an industrial loft with a double-height duct ceiling the photo does not have;
+G15 is still a coherent, saleable render. G45 finally forces the ceiling down to the photo's height — the depth win is
+real — but pays in quality: washed-out surfaces, a smeared ceiling, black scribble artefacts top-right, and a stray
+stainless slab where the photo has a range wall. That is the instability mode at this operating point: graceful
+degradation, not NaNs or noise.</p>
+
+<h2>Confounds checked</h2>
+<div class="caveat">
+<p><strong>No slab artefact.</strong> The failure mode where guidance "wins" depth by filling the room with
+depth-satisfying slabs would read as <em>rising</em> shell coverage plus a flat error map. The opposite happens: shell
+coverage is flat-to-falling with eta (scandi 76→74%, kitchen 69→67%), and the kitchen G45 depth win comes from real
+shell geometry (the ceiling height), verified in the render. The one slab-ish element (the stainless block in kitchen
+G45) sits in front of the shell and <em>lowers</em> that arm's coverage — it is a quality artefact, already priced
+into the 79% adherence, not a depth-metric exploit.</p>
+<p><strong>Scope.</strong> Two scenes, one seed, style framing only — a fast-iteration sweep, not a benchmark. Depth
+errors are computed on this run's own common mask (the intersection of all four arms' visible shell), so arm A's
+0.1676/1.2316 are not numerically identical to the context study's A (0.1394/1.2832), which intersected a different
+arm set; the deltas are the comparable quantity. Where exactly between 15 and 45 the kitchen's quality ceiling sits is
+unmeasured.</p>
+</div>
+
+<h2>Methods</h2>
+<ul>
+  <li><strong>Arms</strong>: per scene at seed 0, one transformer load: A (eta 0) then guided at eta ∈ {5, 15, 45}.
+    Eta is <span class="mono">AnnealedSignTilt</span>'s strength (FMRG's <span class="mono">step_size</span> lambda),
+    a walk-time parameter — identical trajectory and seed across arms, guidance alone varies.</li>
+  <li><strong>Sampler</strong>: FMRG <span class="mono">fmrgj_nfe100</span> operating point — 208-step grid,
+    early_stop 51, 1 unguided terminal step (51 walked steps), start_sigma 0.9 (effective first sigma 0.9441),
+    endpoint_reuse stepping, text guidance 3.5, bfloat16, deterministic kernels, iterations 1.</li>
+  <li><strong>Prompts</strong> (style framing; eval text identical):
+    scandi — <span class="mono">a scandinavian style living room, pale oak furniture, linen upholstery, soft
+    daylight</span>; kitchen — <span class="mono">a modern industrial kitchen, matte black cabinetry, steel shelving,
+    concrete worktops</span>.</li>
+  <li><strong>Scoring</strong>: DA2 shell-masked scale-shift-aligned depth error on the common mask; CLIP ViT-L/14
+    adherence (loaded only after all walks — resident beside the guided decode it OOMs a 32&nbsp;GB card); shell
+    coverage per arm from each render's own EoMT segmentation.</li>
+  <li><strong>Artifacts</strong>: <span class="mono">outputs/0002_fmrg_eta/results.json</span> + images; config
+    <span class="mono">experiments/0002_geometric_guidance/conf/eta.yaml</span>, study
+    <span class="mono">framework/eta_study.py</span>, commit <span class="mono">b5411b9</span>.</li>
+</ul>
+
+</body>
+</html>
