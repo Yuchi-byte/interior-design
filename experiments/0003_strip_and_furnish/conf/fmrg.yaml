@@ -1,0 +1,75 @@
+# The two-stage claim with its furnish stage on FMRG's FLUX flow map: strip by
+# segmentation and inpainting exactly as before, then refurnish the empty room
+# with the depth reward alone — FLUX's text conditioning is native, so the
+# SD1.5 study's separate CLIP text energy has no counterpart here.
+#
+# The guidance reference is the stripped empty room's shell depth, by owner
+# decision: the empty shell is nearly the whole frame (windows and doors now
+# included), so the valid comparison area is much larger than the retained
+# photo shell's. The per-step resegmentation excuses whatever furniture the
+# furnishing adds, so the enlarged mask never punishes furnishing itself.
+#
+#   uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config fmrg
+study: fmrg
+name: 0003_fmrg
+
+# One seed: the owner's fast-iteration setting, 2 scenes x 3 walks.
+seeds: [0]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  # Stage 1's stack only: float16 inpainter, float32 judges, exactly as the
+  # SD1.5-era study ran it. The whole stack is released before FLUX loads.
+  dtype: float16
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+
+strip:
+  # study.yaml's strip, verbatim: the shell-only inverted acceptance and the
+  # extended negative prompt were committed after the radiator/vacuum
+  # hallucinations and never validated by a run — this run validates them.
+  prompt: empty room, bare floor, bare wall, no furniture, plain interior
+  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, cabinet, box, vacuum cleaner, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  dilation_radius: 8
+  passes: 4
+  steps: 40
+  fill_strength: 0.85
+  guidance_scale: 12.0
+
+furnish:
+  # FMRG's `fmrgj_nfe100` operating point, as the 0002 studies run it.
+  grid_steps: 208
+  early_stop: 51
+  unguided_steps: 1
+  # High enough that the empty room is actually furnished: the renovation-
+  # context study showed lower sigmas mostly copy the input back. One extra
+  # guided walk per scene probes 0.75, clearly labelled.
+  start_sigma: 0.9
+  probe_sigmas: [0.75]
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+  # The eta sweep's recommended default: 5 under-steers, 45 degrades renders.
+  eta: 15.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+flux:
+  dtype: bfloat16
+
+adherence:
+  # The eval judge, independent of every energy any arm here descends.
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+# Two of the SD1.5-era study's three scenes, prompts verbatim.
+scenes:
+  - photo: scandi_living_room
+    prompt: a warm scandinavian living room, pale oak furniture, linen sofa, wool rug, soft daylight
+  - photo: ny_loft_bedroom
+    prompt: a minimalist loft bedroom, low platform bed, linen bedding, paper lantern, potted plant

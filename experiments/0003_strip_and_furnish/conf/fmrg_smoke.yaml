@@ -1,0 +1,56 @@
+# Plumbing, not a claim: the FMRG-furnish study shape on the weightless test
+# doubles — the fake inpainting strip, then the toy flow map walked by the real
+# driver under the real depth reward — CPU-only, offline, in seconds.
+#
+#   uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config fmrg_smoke
+study: fmrg
+name: 0003_fmrg_smoke
+
+seeds: [0]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: pipeline
+
+strip:
+  prompt: empty room, bare floor, bare wall, no furniture, plain interior
+  negative_prompt: furniture, radiator, vacuum cleaner, clutter
+  dilation_radius: 2
+  passes: 2
+  steps: 4
+  fill_strength: 0.6
+  guidance_scale: 7.5
+
+furnish:
+  grid_steps: 8
+  early_stop: 4
+  unguided_steps: 1
+  start_sigma: 0.9
+  probe_sigmas: [0.75]
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+  eta: 15.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+flux:
+  # The toy backend speaks whatever dtype it is handed; float32 keeps the smoke
+  # exact on CPU.
+  dtype: float32
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a warm scandinavian living room, pale oak furniture, linen sofa, wool rug, soft daylight
+  - photo: ny_loft_bedroom
+    prompt: a minimalist loft bedroom, low platform bed, linen bedding, paper lantern, potted plant

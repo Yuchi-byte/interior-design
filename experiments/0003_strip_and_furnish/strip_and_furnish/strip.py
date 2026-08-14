@@ -29,7 +29,7 @@ from roomgen_guide.sampling.guided import decode_latent
 from roomgen_guide.sampling.inpaint import InpaintPipeline, inpaint_masked_region
 from roomgen_guide.sampling.pipeline import LatentAutoencoder
 from strip_and_furnish.backends import Backends
-from strip_and_furnish.config import SceneConfig, StudyConfig
+from strip_and_furnish.config import SceneConfig, StripConfig
 from strip_and_furnish.images import (
     DisparityScale,
     write_disparity_map,
@@ -138,22 +138,30 @@ def strip_scene(
     scene: SceneConfig,
     photo: Float[Tensor, "1 3 height width"],
     *,
-    config: StudyConfig,
+    strip: StripConfig,
+    erosion_radius: int,
     backends: Backends,
     inpainter: InpaintPipeline,
     seed: int,
     gallery: Path,
 ) -> StripResult:
-    """Cut the furniture out of `photo`, paint the holes bare, and measure what moved."""
+    """Cut the furniture out of `photo`, paint the holes bare, and measure what moved.
+
+    Args:
+        strip: stage 1's own knobs; the stage reads nothing else of a study's
+            config, so any furnish backend can sit downstream of it.
+        erosion_radius: for the photo's shell reference and the visibility
+            re-check, as the downstream reward masks take it.
+    """
     reference = GeometricReference.from_photo(
         photo,
         depth_estimator=backends.depth_estimator,
         segmenter=backends.segmenter,
-        erosion_radius=config.furnish.erosion_radius,
+        erosion_radius=erosion_radius,
     )
     with torch.no_grad():
         contents = contents_mask(
-            backends.segmenter(photo), dilation_radius=config.strip.dilation_radius
+            backends.segmenter(photo), dilation_radius=strip.dilation_radius
         )
 
     generator = torch.Generator(device=backends.device).manual_seed(seed)
@@ -162,7 +170,7 @@ def strip_scene(
     empty_room, first_generated, final_segmentation = _repaint(
         photo,
         contents,
-        config=config,
+        strip=strip,
         backends=backends,
         inpainter=inpainter,
         generator=generator,
@@ -182,7 +190,7 @@ def strip_scene(
     with torch.no_grad():
         visible = reference.mask & scorable_mask(
             backends.segmenter(empty_room),
-            erosion_radius=config.furnish.erosion_radius,
+            erosion_radius=erosion_radius,
         )
     numbers = StripNumbers(
         contents_fraction=float(contents.to(torch.float32).mean()),
@@ -243,7 +251,7 @@ def _repaint(
     photo: Float[Tensor, "1 3 height width"],
     contents: Bool[Tensor, "1 height width"],
     *,
-    config: StudyConfig,
+    strip: StripConfig,
     backends: Backends,
     inpainter: InpaintPipeline,
     generator: torch.Generator,
@@ -271,16 +279,16 @@ def _repaint(
     image, generated, remaining = photo, photo, contents
     with torch.no_grad():
         segmentation = backends.segmenter(image)
-    for index in range(config.strip.passes):
+    for index in range(strip.passes):
         inpainting = inpaint_masked_region(
             image,
             remaining,
             pipeline=inpainter,
-            prompt=config.strip.prompt,
-            negative_prompt=config.strip.negative_prompt,
-            steps=config.strip.steps,
-            fill_strength=config.strip.fill_strength,
-            guidance_scale=config.strip.guidance_scale,
+            prompt=strip.prompt,
+            negative_prompt=strip.negative_prompt,
+            steps=strip.steps,
+            fill_strength=strip.fill_strength,
+            guidance_scale=strip.guidance_scale,
             generator=generator,
         )
         image = inpainting.image
@@ -293,7 +301,7 @@ def _repaint(
         # region grown by the radius — the inverted, dilated acceptance test.
         confidently_shell = erode_boundaries(
             structural_mask(segmentation, erosion_radius=0),
-            radius=config.strip.dilation_radius,
+            radius=strip.dilation_radius,
         )
         remaining = contents & ~confidently_shell
         if not bool(remaining.any()):

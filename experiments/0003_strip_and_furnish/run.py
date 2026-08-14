@@ -1,13 +1,15 @@
 """Entry point of 0003_strip_and_furnish: strip the rooms, furnish them, report what it measured.
 
 Glue only — the sampler, the inpainting and the eval are `roomgen_guide`'s, the
-run loop is `strip_and_furnish/`'s. The run reports numbers and renders the two
-galleries beside them; reading them is the owner's job, so it exits non-zero only
-on an actual error.
+run loop is `strip_and_furnish/`'s. A variant with a top-level `study: fmrg`
+key runs the furnish stage on FMRG's FLUX flow map against the stripped empty
+room's shell depth; without it, the SD1.5-era `StudyConfig` shape is assumed.
+The run reports numbers and renders the two galleries beside them; reading them
+is the owner's job, so it exits non-zero only on an actual error.
 
     uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config smoke
-    uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config study
-    ... --config study --set furnish.strength=20
+    uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config fmrg
+    ... --config fmrg --set furnish.eta=5
 """
 
 from __future__ import annotations
@@ -16,7 +18,13 @@ import argparse
 from collections.abc import Iterable
 from pathlib import Path
 
-from strip_and_furnish.config import StudyConfig
+from strip_and_furnish.config import FmrgStudyConfig, load_study_config
+from strip_and_furnish.fmrg import (
+    CONTROL_ARM,
+    FmrgSummary,
+    furnish_arms,
+    run_fmrg_study,
+)
 from strip_and_furnish.furnish import ARMS, Arm, FurnishResult
 from strip_and_furnish.study import Summary, run_study
 
@@ -42,10 +50,24 @@ def main() -> int:
     )
     arguments = parser.parse_args()
 
-    config = StudyConfig.from_file(
+    config = load_study_config(
         CONF_DIR / f"{arguments.config}.yaml", arguments.overrides
     )
     settings = RoomgenSettings()
+    if isinstance(config, FmrgStudyConfig):
+        print(
+            f"[config] {config.name} ({arguments.config}.yaml, study fmrg): "
+            f"{len(config.scenes)} scenes x {len(config.seeds)} seeds on "
+            f"{config.backends.kind} backends, device {config.backends.device}, "
+            f"eta {config.furnish.eta}, start sigma {config.furnish.start_sigma}"
+            + (
+                f" (+ probes {list(config.furnish.probe_sigmas)})"
+                if config.furnish.probe_sigmas
+                else ""
+            )
+        )
+        _report_fmrg(run_fmrg_study(config, settings))
+        return 0
     print(
         f"[config] {config.name} ({arguments.config}.yaml): "
         f"{len(config.scenes)} scenes x {len(config.seeds)} seeds on "
@@ -58,6 +80,49 @@ def main() -> int:
     summary = run_study(config, settings)
     _report(summary)
     return 0
+
+
+def _report_fmrg(summary: FmrgSummary) -> None:
+    """The FMRG run's numbers in the mean, per arm. No claim is made about them."""
+    results = summary.results
+    specs = furnish_arms(summary.config)
+    print(
+        f"\n[stage 2 mean] over {len(results)} (scene, seed) pairs, one common "
+        f"mask each vs the empty room\n"
+        f"{'arm':<14}{'depth':>11}{'Δ vs ctl':>10}{'adherence':>11}{'vs ctl':>9}"
+        f"{'coverage':>10}{'sec':>8}"
+    )
+    for spec in specs:
+        cells = [result.arm(spec.arm) for result in results]
+        delta = _optional_mean(
+            result.depth_delta_vs_control(spec.arm) for result in results
+        )
+        ratio = _optional_mean(
+            result.adherence_ratio_vs_control(spec.arm) for result in results
+        )
+        print(
+            f"{spec.arm:<14}"
+            f"{_mean(cell.depth_error for cell in cells):>11.6f}"
+            f"{_signed(None if spec.arm == CONTROL_ARM else delta):>10}"
+            f"{_mean(cell.adherence for cell in cells):>11.4f}"
+            f"{_share(None if spec.arm == CONTROL_ARM else ratio):>9}"
+            f"{_mean(cell.shell_coverage for cell in cells):>10.0%}"
+            f"{_mean(cell.seconds for cell in cells):>8.1f}"
+        )
+    print(
+        f"[mask]    common mask holds "
+        f"{_mean(result.common_frame_fraction for result in results):.0%} of the "
+        f"frame (photo shell would have held "
+        f"{_mean(result.photo_shell_frame_fraction for result in results):.0%})"
+    )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
 
 
 _COLUMNS = (

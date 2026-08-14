@@ -186,9 +186,105 @@ def write_disparity_map(
 
 
 def _colorise(unit: Float[Tensor, "height width"]) -> Float[Tensor, "3 height width"]:
-    palette = torch.tensor(_DEPTH_STOPS, dtype=torch.float32, device=unit.device)
+    return _palette_lookup(unit, _DEPTH_STOPS)
+
+
+def _palette_lookup(
+    unit: Float[Tensor, "height width"],
+    stops: tuple[tuple[float, float, float], ...],
+) -> Float[Tensor, "3 height width"]:
+    palette = torch.tensor(stops, dtype=torch.float32, device=unit.device)
     position = unit.to(torch.float32).clamp(0.0, 1.0) * (palette.shape[0] - 1)
     lower = position.floor().clamp(max=palette.shape[0] - 2)
     weight = (position - lower).unsqueeze(-1)
     index = lower.to(torch.long)
     return torch.lerp(palette[index], palette[index + 1], weight).permute(2, 0, 1)
+
+
+# Everything a mask excludes gets a flat neutral rather than a colour off the
+# scale, which would otherwise read as geometry at some depth.
+_OUTSIDE_MASK: Final = (0.45, 0.45, 0.45)
+
+# Both residual maps of a pair are denominated in multiples of the control's
+# mean absolute masked residual, so 1.0 reads as "the control's average
+# deviation" and a colour means the same thing in either map. Saturates here.
+RESIDUAL_CLIP: Final = 3.0
+
+# Diverging blue through neutral to red: blue is a surface reading further from
+# the camera than the reference, red is one reading closer, and the pale centre
+# is geometry the render left where it found it.
+_RESIDUAL_STOPS: Final = (
+    (0.02, 0.24, 0.42),
+    (0.21, 0.55, 0.73),
+    (0.70, 0.87, 0.90),
+    (0.97, 0.97, 0.97),
+    (0.99, 0.80, 0.71),
+    (0.84, 0.38, 0.30),
+    (0.40, 0.00, 0.12),
+)
+
+
+def write_masked_disparity_map(
+    disparity: Float[Tensor, "1 height width"],
+    *,
+    scale: DisparityScale,
+    mask: Bool[Tensor, "1 height width"],
+    path: Path,
+) -> None:
+    """Like :func:`write_disparity_map`, but flat grey outside the mask.
+
+    The fit and the painting are both restricted to the masked pixels — the
+    ones a score beside this map was read over — so what the eye compares is
+    exactly what the number measured.
+    """
+    fitted = apply_scale_shift(
+        disparity.to(torch.float32),
+        align_scale_shift(
+            disparity.to(torch.float32), scale.reference.to(torch.float32), mask
+        ),
+    )
+    span = scale.high - scale.low
+    unit = (fitted[0] - scale.low) / (span if span > 0.0 else 1.0)
+    colour = _colorise(unit)
+    outside = torch.tensor(
+        _OUTSIDE_MASK, dtype=colour.dtype, device=colour.device
+    ).view(3, 1, 1)
+    painted = torch.where(mask[0].unsqueeze(0), colour, outside)
+    write_png((painted * 255.0).round().to(torch.uint8).cpu(), str(path))
+
+
+def mean_absolute_residual(
+    residual: Float[Tensor, "1 height width"], mask: Bool[Tensor, "1 height width"]
+) -> float:
+    """The scale a scene's residual maps are read against: the control's mean deviation."""
+    return float(residual.abs().sum() / mask.to(residual.dtype).sum().clamp(min=1.0))
+
+
+def write_signed_residual_map(
+    residual: Float[Tensor, "1 height width"],
+    *,
+    mask: Bool[Tensor, "1 height width"],
+    normalizer: float,
+    path: Path,
+) -> None:
+    """One arm's signed depth deviation from the reference, in units of `normalizer`.
+
+    Args:
+        residual: from `roomgen_guide.eval.signed_depth_residual_map` — positive
+            where the render reads closer to the camera than the reference.
+        normalizer: what 1.0 on the colour scale means, in those residual units;
+            pass the same value for every arm of a scene or the maps do not
+            compare.
+    """
+    safe = normalizer if normalizer > 0.0 else 1.0
+    scaled = (residual[0] / safe).clamp(-RESIDUAL_CLIP, RESIDUAL_CLIP)
+    colour = _palette_lookup(
+        (scaled + RESIDUAL_CLIP) / (2.0 * RESIDUAL_CLIP), _RESIDUAL_STOPS
+    )
+    outside = torch.tensor(
+        _OUTSIDE_MASK, dtype=colour.dtype, device=colour.device
+    ).view(3, 1, 1)
+    painted = torch.where(mask[0].unsqueeze(0), colour, outside)
+    write_png(
+        (painted.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8).cpu(), str(path)
+    )

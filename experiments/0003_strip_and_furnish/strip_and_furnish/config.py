@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Annotated, Final, Literal, Self
 
 import torch
+from omegaconf import DictConfig, OmegaConf
 from pydantic import Field, field_validator, model_validator
 
 from roomgen_geometry.depth.depth_anything import DEFAULT_CHECKPOINT as DEPTH_CHECKPOINT
@@ -229,3 +232,142 @@ class StudyConfig(ExperimentConfig):
                 f"graded on the model it optimised. Score with a different CLIP."
             )
         return self
+
+
+class FluxConfig(Config):
+    """The FLUX flow-map stack the FMRG furnish stage drives, and where its pieces live.
+
+    Only the furnish stage touches it: stage 1 keeps the SD-inpainting stack of
+    `BackendConfig`, whose `kind` also decides whether this one loads real
+    weights or the weightless `ToyFlowMapBackend` the adapter's tests walk.
+
+    Args:
+        dtype: the transformer's and VAE's parameter dtype; the walk's state is
+            float32 regardless (`FlowMapProcess`).
+        flux_checkpoint: Hub id (or local path) of the FLUX base weights,
+            resolved against the `ROOMGEN_HF_HOME` cache offline.
+        lora_dir: directory holding the FlowMap LoRA's weights for the sampled
+            resolution; `None` means `<ROOMGEN_HF_HOME>/fmrg/flux-flowmap-lora-512`.
+        fmrg_path: the vendored FMRG checkout, reached through `sys.path`;
+            `None` means this repo's `packages/fmrg`.
+        text_guidance_scale: FLUX.1-dev's embedded guidance — conditioning, not
+            reward steering.
+    """
+
+    dtype: DTypeName = "bfloat16"
+    flux_checkpoint: Annotated[str, Field(min_length=1)] = (
+        "black-forest-labs/FLUX.1-dev"
+    )
+    lora_dir: Path | None = None
+    fmrg_path: Path | None = None
+    text_guidance_scale: Annotated[float, Field(ge=0.0)] = 3.5
+
+
+class FmrgFurnishConfig(Config):
+    """Stage 2 on FMRG: the flow-map walk over the empty room, and the depth reward on it.
+
+    The reference the guided walk descends is the *stripped empty room's* shell
+    depth — segmented and depth-read after stage 1 — because the empty room's
+    shell is nearly the whole frame, so the valid comparison area is much larger
+    than the photo-shell ∩ prediction-shell intersection the retained-photo
+    protocol scored. FMRG's text conditioning is native, so the SD1.5 study's
+    separate CLIP text energy has no counterpart here and is deliberately absent.
+
+    Args:
+        grid_steps: resolution of the dense sigma grid; the walk never visits
+            most of it.
+        early_stop: how many of the grid's sigmas the walk traverses before the
+            jump to data — FMRG's guidance window.
+        unguided_steps: how many steps the final jump is split into, unguided.
+        start_sigma: how far up the interpolant the *empty room* is renoised,
+            pre-shift; high enough that the room is actually furnished (lower
+            sigmas mostly copy the input back).
+        probe_sigmas: extra guided walks per scene at these start sigmas,
+            clearly labelled as probes; the control runs at `start_sigma` only.
+        eta: FMRG's step size — `AnnealedSignTilt.strength`; 0 would be the
+            control, which the study runs beside every guided arm anyway.
+        iterations: FMRG's `n_opt` inner loop, model calls per guided step.
+        erosion_radius: pixels trimmed either side of a segment edge before a
+            shell mask is trusted, on the reference and the per-step prediction
+            alike.
+        resegment: score depth only on empty-room-shell AND prediction-shell,
+            so furniture the furnishing adds is excused rather than punished —
+            scoring furniture pixels against empty-room depth would penalise
+            furnishing itself.
+    """
+
+    grid_steps: Annotated[int, Field(ge=1)] = 208
+    early_stop: Annotated[int, Field(ge=2)] = 51
+    unguided_steps: Annotated[int, Field(ge=1)] = 1
+    start_sigma: Annotated[float, Field(gt=0.0, le=1.0)] = 0.9
+    probe_sigmas: tuple[Annotated[float, Field(gt=0.0, le=1.0)], ...] = ()
+    stepping: Literal["endpoint_reuse", "two_time"] = "endpoint_reuse"
+    differentiate_through_velocity: bool = False
+    eta: Annotated[float, Field(gt=0.0)] = 15.0
+    iterations: Annotated[int, Field(ge=1)] = 1
+    erosion_radius: Annotated[int, Field(ge=0)] = 2
+    resegment: bool = True
+
+    @model_validator(mode="after")
+    def _the_window_stops_inside_the_grid(self) -> Self:
+        if self.early_stop > self.grid_steps:
+            raise ValueError(
+                f"early_stop {self.early_stop} is past the end of a "
+                f"{self.grid_steps}-step grid: the window has to stop inside "
+                f"the walk it truncates"
+            )
+        return self
+
+
+class FmrgStudyConfig(ExperimentConfig):
+    """The two-stage study with its furnish stage on FMRG's FLUX flow map.
+
+    Stage 1 is byte-identical to `StudyConfig`'s: EoMT decides, SD-inpainting
+    fills, the acceptance is the inverted shell check. Stage 2 swaps SD1.5's
+    guided img2img for the FMRG walk of `FmrgFurnishConfig`, steered by the
+    stripped empty room's shell depth.
+
+    Args:
+        scenes: the (photo, prompt) pairs the study measures, each at every seed.
+        resolution: side of the square the photos are centre-cropped and resized
+            to; a multiple of 64 satisfies both SD-inpainting's latent grid and
+            FLUX's packed one.
+        backends: stage 1's stack — and its `kind` decides real-vs-fake for the
+            FLUX stack too.
+    """
+
+    study: Literal["fmrg"]
+    scenes: Annotated[tuple[SceneConfig, ...], Field(min_length=1)]
+    resolution: Annotated[int, Field(ge=LATENT_ALIGNMENT)] = 512
+    backends: BackendConfig
+    strip: StripConfig
+    furnish: FmrgFurnishConfig
+    flux: FluxConfig = FluxConfig()
+    adherence: AdherenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_latent_grid(cls, resolution: int) -> int:
+        if resolution % LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {LATENT_ALIGNMENT} for the "
+                f"inpainter's latent grid, got {resolution}"
+            )
+        return resolution
+
+
+def load_study_config(
+    path: Path, overrides: Sequence[str] | None = None
+) -> StudyConfig | FmrgStudyConfig:
+    """Load whichever study shape `path` declares in its top-level `study` key.
+
+    The key is peeked before validation because the shapes are different
+    pydantic models; a missing key means the SD1.5-era `StudyConfig`, which is
+    what every variant predating the FMRG furnish stage is.
+    """
+    raw = OmegaConf.load(path)
+    if not isinstance(raw, DictConfig):
+        raise TypeError(f"Expected a mapping at {path}, got {type(raw).__name__}")
+    if raw.get("study") == "fmrg":
+        return FmrgStudyConfig.from_file(path, overrides)
+    return StudyConfig.from_file(path, overrides)

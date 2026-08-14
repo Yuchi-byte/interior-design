@@ -15,7 +15,18 @@ import pytest
 import torch
 from jaxtyping import Bool, Float, Int
 from strip_and_furnish.backends import Backends, build_adherence, build_backends
-from strip_and_furnish.config import LATENT_ALIGNMENT, SceneConfig, StudyConfig
+from strip_and_furnish.config import (
+    LATENT_ALIGNMENT,
+    FmrgStudyConfig,
+    SceneConfig,
+    StudyConfig,
+    load_study_config,
+)
+from strip_and_furnish.fmrg import (
+    build_flux_stack,
+    furnish_arms,
+    furnish_reference,
+)
 from strip_and_furnish.furnish import (
     build_energies,
     empty_room_reference,
@@ -39,6 +50,7 @@ from roomgen_geometry.masking import architectural_mask
 from roomgen_geometry.segmentation.ade20k import ADE20K_LABELS
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.sampling.inpaint import InpaintOutput
+from roomgen_guide.settings import RoomgenSettings
 
 CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
 
@@ -48,11 +60,14 @@ CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
 )
 def test_every_shipped_variant_validates(variant: str) -> None:
     """A conf/ file that no longer matches the config is a run that dies on startup."""
-    config = StudyConfig.from_file(CONF_DIR / f"{variant}.yaml")
+    config = load_study_config(CONF_DIR / f"{variant}.yaml")
 
     assert config.scenes
     assert config.seeds
     assert config.resolution % LATENT_ALIGNMENT == 0
+    # The `study: fmrg` key and the config shape must agree, since run.py
+    # dispatches on the key alone.
+    assert isinstance(config, FmrgStudyConfig) == variant.startswith("fmrg")
 
 
 def test_scoring_adherence_with_the_guided_checkpoint_is_refused() -> None:
@@ -132,7 +147,8 @@ def _fake_run(tmp_path: Path) -> tuple[StudyConfig, Backends, StripResult, Scene
     strip = strip_scene(
         scene,
         photo,
-        config=config,
+        strip=config.strip,
+        erosion_radius=config.furnish.erosion_radius,
         backends=backends,
         inpainter=backends.build_inpainter(),
         seed=0,
@@ -318,7 +334,8 @@ def _colour_coded_strip(
     strip = strip_scene(
         config.scenes[0],
         photo,
-        config=config,
+        strip=config.strip,
+        erosion_radius=config.furnish.erosion_radius,
         backends=backends,
         inpainter=inpainter,
         seed=0,
@@ -448,3 +465,152 @@ def test_a_render_survives_the_round_trip_through_a_png(tmp_path: Path) -> None:
 
     decoded = read_image(str(path), mode=ImageReadMode.RGB).to(torch.float32) / 255.0
     torch.testing.assert_close(decoded.unsqueeze(0), render, atol=1 / 255, rtol=0)
+
+
+def _fake_fmrg_run(
+    tmp_path: Path,
+) -> tuple[FmrgStudyConfig, Backends, StripResult, SceneConfig]:
+    """One scene stripped on the weightless stack, under the FMRG study shape."""
+    config = load_study_config(
+        CONF_DIR / "fmrg_smoke.yaml",
+        [
+            "seeds=[0]",
+            f"resolution={LATENT_ALIGNMENT}",
+            "strip.passes=1",
+            "strip.steps=2",
+            "furnish.grid_steps=4",
+            "furnish.early_stop=3",
+        ],
+    )
+    assert isinstance(config, FmrgStudyConfig)
+    backends = build_backends(config.backends, cache_dir=tmp_path)
+    scene = config.scenes[0]
+    photo = torch.rand(
+        (1, 3, config.resolution, config.resolution),
+        generator=torch.Generator().manual_seed(0),
+    )
+    strip = strip_scene(
+        scene,
+        photo,
+        strip=config.strip,
+        erosion_radius=config.furnish.erosion_radius,
+        backends=backends,
+        inpainter=backends.build_inpainter(),
+        seed=0,
+        gallery=tmp_path,
+    )
+    return config, backends, strip, scene
+
+
+def test_fmrg_guidance_descends_the_empty_rooms_own_reference(tmp_path: Path) -> None:
+    """Part 2's wiring: what the FMRG furnish descends is the *stripped room's* geometry.
+
+    The reference's disparity and mask are exactly a fresh depth read and shell
+    segmentation of the empty room — never the photograph's retained reference,
+    which the previous protocol steered by.
+    """
+    config, backends, strip, _ = _fake_fmrg_run(tmp_path)
+
+    reference = furnish_reference(
+        strip,
+        depth_estimator=backends.depth_estimator,
+        segmenter=backends.segmenter,
+        erosion_radius=config.furnish.erosion_radius,
+    )
+
+    empty_room = strip.empty_room.to(torch.float32)
+    with torch.no_grad():
+        empty_disparity = backends.depth_estimator(empty_room)
+        empty_shell = architectural_mask(
+            backends.segmenter(empty_room),
+            erosion_radius=config.furnish.erosion_radius,
+        )
+    assert torch.equal(reference.disparity, empty_disparity)
+    assert torch.equal(reference.mask, empty_shell)
+    # The photo's retained reference reads differently, so steering by it could
+    # not pass the equalities above.
+    assert not torch.equal(reference.disparity, strip.reference.disparity)
+
+
+def test_fmrg_arms_are_control_guided_and_labelled_probes(tmp_path: Path) -> None:
+    config, _, _, _ = _fake_fmrg_run(tmp_path)
+
+    specs = furnish_arms(config)
+
+    assert [spec.arm for spec in specs] == ["control", "guided", "guided_s0.75"]
+    assert specs[0].eta == 0.0
+    assert specs[1].eta == config.furnish.eta
+    assert [spec.probe for spec in specs] == [False, False, True]
+    assert specs[2].start_sigma == pytest.approx(0.75)
+
+
+def test_fmrg_scene_scores_every_arm_on_the_intersected_mask(tmp_path: Path) -> None:
+    """Eval mirrors guidance: empty-room shell ∩ every arm's own prediction shell.
+
+    The common mask can only shrink the empty shell, each arm's own scorable
+    mask sits between the two, and the row records the frame fractions the
+    enlarged-mask claim is judged by.
+    """
+    from strip_and_furnish.fmrg import _run_scene, _scored  # noqa: PLC0415
+
+    config, backends, strip, scene = _fake_fmrg_run(tmp_path)
+    reference = furnish_reference(
+        strip,
+        depth_estimator=backends.depth_estimator,
+        segmenter=backends.segmenter,
+        erosion_radius=config.furnish.erosion_radius,
+    )
+    stacks = build_flux_stack(
+        config,
+        prompts=[scene.prompt],
+        depth_estimator=backends.depth_estimator,
+        segmenter=backends.segmenter,
+        device=backends.device,
+        settings=RoomgenSettings(wdir=tmp_path, hf_home=tmp_path),
+    )
+    shell_fractions = {
+        "photo": float(strip.reference.mask.to(torch.float32).mean()),
+        "empty_room": float(reference.mask.to(torch.float32).mean()),
+    }
+
+    (pending,) = _run_scene(
+        scene,
+        strip,
+        config=config,
+        stacks=stacks,
+        reference=reference,
+        shell_fractions=shell_fractions,
+        specs=furnish_arms(config),
+        gallery=tmp_path,
+        warm_up=False,
+    )
+    result = _scored(
+        pending,
+        adherence=build_adherence(
+            config.adherence, device=backends.device, cache_dir=None
+        ),
+        device=backends.device,
+    )
+
+    row = result.as_row()
+    for key in (
+        "common_coverage",
+        "common_frame_fraction",
+        "empty_shell_frame_fraction",
+        "photo_shell_frame_fraction",
+        "reconstruction_depth_error",
+    ):
+        assert key in row
+    # Intersection can only shrink: common ⊆ each arm's scorable ⊆ empty shell.
+    assert 0.0 < result.common_coverage <= 1.0
+    for cell in result.arms:
+        assert result.common_coverage <= cell.shell_coverage + 1e-9
+        assert cell.depth_error >= 0.0
+        assert cell.adherence == cell.adherence  # scored, not the NaN sentinel
+        assert (tmp_path / cell.render).exists()
+        assert (tmp_path / cell.depth_map).exists()
+        assert (tmp_path / cell.residual_map).exists()
+        assert (tmp_path / cell.scorable_overlay).exists()
+    assert result.common_frame_fraction <= result.empty_shell_frame_fraction + 1e-9
+    assert (tmp_path / result.empty_depth_map).exists()
+    assert (tmp_path / result.common_mask_overlay).exists()
