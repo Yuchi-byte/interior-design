@@ -31,6 +31,7 @@ from framework.config import (
     BenchmarkConfig,
     FmrgConfig,
     FmrgContextConfig,
+    FmrgEtaConfig,
     FramingConfig,
     load_study_config,
 )
@@ -41,6 +42,10 @@ from framework.context_study import (
 )
 from framework.context_study import (
     arm_means as context_arm_means,
+)
+from framework.eta_study import EtaSummary, eta_arms, run_eta_study
+from framework.eta_study import (
+    arm_means as eta_arm_means,
 )
 from framework.fmrg_study import FmrgSummary, run_fmrg_study
 from framework.framing import ARMS, FramingSummary, framing_comparisons, run_framing
@@ -75,7 +80,9 @@ def main() -> int:
     )
     settings = RoomgenSettings()
     pull = (
-        f"eta {config.guidance.eta}"
+        f"etas {list(config.etas)}"
+        if isinstance(config, FmrgEtaConfig)
+        else f"eta {config.guidance.eta}"
         if isinstance(config, FmrgConfig | FmrgContextConfig)
         else f"strength {config.guidance.strength}"
     )
@@ -94,6 +101,11 @@ def main() -> int:
         # No HTML gallery of its own: the study's record is its results.json
         # and the renders, depth maps and residual maps beside it.
         _report_context(run_context_study(config, settings))
+        gallery = None
+    elif isinstance(config, FmrgEtaConfig):
+        # No HTML gallery of its own: the study's record is its results.json
+        # and the renders, depth maps and residual maps beside it.
+        _report_eta(run_eta_study(config, settings))
         gallery = None
     elif isinstance(config, FramingConfig):
         framing_summary = run_framing(config, settings)
@@ -231,6 +243,49 @@ def _report_context(summary: ContextSummary) -> None:
         row = means[spec.arm]
         print(
             f"{spec.arm:<9}{row['depth_error']:>10.5f}{row['adherence']:>9.4f}"
+            f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
+        )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
+
+
+_ETA_COLUMNS = (
+    f"{'arm':<9}{'eta':>7}{'depth':>10}{'vs A':>9}{'adher':>9}"
+    f"{'ratio A':>9}{'shell':>7}{'sec':>7}"
+)
+
+
+def _report_eta(summary: EtaSummary) -> None:
+    """The eta sweep's numbers per (scene, seed, arm) and in the mean. No claim is made."""
+    specs = eta_arms(summary.config)
+    print(
+        f"\n[metrics] {len(summary.results)} (scene, seed) tuples x "
+        f"{len(specs)} arms, one common mask each"
+    )
+    for result in summary.results:
+        print(f"{result.scene} seed {result.seed}:\n{_ETA_COLUMNS}")
+        for cell in result.arms:
+            print(
+                f"{cell.arm:<9}{cell.eta:>7.1f}{cell.depth_error:>10.5f}"
+                f"{_signed(result.depth_delta_vs_baseline(cell.arm)):>9}"
+                f"{cell.adherence:>9.4f}"
+                f"{_share(result.adherence_ratio_vs_baseline(cell.arm)):>9}"
+                f"{cell.shell_coverage:>6.0%} {cell.seconds:>6.1f}"
+            )
+        print(f"{'common mask':<26}{'':>9}{'':>9}{result.common_coverage:>15.0%}")
+    means = eta_arm_means(summary.results, specs)
+    print("\n[means]   per arm, over every (scene, seed)")
+    for spec in specs:
+        row = means[spec.arm]
+        print(
+            f"{spec.arm:<9}{row['eta']:>7.1f}{row['depth_error']:>10.5f}"
+            f"{row['adherence']:>9.4f}"
             f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
         )
     print(

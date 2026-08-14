@@ -19,11 +19,14 @@ from framework.config import (
     BenchmarkConfig,
     FmrgConfig,
     FmrgContextConfig,
+    FmrgEtaConfig,
     FramingConfig,
     load_study_config,
 )
 from framework.context_study import BASELINE_ARM, context_arms
 from framework.depth_maps import DisparityRange, write_disparity_map
+from framework.eta_study import BASELINE_ARM as ETA_BASELINE_ARM
+from framework.eta_study import eta_arms
 from framework.framing_gallery import FRAMING_GALLERY_FILENAME, write_framing_gallery
 from framework.gallery import GALLERY_FILENAME, write_gallery
 from framework.preference import ContrastPreference
@@ -48,6 +51,7 @@ def test_every_shipped_variant_validates(variant: str) -> None:
         BenchmarkConfig
         | FmrgConfig
         | FmrgContextConfig
+        | FmrgEtaConfig
         | FramingConfig
         | AlignmentStudyConfig,
     )
@@ -125,6 +129,28 @@ def test_context_arms_pair_each_sweep_sigma_and_lead_with_the_baseline() -> None
         assert (unguided.guided, guided.guided) == (False, True)
         assert unguided.start_sigma == guided.start_sigma == sigma
         assert unguided.framing == guided.framing == "renovation"
+
+
+def test_eta_arms_lead_with_the_baseline_and_sweep_every_eta_guided() -> None:
+    """A first (it sets the colour scale and the ratios), then one guided arm per eta."""
+    config = load_study_config(CONF_DIR / "eta.yaml")
+
+    assert isinstance(config, FmrgEtaConfig)
+    specs = eta_arms(config)
+    assert specs[0].arm == ETA_BASELINE_ARM
+    assert specs[0].eta == 0.0
+    assert not specs[0].guided
+    assert [spec.eta for spec in specs[1:]] == list(config.etas)
+    assert all(spec.guided for spec in specs[1:])
+    # The sweep exists to push above the never-tuned default, not around it.
+    assert config.etas[0] == 5.0
+    assert list(config.etas) == sorted(config.etas)
+
+
+def test_an_unguided_eta_in_the_sweep_is_a_config_error() -> None:
+    """Eta 0 in the sweep would duplicate the baseline under a guided arm's name."""
+    with pytest.raises(ValueError, match="etas must be positive"):
+        load_study_config(CONF_DIR / "eta.yaml", ["etas=[0.0, 5.0]"])
 
 
 def test_the_context_adherence_judge_may_not_be_the_guidance_clip() -> None:

@@ -1,0 +1,59 @@
+# The guidance-strength question: eta 5.0 is upstream FMRG's headline step
+# size, inherited and never tuned in this stack, and the renovation-context run
+# read guided-vs-unguided as visually too subtle. One unguided baseline A per
+# scene beside guided arms at eta 5 (the current value), 15 (3x) and 45 (9x) —
+# a log-ish ladder upward, watching for the instability ceiling — everything
+# else held at the sampler's operating point.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config eta
+study: fmrg_eta
+name: 0002_fmrg_eta
+
+# One seed: the owner's fast-iteration setting, 8 walks total.
+seeds: [0]
+
+resolution: 512
+
+etas: [5.0, 15.0, 45.0]
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  # fmrg.yaml's operating point, verbatim: FMRG's `fmrgj_nfe100` grid.
+  grid_steps: 208
+  early_stop: 51
+  unguided_steps: 1
+  start_sigma: 0.9
+  text_guidance_scale: 3.5
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+
+guidance:
+  # The sweep takes each guided arm's eta from `etas`; this one only sizes the
+  # warm-up walk.
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+adherence:
+  # The eval judge, deliberately bigger than — and independent of — the ViT-B/32
+  # any CLIP guidance in this repo descends. Arm A is the sweep's own baseline.
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+# The context study's two scenes and its exact style prompts, so the sweep's
+# baseline pair reads directly against that run's arms A and C.
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: blue_white_kitchen
+    style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

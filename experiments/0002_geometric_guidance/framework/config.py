@@ -413,6 +413,84 @@ class FmrgContextConfig(ExperimentConfig):
         return self
 
 
+class EtaSceneConfig(Config):
+    """One photo, the style prompt every arm samples with, and the judging text.
+
+    Args:
+        photo: id of an entry in `experiments/assets/photos.json`.
+        style_prompt: the plain style description — the one prompt every arm of
+            the eta sweep is sampled with.
+        eval_prompt: the neutral style text the adherence metric scores every
+            arm against, never varied across arms.
+    """
+
+    photo: Annotated[str, Field(min_length=1)]
+    style_prompt: Annotated[str, Field(min_length=1)]
+    eval_prompt: Annotated[str, Field(min_length=1)]
+
+
+class FmrgEtaConfig(ExperimentConfig):
+    """The guidance-strength sweep: one unguided baseline beside guided arms per eta.
+
+    Everything but eta is held at the sampler's one operating point — same
+    prompt, same seed, same init strength — so the columns read as the price
+    and the payoff of pushing the depth reward harder.
+
+    Args:
+        scenes: each photo with its style prompt; adherence is scored against
+            the scene's neutral `eval_prompt` for every arm.
+        etas: the `AnnealedSignTilt` strengths the guided arms sweep, each
+            positive; the unguided baseline always runs beside them at eta 0.
+        resolution: side of the square the photos are centre-cropped and resized
+            to, a multiple of 16 (FLUX's VAE downsamples by 8 and packs 2x2).
+    """
+
+    study: Literal["fmrg_eta"]
+    scenes: Annotated[tuple[EtaSceneConfig, ...], Field(min_length=1)]
+    etas: Annotated[tuple[float, ...], Field(min_length=1)] = (5.0, 15.0, 45.0)
+    resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    backends: FmrgBackendConfig
+    sampler: FmrgSamplerConfig = FmrgSamplerConfig()
+    guidance: FmrgGuidanceConfig = FmrgGuidanceConfig()
+    adherence: AdherenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
+        if resolution % FLUX_LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
+                f"FLUX's packed latent grid, got {resolution}"
+            )
+        return resolution
+
+    @field_validator("etas")
+    @classmethod
+    def _etas_are_guided_strengths(cls, etas: tuple[float, ...]) -> tuple[float, ...]:
+        for eta in etas:
+            if eta <= 0.0:
+                raise ValueError(
+                    f"etas must be positive, got {eta}: the unguided eta-0 "
+                    f"baseline already runs beside every sweep"
+                )
+        return etas
+
+    @model_validator(mode="after")
+    def _adherence_is_never_the_guidance_clip(self) -> FmrgEtaConfig:
+        # The eval CLIP must stay independent of the CLIP any guidance energy in
+        # this repo descends, or a guided arm is graded on the model it optimised.
+        if (
+            self.adherence.kind == "clip"
+            and self.adherence.checkpoint == GUIDANCE_CLIP_CHECKPOINT
+        ):
+            raise ValueError(
+                f"adherence.checkpoint is {self.adherence.checkpoint!r}, the "
+                f"guidance CLIP: score adherence with an independent checkpoint "
+                f"(e.g. openai/clip-vit-large-patch14)."
+            )
+        return self
+
+
 class PreferenceConfig(Config):
     """Which human-preference model scores the finished renders — eval only, never guidance.
 
@@ -535,6 +613,7 @@ def load_study_config(
     BenchmarkConfig
     | FmrgConfig
     | FmrgContextConfig
+    | FmrgEtaConfig
     | FramingConfig
     | AlignmentStudyConfig
 ):
@@ -555,6 +634,8 @@ def load_study_config(
             return FmrgConfig.from_file(path, overrides)
         case "fmrg_context":
             return FmrgContextConfig.from_file(path, overrides)
+        case "fmrg_eta":
+            return FmrgEtaConfig.from_file(path, overrides)
         case "framing":
             return FramingConfig.from_file(path, overrides)
         case "da3_alignment":
@@ -562,6 +643,6 @@ def load_study_config(
         case _:
             raise ValueError(
                 f"{path} declares unknown study {study!r}; "
-                "known studies: benchmark, fmrg, fmrg_context, framing, "
-                "da3_alignment"
+                "known studies: benchmark, fmrg, fmrg_context, fmrg_eta, "
+                "framing, da3_alignment"
             )
