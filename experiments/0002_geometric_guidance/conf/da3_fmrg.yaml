@@ -1,0 +1,64 @@
+# The DA3 alignment-mode claim, re-measured on the backend that now matters:
+# the SD1.5 run of `da3_alignment` predates the FMRG-only ruling, so raw
+# residuals against shift-only is run again on the FLUX flow map. Three arms
+# per (scene, seed) from one seed and style prompt — unguided control, guided
+# at raw residuals (`none`), guided at `shift`, both steered by DA3 metric at
+# eta 15 (the eta sweep's recommended default: 5 under-steers, 45 degrades
+# renders) — and every render scored under all three DA3 modes plus the
+# affine-invariant DA2 judge, so no arm is graded by its own objective alone.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config da3_fmrg
+study: fmrg_da3_alignment
+name: 0002_da3_fmrg
+
+# One seed: the owner's fast-iteration setting, 6 walks total.
+seeds: [0]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: bfloat16
+  # float32 for both depth backends: the reward's gradient path and the score
+  # matrix must not be quantised by the sampler's precision.
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  # fmrg.yaml's operating point, verbatim: FMRG's `fmrgj_nfe100` grid.
+  grid_steps: 208
+  early_stop: 51
+  unguided_steps: 1
+  start_sigma: 0.9
+  text_guidance_scale: 3.5
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+
+guidance:
+  # The eta sweep's recommended default; one guided arm per mode beside the
+  # shared control, all at this strength.
+  eta: 15.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+  arms: [none, shift]
+
+adherence:
+  # The eval judge, deliberately bigger than — and independent of — the ViT-B/32
+  # any CLIP guidance in this repo descends.
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+# The two scenes of the SD1.5 grid that discriminated raw from shift the most:
+# hotel_suite carried the strongest raw-pins-the-absolute-level signature
+# (DA3-none 0.0015 vs 0.0206 across the guided arms), blue_white_kitchen the
+# largest neutral-judge gap (DA2 1.44 vs 1.19). Prompts are that study's own.
+scenes:
+  - photo: hotel_suite_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: blue_white_kitchen
+    style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

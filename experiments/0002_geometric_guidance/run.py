@@ -29,6 +29,7 @@ from framework.benchmark import Summary, run_benchmark
 from framework.config import (
     AlignmentStudyConfig,
     BenchmarkConfig,
+    FmrgAlignmentConfig,
     FmrgConfig,
     FmrgContextConfig,
     FmrgEtaConfig,
@@ -46,6 +47,16 @@ from framework.context_study import (
 from framework.eta_study import EtaSummary, eta_arms, run_eta_study
 from framework.eta_study import (
     arm_means as eta_arm_means,
+)
+from framework.fmrg_alignment_study import (
+    AlignmentSummary as FmrgAlignmentSummary,
+)
+from framework.fmrg_alignment_study import (
+    alignment_arms,
+    run_fmrg_alignment_study,
+)
+from framework.fmrg_alignment_study import (
+    arm_means as fmrg_alignment_arm_means,
 )
 from framework.fmrg_study import FmrgSummary, run_fmrg_study
 from framework.framing import ARMS, FramingSummary, framing_comparisons, run_framing
@@ -83,7 +94,7 @@ def main() -> int:
         f"etas {list(config.etas)}"
         if isinstance(config, FmrgEtaConfig)
         else f"eta {config.guidance.eta}"
-        if isinstance(config, FmrgConfig | FmrgContextConfig)
+        if isinstance(config, FmrgConfig | FmrgContextConfig | FmrgAlignmentConfig)
         else f"strength {config.guidance.strength}"
     )
     print(
@@ -106,6 +117,11 @@ def main() -> int:
         # No HTML gallery of its own: the study's record is its results.json
         # and the renders, depth maps and residual maps beside it.
         _report_eta(run_eta_study(config, settings))
+        gallery = None
+    elif isinstance(config, FmrgAlignmentConfig):
+        # No HTML gallery of its own: the study's record is its results.json
+        # and the renders, depth maps and residual maps beside it.
+        _report_fmrg_alignment(run_fmrg_alignment_study(config, settings))
         gallery = None
     elif isinstance(config, FramingConfig):
         framing_summary = run_framing(config, settings)
@@ -375,6 +391,50 @@ def _report_alignment(summary: AlignmentSummary) -> None:
             f"{row['adherence']:>11.4f}{row['shell_coverage']:>10.0%}"
             f"{row['seconds']:>8.1f}"
         )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
+
+
+def _report_fmrg_alignment(summary: FmrgAlignmentSummary) -> None:
+    """The FMRG study's numbers per (scene, seed, arm) and in the mean. No claim is made."""
+    specs = alignment_arms(summary.config)
+    print(
+        f"\n[metrics] {len(summary.results)} (scene, seed) tuples x "
+        f"{len(specs)} arms, one common mask each\n{_ALIGNMENT_COLUMNS}"
+    )
+    for result in summary.results:
+        print(
+            f"{result.scene} seed {result.seed} "
+            f"(effective first sigma {result.effective_first_sigma:.4f}):"
+        )
+        for cell in result.arms:
+            print(
+                f"{cell.arm:<16}{cell.metric_depth_errors['none']:>11.6f}"
+                f"{cell.metric_depth_errors['shift']:>11.6f}"
+                f"{cell.metric_depth_errors['scale_shift']:>11.6f}"
+                f"{cell.judge_depth_error:>11.6f}"
+                f"{cell.adherence:>11.4f}{cell.shell_coverage:>10.0%}"
+                f"{cell.seconds:>8.1f}"
+            )
+        print(f"{'common mask':<16}{'':>44}{'':>11}{result.common_coverage:>10.0%}")
+    means = fmrg_alignment_arm_means(summary.results, specs)
+    print("\n[means]   per arm, over every (scene, seed)")
+    print(_ALIGNMENT_COLUMNS)
+    for spec in specs:
+        row = means[spec.arm]
+        print(
+            f"{spec.arm:<16}{row['metric_none']:>11.6f}{row['metric_shift']:>11.6f}"
+            f"{row['metric_scale_shift']:>11.6f}{row['judge_scale_shift']:>11.6f}"
+            f"{row['adherence']:>11.4f}{row['shell_coverage']:>10.0%}"
+            f"{row['seconds']:>8.1f}"
+        )
+    print(f"[shell]   {', '.join(summary.shell_classes.values())}")
     print(
         f"[run]     commit {summary.git_commit[:8]}, "
         f"{summary.walked_steps} walked steps, "

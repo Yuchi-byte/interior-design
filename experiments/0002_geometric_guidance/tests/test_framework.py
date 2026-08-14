@@ -17,6 +17,7 @@ from framework.config import (
     FLUX_LATENT_ALIGNMENT,
     AlignmentStudyConfig,
     BenchmarkConfig,
+    FmrgAlignmentConfig,
     FmrgConfig,
     FmrgContextConfig,
     FmrgEtaConfig,
@@ -52,6 +53,7 @@ def test_every_shipped_variant_validates(variant: str) -> None:
         | FmrgConfig
         | FmrgContextConfig
         | FmrgEtaConfig
+        | FmrgAlignmentConfig
         | FramingConfig
         | AlignmentStudyConfig,
     )
@@ -81,6 +83,29 @@ def test_the_alignment_study_runs_one_guided_arm_per_mode_beside_one_control() -
     assert all(spec.guided for spec in specs[1:])
     # The claim under test is raw against shift-only; both must actually run.
     assert set(config.guidance.arms) == {"none", "shift"}
+
+
+def test_the_fmrg_alignment_study_runs_one_guided_arm_per_mode_beside_a_control() -> (
+    None
+):
+    """The FMRG re-run keeps the SD1.5 study's shape: control first, then one arm per mode."""
+    from framework.fmrg_alignment_study import (  # noqa: PLC0415
+        CONTROL_ARM as FMRG_CONTROL_ARM,
+    )
+    from framework.fmrg_alignment_study import alignment_arms  # noqa: PLC0415
+
+    config = load_study_config(CONF_DIR / "da3_fmrg.yaml")
+
+    assert isinstance(config, FmrgAlignmentConfig)
+    specs = alignment_arms(config)
+    assert specs[0].arm == FMRG_CONTROL_ARM
+    assert not specs[0].guided
+    assert [spec.alignment for spec in specs[1:]] == list(config.guidance.arms)
+    assert all(spec.guided for spec in specs[1:])
+    # The claim under test is raw against shift-only; both must actually run.
+    assert set(config.guidance.arms) == {"none", "shift"}
+    # The eval judge must never be the guidance CLIP the repo steers with.
+    assert config.adherence.checkpoint == "openai/clip-vit-large-patch14"
 
 
 def test_the_fmrg_study_measures_the_benchmarks_scenes_at_its_seeds() -> None:

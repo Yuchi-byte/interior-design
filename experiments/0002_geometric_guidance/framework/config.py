@@ -491,6 +491,88 @@ class FmrgEtaConfig(ExperimentConfig):
         return self
 
 
+class FmrgAlignmentBackendConfig(FmrgBackendConfig):
+    """The FMRG stack plus the metric depth backend the alignment arms steer by.
+
+    Args:
+        metric_depth_checkpoint: the Depth Anything 3 *metric* tier — the only
+            backend for which raw or shift-only comparison is meaningful at all.
+            `depth_checkpoint` (V2, affine-invariant) stays loaded beside it as
+            the neutral second judge every arm is also scored under.
+        metric_input_size: the square edge DA3 resamples to, a multiple of its
+            14-pixel patch.
+    """
+
+    metric_depth_checkpoint: Annotated[str, Field(min_length=1)] = (
+        METRIC_DEPTH_CHECKPOINT
+    )
+    metric_input_size: Annotated[int, Field(ge=14)] = METRIC_INPUT_SIZE
+
+
+class FmrgAlignmentGuidanceConfig(FmrgGuidanceConfig):
+    """FMRG's guidance term, run once per alignment mode under test.
+
+    Args:
+        arms: the alignment modes the guided arms are steered under, one arm
+            per mode at every (scene, seed), beside the shared unguided control.
+            Loosening the fit is only meaningful for the metric backend the
+            study steers by; the affine-invariant second judge always scores
+            under the full fit.
+    """
+
+    arms: Annotated[tuple[AlignmentMode, ...], Field(min_length=1)] = ("none", "shift")
+
+
+class FmrgAlignmentConfig(ExperimentConfig):
+    """The DA3 alignment-mode study on FMRG: raw against shift-only, beside one control.
+
+    The SD1.5 run of this claim predates the FMRG-only ruling, so the study is
+    re-measured on the FLUX flow map: per (scene, seed) one unguided control and
+    one guided arm per alignment mode, all steered by DA3 metric at one eta.
+    Every arm is scored under *all three* modes plus the affine-invariant DA2
+    judge, so no arm is read solely through its own objective.
+
+    Args:
+        scenes: each photo with its style prompt; adherence is scored against
+            the scene's neutral `eval_prompt` for every arm.
+        resolution: side of the square the photos are centre-cropped and resized
+            to, a multiple of 16 (FLUX's VAE downsamples by 8 and packs 2x2).
+    """
+
+    study: Literal["fmrg_da3_alignment"]
+    scenes: Annotated[tuple[EtaSceneConfig, ...], Field(min_length=1)]
+    resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    backends: FmrgAlignmentBackendConfig
+    sampler: FmrgSamplerConfig = FmrgSamplerConfig()
+    guidance: FmrgAlignmentGuidanceConfig = FmrgAlignmentGuidanceConfig()
+    adherence: AdherenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
+        if resolution % FLUX_LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
+                f"FLUX's packed latent grid, got {resolution}"
+            )
+        return resolution
+
+    @model_validator(mode="after")
+    def _adherence_is_never_the_guidance_clip(self) -> FmrgAlignmentConfig:
+        # The eval CLIP must stay independent of the CLIP any guidance energy in
+        # this repo descends, or a guided arm is graded on the model it optimised.
+        if (
+            self.adherence.kind == "clip"
+            and self.adherence.checkpoint == GUIDANCE_CLIP_CHECKPOINT
+        ):
+            raise ValueError(
+                f"adherence.checkpoint is {self.adherence.checkpoint!r}, the "
+                f"guidance CLIP: score adherence with an independent checkpoint "
+                f"(e.g. openai/clip-vit-large-patch14)."
+            )
+        return self
+
+
 class PreferenceConfig(Config):
     """Which human-preference model scores the finished renders — eval only, never guidance.
 
@@ -614,6 +696,7 @@ def load_study_config(
     | FmrgConfig
     | FmrgContextConfig
     | FmrgEtaConfig
+    | FmrgAlignmentConfig
     | FramingConfig
     | AlignmentStudyConfig
 ):
@@ -636,6 +719,8 @@ def load_study_config(
             return FmrgContextConfig.from_file(path, overrides)
         case "fmrg_eta":
             return FmrgEtaConfig.from_file(path, overrides)
+        case "fmrg_da3_alignment":
+            return FmrgAlignmentConfig.from_file(path, overrides)
         case "framing":
             return FramingConfig.from_file(path, overrides)
         case "da3_alignment":
@@ -644,5 +729,5 @@ def load_study_config(
             raise ValueError(
                 f"{path} declares unknown study {study!r}; "
                 "known studies: benchmark, fmrg, fmrg_context, fmrg_eta, "
-                "framing, da3_alignment"
+                "fmrg_da3_alignment, framing, da3_alignment"
             )

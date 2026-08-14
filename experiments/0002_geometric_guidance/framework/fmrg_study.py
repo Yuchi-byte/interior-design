@@ -36,6 +36,7 @@ from framework.config import (
 from framework.metrics import build_adherence
 from framework.photos import ensure_photos, load_photo
 from framework.residual_maps import mean_absolute_residual, write_signed_residual_map
+from roomgen_geometry.alignment import AlignmentMode
 from roomgen_geometry.depth.base import DepthEstimator
 from roomgen_geometry.depth.depth_anything import DepthAnythingV2
 from roomgen_geometry.masking import scorable_mask
@@ -532,6 +533,8 @@ def sample_walk(
     on_mask: _MaskLog | None = None,
     grid_steps: int | None = None,
     window: GuidanceWindow | bool | None = True,
+    depth_estimator: DepthEstimator | None = None,
+    alignment: AlignmentMode = "scale_shift",
 ) -> tuple[Float[Tensor, "1 3 height width"], float, int | None]:
     """One walk at `seed`; `eta` 0 is the control on the identical trajectory.
 
@@ -539,6 +542,10 @@ def sample_walk(
         start_sigma: overrides `sampler.start_sigma` for this walk alone, which
             is how an init-strength sweep varies it without reloading anything —
             the schedule is re-derived per `FlowMapProcess`.
+        depth_estimator: the backend the reward descends, defaulting to the
+            stack's own (DA2); the alignment study steers by DA3 metric instead.
+        alignment: the fit the reward's energy runs through, as
+            `GeometricGuidance` takes it — the alignment study's variable.
     """
     generator = torch.Generator(device=stacks.device).manual_seed(seed)
     resolved_window = (
@@ -570,11 +577,14 @@ def sample_walk(
         iterations=guidance.iterations,
     )
     reward = GeometricGuidance(
-        depth_estimator=stacks.depth_estimator,
+        depth_estimator=(
+            depth_estimator if depth_estimator is not None else stacks.depth_estimator
+        ),
         reference=reference,
         segmenter=stacks.segmenter if guidance.resegment else None,
         erosion_radius=(guidance.erosion_radius if guidance.resegment else None),
         on_mask=on_mask,
+        alignment=alignment,
     )
     on_cuda = stacks.device.type == "cuda"
     if on_cuda:

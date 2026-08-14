@@ -1,0 +1,47 @@
+# Plumbing, not a claim: the whole FMRG alignment study on the weightless
+# `ToyFlowMapBackend` and the geometry doubles, CPU-only, offline, in seconds.
+# The fake metric backend sits in a deliberately different affine frame from
+# the fake judge, so the three-mode score matrix is exercised on maps that
+# actually disagree.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config da3_fmrg_smoke
+study: fmrg_da3_alignment
+name: 0002_da3_fmrg_smoke
+
+seeds: [0]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  # bfloat16 on purpose: the toy backend speaks it at its boundary, which is
+  # exactly the trap the adapter's float32 state rule exists for.
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  grid_steps: 24
+  early_stop: 6
+  unguided_steps: 1
+  start_sigma: 0.9
+  text_guidance_scale: 3.5
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+
+guidance:
+  eta: 15.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+  arms: [none, shift]
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight

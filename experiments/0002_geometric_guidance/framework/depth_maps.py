@@ -121,6 +121,35 @@ def write_scaled_disparity_map(
     )
 
 
+def write_masked_scaled_disparity_map(
+    disparity: Float[Tensor, "1 height width"],
+    *,
+    mask: Bool[Tensor, "1 height width"],
+    scale: DisparityRange,
+    path: Path,
+) -> None:
+    """Inverse depth over the scored pixels alone, painted against a shared `scale`.
+
+    The metric study's map: the mask keeps furniture out of the picture the way
+    `write_masked_disparity_map` does, while the shared range keeps an absolute
+    offset or rescale visible the way `write_scaled_disparity_map` does —
+    per-map normalisation would erase exactly the freedom a metric backend
+    determines.
+    """
+    field = disparity[0].to(torch.float32)
+    span = max(scale.high - scale.low, float(torch.finfo(torch.float32).eps))
+    unit = (field - scale.low) / span
+    colour = _colorise(unit)
+    outside = torch.tensor(
+        _OUTSIDE_MASK, dtype=colour.dtype, device=colour.device
+    ).view(3, 1, 1)
+    masked = torch.where(mask, colour, outside)
+    write_png(
+        (masked.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8).cpu(),
+        str(path),
+    )
+
+
 def _colorise(unit: Float[Tensor, "height width"]) -> Float[Tensor, "3 height width"]:
     palette = torch.tensor(_DEPTH_STOPS, dtype=torch.float32, device=unit.device)
     position = unit.clamp(0.0, 1.0) * (palette.shape[0] - 1)
