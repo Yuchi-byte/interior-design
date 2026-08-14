@@ -879,11 +879,15 @@ def _photo_path(scene: SceneConfig, photo_paths: dict[str, Path]) -> Path:
 
 def _format_strip(strip: StripResult) -> str:
     numbers = strip.numbers
+    residuals = " -> ".join(
+        f"{fraction:.1%}" for fraction in numbers.pass_residual_fractions
+    )
     return (
         f"{strip.scene}: cut {numbers.contents_fraction:.0%} of the frame, "
-        f"hole not shell {numbers.hole_not_shell_fraction:.1%} (recognisable "
-        f"furniture {numbers.residual_contents_fraction:.1%}), depth error vs "
-        f"photo {numbers.depth_error:.6f} "
+        f"hole not whitelisted fill {numbers.hole_not_fill_fraction:.1%} "
+        f"(not shell {numbers.hole_not_shell_fraction:.1%}, recognisable "
+        f"furniture {numbers.residual_contents_fraction:.1%}; per pass "
+        f"{residuals}), depth error vs photo {numbers.depth_error:.6f} "
         f"({numbers.unrepainted_shell_depth_error:.6f} on the "
         f"{numbers.unrepainted_shell_coverage:.0%} never repainted), "
         f"{numbers.seconds:.1f}s"

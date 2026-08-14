@@ -297,8 +297,9 @@ def _format_strip(strip: StripResult) -> str:
     numbers = strip.numbers
     return (
         f"{strip.scene}: cut {numbers.contents_fraction:.0%} of the frame, shell "
-        f"{numbers.shell_fraction:.0%}, hole not shell "
-        f"{numbers.hole_not_shell_fraction:.1%} (recognisable furniture "
+        f"{numbers.shell_fraction:.0%}, hole not whitelisted fill "
+        f"{numbers.hole_not_fill_fraction:.1%} (not shell "
+        f"{numbers.hole_not_shell_fraction:.1%}, recognisable furniture "
         f"{numbers.residual_contents_fraction:.1%}), "
         f"depth error vs photo {numbers.depth_error:.6f} "
         f"({numbers.unrepainted_shell_depth_error:.6f} on the "

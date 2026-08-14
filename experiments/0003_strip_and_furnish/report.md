@@ -3,7 +3,10 @@
 Two stages over one stack. **Gallery A (strip):** the furnished photograph has
 its contents segmented out (EoMT ADE20K → `contents_mask`) and the holes
 inpainted bare, with every pixel outside the mask composited back from the
-photograph itself. **Gallery B (furnish):** the stripped room is furnished back
+photograph itself; the fill is required to be one of exactly five surfaces —
+wall, floor, ceiling, window, door (`FILL_CLASSES`) — and nothing else, and
+each pass repaints whatever inside the original hole does not yet read as an
+acceptable fill. **Gallery B (furnish):** the stripped room is furnished back
 by guided SD1.5 img2img, three arms at the same seeds — a differentiable CLIP
 text energy alone, the same text energy plus the masked depth energy in one
 `WeightedGuidance`, and an unguided control. The prompt sits in the
@@ -43,11 +46,21 @@ doubles, `conf/pilot.yaml` one scene on the real stack.
   prompt each.
 - **Seeds.** `[0, 1]`, explicit `torch.Generator`s on the sampling device. The
   strip runs at seed 0.
-- **Strip.** Contents mask dilated 8 px; up to 3 inpainting passes at
+- **Strip.** Contents mask dilated 8 px; up to 5 inpainting passes at
   `fill_strength=0.85`, 40 steps, CFG 12.0 on a bare-room prompt with the
-  furniture refused by name in the negative prompt; every later pass repaints
-  only what the segmenter still calls contents *inside the first mask*, and the
-  final image composites the photograph back outside that mask.
+  observed hallucination families (furniture, radiator, heater, appliance,
+  ledge, machine, cart, wheels, …) refused by name in the negative prompt. The
+  re-check is **inverted and whitelisted**: a later pass repaints whatever
+  *inside the first mask* the segmenter does not yet read as an acceptable
+  fill (`FILL_CLASSES`: exactly wall, floor, ceiling, door, windowpane, grown
+  by the dilation radius) — not merely what it can name as furniture, the
+  loophole a radiator used to survive through, and not the wider shell either,
+  the loophole a hallucinated ledge and a wheeled machine EoMT labelled as
+  shell survived through next. The whitelist's honest limit: it reads EoMT's
+  labels, so a fill EoMT *mislabels* as wall passes it, and only the negative
+  prompt argues with those. The final image composites the photograph back
+  outside the first mask, so the untouched region stays bit-identical however
+  many passes run.
 - **Furnish.** SDEdit img2img at `noise_strength=0.7` (35 of 50 DDIM steps
   walked): 0.6 leaves the room essentially unfurnished, 0.8 furnishes a
   different room in every arm. Guidance strength 40.0 with the raw step capped
@@ -84,8 +97,25 @@ doubles, `conf/pilot.yaml` one scene on the real stack.
   on **one common mask** — that reference's shell intersected with every arm's
   own scorable shell — so no arm profits from hiding geometry. Depth error
   goes through `align_scale_shift` as everywhere; each scene also records the
-  empty room's VAE round trip against both references. No thresholds anywhere
-  in the code.
+  empty room's VAE round trip against both references. The strip's requirement
+  has its own number: `hole_not_fill_fraction`, the share of the original hole
+  the final segmentation does *not* read as one of the five allowed fills —
+  categorical, so a radiator, a nameless blob and an invented staircase count
+  alike — with the wider `hole_not_shell_fraction` and the furniture-only
+  `residual_contents_fraction` kept beside it (the gap between the first two
+  is what passed only as railing/column/stairs-shaped shell), and
+  `pass_residual_fractions`, the refused share after each pass, as the
+  convergence trace the pass budget is judged by. No thresholds anywhere in
+  the code.
+- **Seeing the masks.** Gallery A carries a class-coloured segmentation map for
+  the photo and the final empty room (per-class colours for wall / floor /
+  ceiling / door / windowpane, one colour each for other shell, contents,
+  everything else; the key is `segmentation_color_key` in `results.json`).
+  Gallery B renders every mask the numbers are read over as green overlays: the
+  guidance reward mask (the retained photo reference's shell) on the photo and
+  on the empty room per scene, the common evaluation mask per (scene, seed)
+  under each reference, and each arm's scorable slice of the reference shell on
+  its own render. Every filename is recorded in `results.json`'s images maps.
 
 ### Running it
 

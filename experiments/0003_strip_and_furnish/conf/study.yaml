@@ -42,23 +42,29 @@ strip:
   # a bare room is not enough on its own: what must not appear has to be
   # refused by name, at a classifier-free scale high enough for the refusal to
   # bite — and not only furniture. The observed hallucinations (a radiator,
-  # vacuum-cleaner-like objects) are refused explicitly, along with the
-  # appliance/fixture families they came from.
-  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, cabinet, box, vacuum cleaner, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  # vacuum-cleaner-like objects, and later a ledge with a boxy appliance and a
+  # wheeled machine that EoMT read as shell) are refused explicitly, with the
+  # appliance/fixture/cart families they came from. This is the only guard the
+  # whitelist acceptance below cannot provide: a fill the segmenter mislabels
+  # as wall passes any label-reading check, so the shapes have to be refused at
+  # generation time.
+  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, ledge, counter, cabinet, box, machine, vacuum cleaner, cart, trolley, wheels, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
   # 8px at 512. Contact shadows, segment fringes and the soft edge of a sofa all
   # sit just outside the segment, and an inpainter handed the bare segment
   # paints the furniture back from exactly that evidence. The same radius grows
   # each later pass's not-yet-shell region before it is repainted.
   dilation_radius: 8
-  # Four passes at 0.85: one pass leaves a television where the sofa was (49%
+  # Five passes at 0.85: one pass leaves a television where the sofa was (49%
   # of the cut region still segmented as furniture on the pilot), and dropping
   # the strength to 0.6 empties the room but blurs it enough that the depth
-  # network re-reads the *untouched* shell 3x further from the photograph. Four
-  # rather than the previous three because the acceptance is now inverted —
-  # anything in the hole not yet reading as shell is repainted, not just
-  # recognised furniture — so the re-check bites more often and gets one more
-  # corrective pass.
-  passes: 4
+  # network re-reads the *untouched* shell 3x further from the photograph. The
+  # acceptance is inverted AND whitelisted: anything in the hole not yet
+  # reading as one of the five allowed fills — wall, floor, ceiling, door,
+  # windowpane (`FILL_CLASSES`) — is repainted, so railing/column/stairs-shaped
+  # shell is refused too, and the stricter check earns one more corrective pass
+  # than the shell-wide version ran (the loop still stops early once clean;
+  # `pass_residual_fractions` reports whether the budget was needed).
+  passes: 5
   steps: 40
   fill_strength: 0.85
   guidance_scale: 12.0

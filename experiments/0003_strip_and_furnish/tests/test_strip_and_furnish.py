@@ -254,6 +254,7 @@ def test_furnishing_scores_every_arm_against_both_references(tmp_path: Path) -> 
 _FLOOR = ADE20K_LABELS.index("floor")
 _SOFA = ADE20K_LABELS.index("sofa")
 _PERSON = ADE20K_LABELS.index("person")
+_RAILING = ADE20K_LABELS.index("railing")
 
 
 @dataclass(frozen=True)
@@ -262,7 +263,9 @@ class _ColourCodedSegmenter:
 
     Green is a sofa (contents), strong red is a person — a class in *neither*
     list, standing in for the radiator/vacuum fills the contents-based re-check
-    was blind to — and everything else is floor (shell).
+    was blind to — strong blue is a railing — shell, but not an acceptable
+    fill, standing in for the ledge/machine fills the shell-wide re-check waved
+    through — and everything else is floor (whitelisted fill).
     """
 
     def __call__(
@@ -276,6 +279,7 @@ class _ColourCodedSegmenter:
         )
         labels[images[:, 1] > 0.9] = _SOFA
         labels[images[:, 0] > 0.9] = _PERSON
+        labels[images[:, 2] > 0.9] = _RAILING
         return labels
 
 
@@ -289,11 +293,11 @@ class _ScriptedInpainter:
     """An `InpaintPipeline` that paints the hole a scripted colour and records each mask.
 
     Args:
-        red_fills: red-channel value painted into the mask on each call; the
-            last entry repeats if more passes run than the script names.
+        fills: RGB colour painted into the mask on each call; the last entry
+            repeats if more passes run than the script names.
     """
 
-    red_fills: tuple[float, ...]
+    fills: tuple[tuple[float, float, float], ...]
     masks: list[Tensor] = field(default_factory=list)
 
     def __call__(
@@ -310,14 +314,14 @@ class _ScriptedInpainter:
         output_type: str,
     ) -> InpaintOutput:
         self.masks.append(mask_image.detach().clone())
-        red = self.red_fills[min(len(self.masks) - 1, len(self.red_fills) - 1)]
-        colour = torch.tensor([red, 0.0, 0.2], dtype=image.dtype).view(1, 3, 1, 1)
+        fill = self.fills[min(len(self.masks) - 1, len(self.fills) - 1)]
+        colour = torch.tensor(fill, dtype=image.dtype).view(1, 3, 1, 1)
         painted = mask_image > 0.5
         return _Painted(images=torch.where(painted, colour.expand_as(image), image))
 
 
 def _colour_coded_strip(
-    tmp_path: Path, red_fills: tuple[float, ...]
+    tmp_path: Path, fills: tuple[tuple[float, float, float], ...]
 ) -> tuple[StripResult, _ScriptedInpainter, Bool[Tensor, "1 height width"]]:
     """One strip over the colour-coded segmenter and the scripted inpainter."""
     config = StudyConfig.from_file(
@@ -330,7 +334,7 @@ def _colour_coded_strip(
     )
     photo = torch.full((1, 3, LATENT_ALIGNMENT, LATENT_ALIGNMENT), 0.3)
     photo[:, 1, 20:36, 20:36] = 0.95  # the sofa the strip is asked to remove
-    inpainter = _ScriptedInpainter(red_fills=red_fills)
+    inpainter = _ScriptedInpainter(fills=fills)
     strip = strip_scene(
         config.scenes[0],
         photo,
@@ -355,7 +359,9 @@ def test_the_acceptance_test_repaints_any_non_shell_fill_not_only_furniture(
     stopped; the inverted acceptance repaints it, and only stops once the hole
     reads as shell.
     """
-    strip, inpainter, contents = _colour_coded_strip(tmp_path, red_fills=(1.0, 0.0))
+    strip, inpainter, contents = _colour_coded_strip(
+        tmp_path, fills=((1.0, 0.0, 0.2), (0.0, 0.0, 0.2))
+    )
 
     # Pass 1's fill was not shell, so a second pass ran; its fill was floor, so
     # a third did not.
@@ -366,8 +372,13 @@ def test_the_acceptance_test_repaints_any_non_shell_fill_not_only_furniture(
     # untouched photograph stays untouched, whatever the passes do.
     assert not bool((repainted & ~contents).any())
     assert strip.numbers.unmasked_max_absolute_difference == 0.0
+    assert strip.numbers.hole_not_fill_fraction == 0.0
     assert strip.numbers.hole_not_shell_fraction == 0.0
     assert strip.numbers.residual_contents_fraction == 0.0
+    # The convergence trace the pass budget is judged by: refused, then clean.
+    assert len(strip.numbers.pass_residual_fractions) == 2
+    assert strip.numbers.pass_residual_fractions[0] > 0.0
+    assert strip.numbers.pass_residual_fractions[-1] == 0.0
 
 
 def test_hole_not_shell_reports_what_the_furniture_metric_is_blind_to(
@@ -379,11 +390,49 @@ def test_hole_not_shell_reports_what_the_furniture_metric_is_blind_to(
     residual reads 0.0 — the loophole — while the categorical metric reports
     the entire hole, which is the number the requirement is checked by.
     """
-    strip, inpainter, _ = _colour_coded_strip(tmp_path, red_fills=(1.0,))
+    strip, inpainter, _ = _colour_coded_strip(tmp_path, fills=((1.0, 0.0, 0.2),))
 
     assert len(inpainter.masks) == 3  # never accepted, so every pass ran
+    assert strip.numbers.hole_not_fill_fraction == 1.0
     assert strip.numbers.hole_not_shell_fraction == 1.0
     assert strip.numbers.residual_contents_fraction == 0.0
+
+
+def test_shell_outside_the_fill_whitelist_is_repainted(tmp_path: Path) -> None:
+    """A fill that segments as railing — shell, but not an allowed fill — is repainted.
+
+    This is the loophole the observed ledge and wheeled machine sailed through:
+    EoMT called them shell, so the shell-wide acceptance stopped. Under the
+    strict whitelist the railing-coloured fill forces a second pass, and only a
+    floor-coloured one is accepted.
+    """
+    strip, inpainter, contents = _colour_coded_strip(
+        tmp_path, fills=((0.2, 0.0, 1.0), (0.0, 0.0, 0.2))
+    )
+
+    assert len(inpainter.masks) == 2
+    repainted = inpainter.masks[1][:, 0] > 0.5
+    assert bool(repainted.any())
+    assert not bool((repainted & ~contents).any())
+    assert strip.numbers.hole_not_fill_fraction == 0.0
+
+
+def test_hole_not_fill_reports_the_shell_shaped_fills_not_shell_is_blind_to(
+    tmp_path: Path,
+) -> None:
+    """A hole that only ever becomes railing scores 1.0 not-fill and 0.0 not-shell.
+
+    The categorical shell metric reads the railing fill as a success — exactly
+    how the hallucinated ledge scored 0.0% — while the whitelist number reports
+    the entire hole, which is what the requirement is now checked by.
+    """
+    strip, inpainter, _ = _colour_coded_strip(tmp_path, fills=((0.2, 0.0, 1.0),))
+
+    assert len(inpainter.masks) == 3  # never an acceptable fill, every pass ran
+    assert strip.numbers.hole_not_fill_fraction == 1.0
+    assert strip.numbers.hole_not_shell_fraction == 0.0
+    assert strip.numbers.residual_contents_fraction == 0.0
+    assert all(fraction == 1.0 for fraction in strip.numbers.pass_residual_fractions)
 
 
 def test_the_segmentation_map_paints_classes_under_the_recorded_key(
