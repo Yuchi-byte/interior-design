@@ -23,8 +23,18 @@ backends:
   dtype: bfloat16
   # float32 for both depth backends: the reward's gradient path and the score
   # matrix must not be quantised by the sampler's precision.
+  # The DA2 judge stays float32: it is the neutral cross-check, and it is small.
   depth_dtype: float32
-  segmentation_dtype: float32
+  # Three deviations from the SD1.5 run's operating point (504, float32,
+  # float32), all forced by memory and measured, not feared: DA3-Large's guided
+  # backward on top of FLUX's decode backward ran the 32GB card out of memory
+  # at 504/float32 twice. Reference and render go through the identical
+  # resample and dtype, so the comparison stays self-consistent; DA3's output
+  # is cast back to float32 before the reciprocal, and the segmenter only
+  # decides masks whose boundaries are eroded anyway.
+  metric_input_size: 392
+  metric_depth_dtype: bfloat16
+  segmentation_dtype: bfloat16
 
 sampler:
   # fmrg.yaml's operating point, verbatim: FMRG's `fmrgj_nfe100` grid.

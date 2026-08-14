@@ -501,12 +501,19 @@ class FmrgAlignmentBackendConfig(FmrgBackendConfig):
             the neutral second judge every arm is also scored under.
         metric_input_size: the square edge DA3 resamples to, a multiple of its
             14-pixel patch.
+        metric_depth_dtype: DA3's parameter dtype, separate from `depth_dtype`
+            so the affine-invariant judge can stay float32 while the metric
+            backend — whose guided backward has to share a 32GB card with
+            FLUX's — drops to bfloat16. The backend casts its output back to
+            the image's dtype before the reciprocal, so the reward's energy
+            stays float32 either way.
     """
 
     metric_depth_checkpoint: Annotated[str, Field(min_length=1)] = (
         METRIC_DEPTH_CHECKPOINT
     )
     metric_input_size: Annotated[int, Field(ge=14)] = METRIC_INPUT_SIZE
+    metric_depth_dtype: DTypeName = "float32"
 
 
 class FmrgAlignmentGuidanceConfig(FmrgGuidanceConfig):

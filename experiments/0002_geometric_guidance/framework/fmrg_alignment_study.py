@@ -282,7 +282,7 @@ def _build_metric_depth(
             return DepthAnythingV3Metric(
                 config.backends.metric_depth_checkpoint,
                 device=stacks.device,
-                dtype=TORCH_DTYPES[config.backends.depth_dtype],
+                dtype=TORCH_DTYPES[config.backends.metric_depth_dtype],
                 cache_dir=settings.hub_cache,
                 input_size=config.backends.metric_input_size,
             )
