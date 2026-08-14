@@ -350,3 +350,105 @@ reward's reduction and the guided step's RMS sizing are float32 by contract, so
 a float16 sampler still gets a finite, correctly-directed gradient.
 `conf/benchmark.yaml` stays float32 throughout for comparability of the recorded
 numbers, not out of necessity.
+
+## Study: DA3 alignment modes (`conf/da3_alignment.yaml`, 2026-08-14)
+
+### Hypothesis
+
+The comment above `AlignmentMode` claimed — from a measurement never written
+down as an experiment — that when guiding with the DA3 *metric* backend,
+shift-only alignment beats raw residuals: "raw metric residuals score best of
+any arm from a renoised photo and collapse from pure noise". The owner doubts
+it. This study puts the renoised-photo half of that claim on the bench: per
+(scene, seed), one unguided control and one guided arm per mode (`none` — the
+raw masked residual — and `shift`), all three from the same seed and prompt.
+No arm is graded by its own objective alone: every render is scored under all
+three DA3 alignment modes **and** by the affine-invariant DA2 judge under the
+full fit, beside CLIP adherence and shell coverage.
+
+### Setup
+
+Four scenes of the benchmark grid (hotel_suite_living_room,
+scandi_living_room, bedroom_warm_ensuite, blue_white_kitchen), the benchmark's
+own prompts, seeds [0, 1, 2, 3]. SD1.5 img2img at 512², 30 steps,
+`noise_strength 0.9` (the recorded regime decision; 0.6 sits at the metric's
+noise floor), `text_guidance_scale 7.5`, DDIM, deterministic, float32
+throughout. Guidance steers by DA3METRIC-LARGE with `resegment: true`,
+`erosion_radius 2`, clipped raw step at `clip 0.02`. Strength was swept on the
+pilot scene at seed 0 (10 / 30 / 100 / 300 — see `conf/da3_alignment.yaml`)
+and pinned at **300**, where the two guided arms clearly separate while
+adherence holds and both renders stay clean rooms. All arms of a (scene, seed)
+are scored on one common mask (the shell all three renders left visible);
+every render and reference photo leaves a DA3 and a DA2 depth map, the DA3
+maps painted on one shared scale per scene so an absolute offset stays
+visible, the DA2 maps fitted onto the photo's frame first. The run also
+surfaced and fixed a driver bug that this study was the first to trip at
+scale: the finished render was returned still carrying the final VAE decode's
+autograd graph (5.6 GiB at 512² per held render), which is what ran the first
+full grid out of memory — see `process/driver.py`.
+
+### Results
+
+Means over all 16 (scene, seed) tuples, each arm scored on the tuple's common
+mask (69% of the shell in the mean). DA3/DA2 errors are in each backend's own
+squared-disparity units and compare within a column only.
+
+| arm          | DA3 none | DA3 shift | DA3 ssi  | DA2 ssi | adherence | coverage | sec |
+|--------------|----------|-----------|----------|---------|-----------|----------|-----|
+| control      | 0.023532 | 0.014002  | 0.009033 | 0.826   | 0.3345    | 69%      | 1.3 |
+| guided_none  | 0.005386 | 0.004276  | 0.003033 | 0.501   | 0.3351    | 69%      | 8.0 |
+| guided_shift | 0.019123 | 0.002613  | 0.001706 | 0.426   | 0.3327    | 69%      | 8.0 |
+
+Per scene (mean over the four seeds):
+
+| scene                   | arm          | none    | shift   | ssi     | DA2    | adh    | cov |
+|-------------------------|--------------|---------|---------|---------|--------|--------|-----|
+| hotel_suite_living_room | control      | 0.03438 | 0.00820 | 0.00466 | 0.4946 | 0.3114 | 56% |
+|                         | guided_none  | 0.00150 | 0.00075 | 0.00072 | 0.2610 | 0.3129 | 59% |
+|                         | guided_shift | 0.02061 | 0.00090 | 0.00087 | 0.2243 | 0.3136 | 61% |
+| scandi_living_room      | control      | 0.01271 | 0.00988 | 0.00660 | 0.4197 | 0.3200 | 61% |
+|                         | guided_none  | 0.00361 | 0.00250 | 0.00200 | 0.2174 | 0.3237 | 62% |
+|                         | guided_shift | 0.00964 | 0.00202 | 0.00185 | 0.2060 | 0.3164 | 63% |
+| bedroom_warm_ensuite    | control      | 0.01345 | 0.01090 | 0.00251 | 0.1030 | 0.3576 | 85% |
+|                         | guided_none  | 0.00512 | 0.00392 | 0.00203 | 0.0899 | 0.3553 | 83% |
+|                         | guided_shift | 0.01184 | 0.00226 | 0.00183 | 0.0854 | 0.3516 | 83% |
+| blue_white_kitchen      | control      | 0.03359 | 0.02702 | 0.02236 | 2.2878 | 0.3491 | 72% |
+|                         | guided_none  | 0.01132 | 0.00993 | 0.00738 | 1.4362 | 0.3484 | 71% |
+|                         | guided_shift | 0.03441 | 0.00528 | 0.00227 | 1.1867 | 0.3492 | 69% |
+
+What the numbers show, without judging them:
+
+- Each guided arm wins its own objective, as it must: the raw arm scores best
+  under `none` (0.0054 vs the shift arm's 0.0191), the shift arm best under
+  `shift` (0.0026 vs 0.0043).
+- Under the two judges neither arm optimised, the shift arm scores better on
+  both: DA3 `scale_shift` 0.00171 vs 0.00303, and the DA2 second judge 0.426
+  vs 0.501 (control 0.826). The pattern holds in every scene's mean for DA3
+  ssi, and in 3 of 4 scenes for DA2.
+- Scored raw, the shift arm (0.0191) sits barely below the control (0.0235):
+  shift-guided renders drift in absolute disparity level, which the shared-
+  scale DA3 maps make directly visible (e.g. blue_white_kitchen seed 0). The
+  raw arm is the only one that also pins the absolute level, by construction.
+- Adherence is level across all three arms (0.333–0.335 in the mean; the
+  per-scene spread is a point or two either way), and common coverage is
+  identical by construction. No arm degenerated: all 48 renders are plausible
+  rooms, none is the input photo back, none is depth-satisfying slabs.
+- Reconstruction floors sit 2–3 orders below every measured error (DA3 ssi
+  floors 5e-6 – 4e-5; DA2 floors 7e-4 – 2e-3), so nothing here is reading VAE
+  round-trip noise.
+- Cost: 8.0 s per guided arm, 1.3 s per control at 27 walked steps on the RTX
+  5090, peak 15.16 GiB after the driver fix.
+
+Run record: `outputs/0002_da3_alignment/` (results.json + `images/`), commit
+`7d184d5`.
+
+### Decision
+
+The renoised-photo half of the old comment's claim is now a measurement with
+its arms crossed over both independent judges: raw wins only the raw metric,
+shift-only wins DA3 ssi and DA2 ssi, and adherence separates nothing. The
+pure-noise half ("raw collapses from pure noise") remains unmeasured — this
+study starts every walk from the renoised photo by design. Judging whether
+shift-only's absolute-level drift matters — it is the one thing the metric
+backend was brought in to hold — is the owner's call, and the `AlignmentMode`
+comment now points here rather than asserting an answer.
