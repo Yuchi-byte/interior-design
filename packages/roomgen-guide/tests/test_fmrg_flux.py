@@ -23,6 +23,7 @@ from torch import Generator, Tensor
 from roomgen_guide.adapters.fmrg_flux import (
     DEFAULT_TEXT_GUIDANCE_SCALE,
     FluxFlowMapBackend,
+    select_cached_prompt,
 )
 
 # FLUX.1-dev's VAE normalisation, which is a shift *and* a scale where Stable
@@ -126,6 +127,7 @@ class _StubSampler:
     cached_pooled_prompt_embeds: Tensor = field(
         default_factory=lambda: torch.zeros(1, 4)
     )
+    prompt_cache: dict[str, tuple[Tensor, Tensor]] = field(default_factory=dict)
     decoded: Tensor | None = None
     vector_calls: list[dict[str, object]] = field(default_factory=list)
 
@@ -308,3 +310,34 @@ def test_the_text_guidance_scale_is_the_backends_and_not_the_rewards(
     backend.velocity(torch.zeros(1, 16, 4, 4), sigma=0.6, target_sigma=0.0)
 
     assert sampler.vector_calls[0]["guidance_scale"] == 1.0
+
+
+def test_selecting_a_cached_prompt_swaps_the_conditioning_every_call_reads(
+    sampler: _StubSampler,
+) -> None:
+    """One transformer load serves many prompts: the cache entry becomes the conditioning."""
+    embeds, pooled = torch.full((1, 2, 4), 3.0), torch.full((1, 4), 5.0)
+    sampler.prompt_cache["a scandinavian living room"] = (embeds, pooled)
+    backend = FluxFlowMapBackend(sampler=sampler)
+
+    select_cached_prompt(sampler, "a scandinavian living room")
+    backend.velocity(torch.zeros(1, 16, 4, 4), sigma=0.6, target_sigma=0.0)
+
+    call = sampler.vector_calls[0]
+    assert torch.equal(call["prompt_embeds"], embeds)  # type: ignore[arg-type]
+    assert torch.equal(call["pooled_prompt_embeds"], pooled)  # type: ignore[arg-type]
+
+
+def test_a_prompt_that_was_never_encoded_is_refused_by_name(
+    sampler: _StubSampler,
+) -> None:
+    """The text encoders are gone by now, so a cache miss must fail loudly, not re-encode."""
+    sampler.prompt_cache["the one that was encoded"] = (
+        torch.zeros(1, 2, 4),
+        torch.zeros(1, 4),
+    )
+
+    with pytest.raises(KeyError, match="never encoded") as raised:
+        select_cached_prompt(sampler, "the one that was not")
+
+    assert "the one that was encoded" in str(raised.value)

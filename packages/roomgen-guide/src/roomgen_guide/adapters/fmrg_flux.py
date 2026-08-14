@@ -85,6 +85,12 @@ class TwoTimeFlowMapSampler(Protocol):
     pipeline: TwoTimestepPipeline
     cached_prompt_embeds: Float[Tensor, "batch sequence embedding"]
     cached_pooled_prompt_embeds: Float[Tensor, "batch embedding"]
+    prompt_cache: dict[
+        str,
+        tuple[
+            Float[Tensor, "batch sequence embedding"], Float[Tensor, "batch embedding"]
+        ],
+    ]
 
     def decode(
         self, z: Float[Tensor, "batch channels height width"]
@@ -203,6 +209,27 @@ class FluxFlowMapBackend:
         )
 
 
+def select_cached_prompt(sampler: TwoTimeFlowMapSampler, prompt: str) -> None:
+    """Make `prompt` the conditioning of every velocity call the sampler serves next.
+
+    The text encoders are freed the moment the sampler finishes loading, so a
+    prompt is only reachable here if it was named to `load_flow_map_sampler` up
+    front; the cache holds its embeddings on the CPU and this call is what lifts
+    the chosen pair back beside the transformer.
+    """
+    if prompt not in sampler.prompt_cache:
+        raise KeyError(
+            f"prompt {prompt!r} was never encoded: the sampler's text encoders "
+            f"are freed at load, so every prompt must be named to "
+            f"`load_flow_map_sampler` (prompt= or additional_prompts=). Cached: "
+            f"{sorted(sampler.prompt_cache)}"
+        )
+    embeds, pooled = sampler.prompt_cache[prompt]
+    device = sampler.cached_prompt_embeds.device
+    sampler.cached_prompt_embeds = embeds.to(device)
+    sampler.cached_pooled_prompt_embeds = pooled.to(device)
+
+
 def load_flow_map_sampler(
     *,
     fmrg_path: Path,
@@ -211,6 +238,7 @@ def load_flow_map_sampler(
     device: torch.device,
     model_id: str = "black-forest-labs/FLUX.1-dev",
     dtype: torch.dtype = torch.bfloat16,
+    additional_prompts: Sequence[str] = (),
 ) -> TwoTimeFlowMapSampler:
     """Load FMRG's FLUX flow-map sampler with its LoRA, staged to fit a 32GB card.
 
@@ -221,6 +249,10 @@ def load_flow_map_sampler(
             flow-map LoRA trained at the resolution being sampled.
         prompt: precomputed here because the text encoders are freed immediately
             afterwards — the sampler cannot encode a second prompt later.
+        additional_prompts: every other prompt this sampler will ever be asked
+            to condition on, encoded into its CPU-side cache alongside `prompt`
+            and switched between with `select_cached_prompt` — which is how one
+            ~24GB transformer load serves a whole multi-prompt benchmark.
 
     Upstream's loader moves the transformer, T5, CLIP and the VAE onto the GPU
     together (~34GB in bf16) and only then frees the text encoders, which does
@@ -255,6 +287,9 @@ def load_flow_map_sampler(
                 device=device,
                 dtype=dtype,
                 prompt=prompt,
+                additional_prompts=(
+                    list(additional_prompts) if additional_prompts else None
+                ),
             )
     transformer = sampler.pipeline.transformer
     transformer.to(device)

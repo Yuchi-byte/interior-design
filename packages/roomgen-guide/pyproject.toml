@@ -12,6 +12,11 @@ dependencies = [
     "accelerate",
     "transformers",
     "huggingface-hub>=1.0",
+    # The FLUX flow-map backend's loading path: peft carries the FlowMap LoRA
+    # into the transformer, sentencepiece and protobuf are T5's tokenizer.
+    "peft>=0.14",
+    "sentencepiece",
+    "protobuf",
     "omegaconf>=2.3",
     "pydantic>=2",
     "pydantic-settings>=2",
