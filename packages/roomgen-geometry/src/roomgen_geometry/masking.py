@@ -10,7 +10,6 @@ from torch.nn.functional import max_pool2d
 from roomgen_geometry.segmentation.ade20k import (
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
-    FILL_CLASSES,
     REMOVABLE_CLASSES,
     STRUCTURAL_CLASSES,
 )
@@ -78,24 +77,6 @@ def structural_mask(
     """
     return erode_boundaries(
         _is_any_of(segmentation, STRUCTURAL_CLASSES), radius=erosion_radius
-    )
-
-
-def fill_mask(
-    segmentation: Int[Tensor, "batch height width"], *, erosion_radius: int
-) -> Bool[Tensor, "batch height width"]:
-    """The pixels an inpainted hole is allowed to keep: the strict fill whitelist.
-
-    True on :data:`~roomgen_geometry.segmentation.ade20k.FILL_CLASSES` — wall,
-    floor, ceiling, windowpane, door — and on nothing else. Stricter than
-    :func:`structural_mask` on purpose: railing, column and stairs are shell the
-    reward must hold where the photograph shows them, but an acceptance that
-    admitted them lets a hallucinated object the segmenter labels as one of them
-    stand in the hole. A pixel the segmenter mislabels as wall still passes;
-    the whitelist can only be as honest as the labels it reads.
-    """
-    return erode_boundaries(
-        _is_any_of(segmentation, FILL_CLASSES), radius=erosion_radius
     )
 
 

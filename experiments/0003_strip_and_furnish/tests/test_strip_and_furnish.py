@@ -261,11 +261,12 @@ _RAILING = ADE20K_LABELS.index("railing")
 class _ColourCodedSegmenter:
     """A `Segmenter` reading class off pixel colour, so a repaint changes what it says.
 
-    Green is a sofa (contents), strong red is a person — a class in *neither*
-    list, standing in for the radiator/vacuum fills the contents-based re-check
-    was blind to — strong blue is a railing — shell, but not an acceptable
-    fill, standing in for the ledge/machine fills the shell-wide re-check waved
-    through — and everything else is floor (whitelisted fill).
+    Green is a sofa (removable contents, which the blocklist acceptance
+    repaints), strong red is a person — a class in *neither* list, standing in
+    for the vacuum-shaped fills ADE20K cannot name — strong blue is a railing —
+    shell, standing in for the ledge/machine fills EoMT reads as structure —
+    and everything else is floor. The blocklist accepts all but the sofa; the
+    not-shell diagnostic is what still reports the person-shaped fill.
     """
 
     def __call__(
@@ -348,23 +349,21 @@ def _colour_coded_strip(
     return strip, inpainter, strip.contents
 
 
-def test_the_acceptance_test_repaints_any_non_shell_fill_not_only_furniture(
+def test_the_acceptance_repaints_a_fill_the_segmenter_still_calls_removable(
     tmp_path: Path,
 ) -> None:
-    """A fill the segmenter calls neither shell nor contents is repainted anyway.
+    """A fill that segments as furniture is refused and repainted until clean.
 
-    The first pass paints the hole a colour that segments as *person* — in
-    neither class list, exactly like the observed radiator and vacuum-shaped
-    hallucinations. The old contents-based re-check accepted that fill and
-    stopped; the inverted acceptance repaints it, and only stops once the hole
-    reads as shell.
+    The first pass paints the hole sofa-green — recognisable contents — so the
+    blocklist forces a second pass; that one paints floor, which is accepted,
+    and the loop stops early with the budget unspent.
     """
     strip, inpainter, contents = _colour_coded_strip(
-        tmp_path, fills=((1.0, 0.0, 0.2), (0.0, 0.0, 0.2))
+        tmp_path, fills=((0.0, 1.0, 0.2), (0.0, 0.0, 0.2))
     )
 
-    # Pass 1's fill was not shell, so a second pass ran; its fill was floor, so
-    # a third did not.
+    # Pass 1's fill was still removable, so a second pass ran; its fill was
+    # floor, so a third did not.
     assert len(inpainter.masks) == 2
     repainted = inpainter.masks[1][:, 0] > 0.5
     assert bool(repainted.any())
@@ -372,7 +371,6 @@ def test_the_acceptance_test_repaints_any_non_shell_fill_not_only_furniture(
     # untouched photograph stays untouched, whatever the passes do.
     assert not bool((repainted & ~contents).any())
     assert strip.numbers.unmasked_max_absolute_difference == 0.0
-    assert strip.numbers.hole_not_fill_fraction == 0.0
     assert strip.numbers.hole_not_shell_fraction == 0.0
     assert strip.numbers.residual_contents_fraction == 0.0
     # The convergence trace the pass budget is judged by: refused, then clean.
@@ -381,58 +379,57 @@ def test_the_acceptance_test_repaints_any_non_shell_fill_not_only_furniture(
     assert strip.numbers.pass_residual_fractions[-1] == 0.0
 
 
-def test_hole_not_shell_reports_what_the_furniture_metric_is_blind_to(
+def test_a_hole_that_keeps_refilling_with_furniture_uses_every_pass(
     tmp_path: Path,
 ) -> None:
-    """A hole that never becomes shell scores 1.0 not-shell and 0.0 furniture.
+    """A hole that segments as furniture after every pass exhausts the budget.
 
-    Every pass paints the hole the person-coloured fill: the furniture-only
-    residual reads 0.0 — the loophole — while the categorical metric reports
-    the entire hole, which is the number the requirement is checked by.
+    The residual trace stays at 1.0 throughout, and the final number reports
+    the whole hole as recognisable contents — the failure mode the pass budget
+    and `residual_contents_fraction` exist to expose.
+    """
+    strip, inpainter, _ = _colour_coded_strip(tmp_path, fills=((0.0, 1.0, 0.2),))
+
+    assert len(inpainter.masks) == 3  # never accepted, so every pass ran
+    assert strip.numbers.residual_contents_fraction == 1.0
+    assert all(fraction == 1.0 for fraction in strip.numbers.pass_residual_fractions)
+
+
+def test_a_fill_in_neither_class_list_is_accepted_the_blocklist_honest_limit(
+    tmp_path: Path,
+) -> None:
+    """A fill the segmenter calls neither shell nor contents is accepted as-is.
+
+    The pass paints the hole a colour that segments as *person* — in neither
+    class list, exactly like the vacuum-shaped hallucinations ADE20K has no
+    name for. The blocklist accepts it (the reverted whitelist would have
+    repainted it, the documented trade); `hole_not_shell_fraction` is the
+    diagnostic that still reports it.
     """
     strip, inpainter, _ = _colour_coded_strip(tmp_path, fills=((1.0, 0.0, 0.2),))
 
-    assert len(inpainter.masks) == 3  # never accepted, so every pass ran
-    assert strip.numbers.hole_not_fill_fraction == 1.0
-    assert strip.numbers.hole_not_shell_fraction == 1.0
+    assert len(inpainter.masks) == 1  # accepted immediately, no repaint
+    assert strip.numbers.pass_residual_fractions == (0.0,)
     assert strip.numbers.residual_contents_fraction == 0.0
+    assert strip.numbers.hole_not_shell_fraction == 1.0
 
 
-def test_shell_outside_the_fill_whitelist_is_repainted(tmp_path: Path) -> None:
-    """A fill that segments as railing — shell, but not an allowed fill — is repainted.
-
-    This is the loophole the observed ledge and wheeled machine sailed through:
-    EoMT called them shell, so the shell-wide acceptance stopped. Under the
-    strict whitelist the railing-coloured fill forces a second pass, and only a
-    floor-coloured one is accepted.
-    """
-    strip, inpainter, contents = _colour_coded_strip(
-        tmp_path, fills=((0.2, 0.0, 1.0), (0.0, 0.0, 0.2))
-    )
-
-    assert len(inpainter.masks) == 2
-    repainted = inpainter.masks[1][:, 0] > 0.5
-    assert bool(repainted.any())
-    assert not bool((repainted & ~contents).any())
-    assert strip.numbers.hole_not_fill_fraction == 0.0
-
-
-def test_hole_not_fill_reports_the_shell_shaped_fills_not_shell_is_blind_to(
+def test_a_shell_labelled_fill_is_accepted_and_invisible_to_both_numbers(
     tmp_path: Path,
 ) -> None:
-    """A hole that only ever becomes railing scores 1.0 not-fill and 0.0 not-shell.
+    """A fill that segments as railing — shell — sails through the blocklist.
 
-    The categorical shell metric reads the railing fill as a success — exactly
-    how the hallucinated ledge scored 0.0% — while the whitelist number reports
-    the entire hole, which is what the requirement is now checked by.
+    This is the loophole the strict whitelist existed to close, accepted back
+    knowingly: a hallucinated ledge EoMT labels as railing/column/stairs is not
+    removable, so the acceptance stops, and even the not-shell diagnostic reads
+    it as a success. Only the negative prompt argues with such a fill.
     """
     strip, inpainter, _ = _colour_coded_strip(tmp_path, fills=((0.2, 0.0, 1.0),))
 
-    assert len(inpainter.masks) == 3  # never an acceptable fill, every pass ran
-    assert strip.numbers.hole_not_fill_fraction == 1.0
-    assert strip.numbers.hole_not_shell_fraction == 0.0
+    assert len(inpainter.masks) == 1
+    assert strip.numbers.pass_residual_fractions == (0.0,)
     assert strip.numbers.residual_contents_fraction == 0.0
-    assert all(fraction == 1.0 for fraction in strip.numbers.pass_residual_fractions)
+    assert strip.numbers.hole_not_shell_fraction == 0.0
 
 
 def test_the_segmentation_map_paints_classes_under_the_recorded_key(

@@ -30,18 +30,18 @@ backends:
   scheduler: ddim
 
 strip:
-  # study.yaml's strip, verbatim. The acceptance is the strict fill whitelist
-  # (`FILL_CLASSES`: wall, floor, ceiling, door, windowpane — nothing else, by
-  # owner decision) because the shell-wide check waved through a hallucinated
-  # ledge and a wheeled machine EoMT labelled as shell; the negative prompt
-  # refuses those shapes by name, which is the only guard against fills the
-  # segmenter mislabels as wall — a label-reading whitelist cannot catch those.
+  # study.yaml's strip, verbatim. The acceptance is a contents blocklist, by
+  # owner decision: a pass repaints whatever the hole still segments as
+  # something a strip removes (`REMOVABLE_CLASSES`, expanded to name every
+  # plausibly movable indoor class — radiator, sconce, appliances, decor). A
+  # fill in neither class list (a vacuum-shaped object ADE20K has no name for,
+  # or a shape EoMT reads as shell) is accepted as-is; the negative prompt is
+  # the only guard on that side.
   prompt: empty room, bare floor, bare wall, no furniture, plain interior
   negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, ledge, counter, cabinet, box, machine, vacuum cleaner, cart, trolley, wheels, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
   dilation_radius: 8
-  # One more than the shell-wide acceptance ran: the stricter whitelist
-  # repaints more, the loop stops early once clean, and the per-pass residuals
-  # in results.json report whether the budget was used.
+  # The loop stops early once the hole segments clean of removable classes;
+  # the per-pass residuals in results.json report whether the budget was used.
   passes: 5
   steps: 40
   fill_strength: 0.85

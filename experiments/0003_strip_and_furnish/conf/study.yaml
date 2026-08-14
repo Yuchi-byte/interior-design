@@ -45,9 +45,9 @@ strip:
   # vacuum-cleaner-like objects, and later a ledge with a boxy appliance and a
   # wheeled machine that EoMT read as shell) are refused explicitly, with the
   # appliance/fixture/cart families they came from. This is the only guard the
-  # whitelist acceptance below cannot provide: a fill the segmenter mislabels
-  # as wall passes any label-reading check, so the shapes have to be refused at
-  # generation time.
+  # blocklist acceptance below cannot provide: a fill the segmenter does not
+  # name as removable passes any label-reading check, so the shapes have to be
+  # refused at generation time.
   negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, ledge, counter, cabinet, box, machine, vacuum cleaner, cart, trolley, wheels, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
   # 8px at 512. Contact shadows, segment fringes and the soft edge of a sofa all
   # sit just outside the segment, and an inpainter handed the bare segment
@@ -58,12 +58,10 @@ strip:
   # of the cut region still segmented as furniture on the pilot), and dropping
   # the strength to 0.6 empties the room but blurs it enough that the depth
   # network re-reads the *untouched* shell 3x further from the photograph. The
-  # acceptance is inverted AND whitelisted: anything in the hole not yet
-  # reading as one of the five allowed fills — wall, floor, ceiling, door,
-  # windowpane (`FILL_CLASSES`) — is repainted, so railing/column/stairs-shaped
-  # shell is refused too, and the stricter check earns one more corrective pass
-  # than the shell-wide version ran (the loop still stops early once clean;
-  # `pass_residual_fractions` reports whether the budget was needed).
+  # acceptance is a contents blocklist: anything in the hole the segmenter
+  # still names as removable (`REMOVABLE_CLASSES`, expanded to every plausibly
+  # movable indoor class) is repainted, the loop stops early once clean, and
+  # `pass_residual_fractions` reports whether the budget was needed.
   passes: 5
   steps: 40
   fill_strength: 0.85

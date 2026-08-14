@@ -2,7 +2,6 @@ from roomgen_geometry.segmentation.ade20k import (
     ADE20K_LABELS,
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
-    FILL_CLASSES,
     NUM_CLASSES,
     REMOVABLE_CLASSES,
     SOFT_FURNISHING_CLASSES,
@@ -60,6 +59,45 @@ def test_the_furniture_a_renovation_replaces_is_named_contents() -> None:
     } <= CONTENTS_CLASSES
 
 
+def test_the_movable_objects_beyond_furniture_are_named_contents_too() -> None:
+    # The expanded blocklist: fixtures, appliances, decor and the things that
+    # merely stand in a room are all something a strip removes — the radiator
+    # the original list omitted is the class that motivated naming them all.
+    assert {
+        ADE20K_LABELS.index(name)
+        for name in (
+            "radiator",
+            "sconce",
+            "chandelier",
+            "vase",
+            "ashcan",
+            "fan",
+            "oven",
+            "stove",
+            "microwave",
+            "dishwasher",
+            "refrigerator",
+            "hood",
+            "base",
+            "signboard",
+            "booth",
+            "barrel",
+            "tent",
+            "minibike",
+            "animal",
+            "bicycle",
+            "flag",
+        )
+    } <= CONTENTS_CLASSES
+
+
+def test_ade20k_cannot_name_a_vacuum_cleaner_or_a_candle() -> None:
+    # The blocklist's structural limit, asserted so it stays documented: the
+    # 150-class table has no entry for either, so no class list can refuse such
+    # a fill and only the inpainter's negative prompt argues with one.
+    assert not any("vacuum" in label or "candle" in label for label in ADE20K_LABELS)
+
+
 def test_the_structural_classes_are_the_shell_minus_its_soft_furnishings() -> None:
     # The class term's set: what a renovation may not turn into something else.
     # Depth and class part ways exactly at the soft furnishings — a curtain's
@@ -72,29 +110,15 @@ def test_the_structural_classes_are_the_shell_minus_its_soft_furnishings() -> No
 def test_the_soft_furnishings_are_scored_stripped_and_never_frozen() -> None:
     # Owner decision: a rug reads the floor's depth and a curtain the window's,
     # so masking them out was surrendering valid comparison area. They are
-    # scored as shell, still cut by a strip, never held to their photographed
-    # identity, and never an acceptable inpainting fill.
+    # scored as shell, still cut by a strip (which makes them refused as an
+    # inpainting fill too), and never held to their photographed identity.
     assert {
         ADE20K_LABELS.index(name) for name in ("curtain", "rug")
     } == SOFT_FURNISHING_CLASSES
     assert SOFT_FURNISHING_CLASSES <= ARCHITECTURAL_CLASSES
     assert not SOFT_FURNISHING_CLASSES & CONTENTS_CLASSES
     assert not SOFT_FURNISHING_CLASSES & STRUCTURAL_CLASSES
-    assert not SOFT_FURNISHING_CLASSES & FILL_CLASSES
     assert REMOVABLE_CLASSES == CONTENTS_CLASSES | SOFT_FURNISHING_CLASSES
-
-
-def test_the_fill_whitelist_is_the_five_bare_surfaces_and_nothing_else() -> None:
-    # Owner decision: an inpainted hole may only be filled with wall, floor,
-    # ceiling, door or windowpane. A proper subset of the shell on purpose —
-    # railing, column and stairs keep their depth in the reward where the
-    # photograph shows them, but a strip that grows one inside a hole has
-    # invented structure the room never had.
-    assert {
-        ADE20K_LABELS.index(name)
-        for name in ("wall", "floor", "ceiling", "windowpane", "door")
-    } == FILL_CLASSES
-    assert FILL_CLASSES < ARCHITECTURAL_CLASSES
 
 
 def test_nothing_a_renovation_may_replace_is_held_to_its_photographed_class() -> None:

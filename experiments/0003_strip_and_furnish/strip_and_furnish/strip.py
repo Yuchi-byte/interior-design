@@ -18,8 +18,6 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from roomgen_geometry.masking import (
-    erode_boundaries,
-    fill_mask,
     removable_mask,
     scorable_mask,
     structural_mask,
@@ -69,25 +67,21 @@ class StripNumbers:
             the strip and the photograph *outside* the mask. Zero is the claim.
         generated_unmasked_max_absolute_difference: the same distance measured on
             the first pass's raw output, which is what the compositing removed.
-        hole_not_fill_fraction: the requirement's own number — the share of the
-            cut region the final segmentation does NOT read as an acceptable
-            fill (`FILL_CLASSES`: wall, floor, ceiling, door, windowpane, and
-            nothing else). A radiator, a vacuum-shaped blob, a table and an
-            invented staircase all land here alike; only a fill the segmenter
-            *mislabels* as one of the five escapes it, which no label-reading
-            metric can catch.
-        hole_not_shell_fraction: the same share against the wider
-            `STRUCTURAL_CLASSES` — kept beside the whitelist number so the gap
-            between them reports how much of the hole passed only as
-            railing/column/stairs-shaped shell.
-        residual_contents_fraction: the subset the segmenter affirmatively
-            calls something a strip removes (`REMOVABLE_CLASSES`: the contents
-            plus curtain and rug, undilated) — the "recognisable furniture"
-            slice of the categorical numbers above.
+        residual_contents_fraction: the requirement's own number — the share of
+            the cut region the final segmentation still affirmatively calls
+            something a strip removes (`REMOVABLE_CLASSES`: the contents plus
+            curtain and rug, undilated). This is what the acceptance re-checks,
+            so it is also the acceptance's honest limit: a fill in *neither*
+            class list — the vacuum-shaped blob ADE20K has no name for — is
+            accepted, and only the negative prompt argues with it.
+        hole_not_shell_fraction: the share of the cut region the final
+            segmentation does NOT read as `STRUCTURAL_CLASSES` — kept beside
+            the blocklist number as the categorical diagnostic: the gap between
+            them is exactly the no-name fills the blocklist waved through.
         pass_residual_fractions: after each inpainting pass, the share of the
-            cut region the acceptance still refused — not-whitelisted, grown by
-            the dilation radius — which is exactly what the next pass repaints.
-            How fast it falls is whether the pass budget is enough.
+            cut region the acceptance still refused — recognised contents,
+            grown by the dilation radius — which is exactly what the next pass
+            repaints. How fast it falls is whether the pass budget is enough.
     """
 
     contents_fraction: float
@@ -100,7 +94,6 @@ class StripNumbers:
     reconstruction_depth_error: float
     unmasked_max_absolute_difference: float
     generated_unmasked_max_absolute_difference: float
-    hole_not_fill_fraction: float
     hole_not_shell_fraction: float
     residual_contents_fraction: float
     pass_residual_fractions: tuple[float, ...]
@@ -138,7 +131,6 @@ class StripResult:
             "generated_unmasked_max_absolute_difference": (
                 self.numbers.generated_unmasked_max_absolute_difference
             ),
-            "hole_not_fill_fraction": self.numbers.hole_not_fill_fraction,
             "hole_not_shell_fraction": self.numbers.hole_not_shell_fraction,
             "residual_contents_fraction": self.numbers.residual_contents_fraction,
             "pass_residual_fractions": list(self.numbers.pass_residual_fractions),
@@ -193,10 +185,9 @@ def strip_scene(
     _synchronize(backends.device)
     seconds = time.perf_counter() - started
     # The requirement's own number, undilated: of the pixels the strip cut, how
-    # many does the final segmentation read as anything but an acceptable fill —
-    # with the wider not-shell share and the recognisable-furniture slice beside
-    # it, so what the whitelist alone refused is a gap and not a guess.
-    hole_not_fill = contents & ~fill_mask(final_segmentation, erosion_radius=0)
+    # many does the final segmentation still call something a strip removes —
+    # with the categorical not-shell share beside it, so the no-name fills the
+    # blocklist cannot refuse are a visible gap and not a guess.
     hole_not_shell = contents & ~structural_mask(final_segmentation, erosion_radius=0)
     residual_contents = contents & removable_mask(final_segmentation, dilation_radius=0)
 
@@ -240,7 +231,6 @@ def strip_scene(
         generated_unmasked_max_absolute_difference=_outside_mask_distance(
             first_generated, photo, contents
         ),
-        hole_not_fill_fraction=_share_of(hole_not_fill, contents),
         hole_not_shell_fraction=_share_of(hole_not_shell, contents),
         residual_contents_fraction=_share_of(residual_contents, contents),
         pass_residual_fractions=pass_residuals,
@@ -280,22 +270,18 @@ def _repaint(
     Int[Tensor, "1 height width"],
     tuple[float, ...],
 ]:
-    """Repaint the cut region until everything in it is an acceptable fill, and nothing else.
+    """Repaint the cut region until the segmenter stops calling what is in it removable.
 
-    The acceptance test is inverted on purpose: a pass does not ask "is there
-    still furniture here" but "is every pixel here an acceptable fill yet" —
-    wall, floor, ceiling, door or windowpane (`FILL_CLASSES`), and *only* those
-    five, by owner decision. A fill only had to dodge the named contents list to
-    survive the old test; a radiator (listed or not) and a vacuum-shaped object
-    ADE20K has no name for are non-shell either way, so they are repainted
-    categorically — and shell that is not a bare surface (a hallucinated ledge
-    or appliance the segmenter reads as railing, column or stairs) is refused
-    with them rather than admitted as room structure the hole never had. The
-    honest limit stays: the check reads the segmenter's labels, so a fill it
-    MISlabels as wall passes, and only the negative prompt argues with that.
-    Accepted fill must also clear the dilation radius of any refused pixel, for
-    the same reason the contents mask was dilated: the fringe of an object is
-    the evidence it grows back from.
+    The acceptance is a contents blocklist, by owner decision: a pass asks "is
+    there still something a strip removes here" — anything the expanded
+    `REMOVABLE_CLASSES` names, from sofa to radiator to sconce — and repaints
+    exactly that, grown by the dilation radius for the same reason the contents
+    mask was dilated: the fringe of an object is the evidence it grows back
+    from. The accepted trade against the strict fill whitelist this reverts: a
+    fill in *neither* class list — the vacuum-shaped object ADE20K has no name
+    for, or a hallucination the segmenter reads as railing-shaped shell — is
+    accepted as-is, and only the negative prompt argues with it. The blocklist
+    is as honest as the labels it reads, in both directions.
 
     Returns the stripped room, the first pass's raw render, the final image's
     segmentation — from which the caller reads what is left in the hole — and
@@ -324,14 +310,11 @@ def _repaint(
             generated = inpainting.generated
         with torch.no_grad():
             segmentation = backends.segmenter(image)
-        # `erode_boundaries` keeps only whitelisted pixels farther than the
-        # radius from any refused one, so its complement is exactly the refused
-        # region grown by the radius — the inverted, dilated acceptance test.
-        confidently_fill = erode_boundaries(
-            fill_mask(segmentation, erosion_radius=0),
-            radius=strip.dilation_radius,
+        # The removal set again, dilated like the first cut: what the segmenter
+        # still calls removable, plus the fringe it would grow back from.
+        remaining = contents & removable_mask(
+            segmentation, dilation_radius=strip.dilation_radius
         )
-        remaining = contents & ~confidently_fill
         residuals.append(_share_of(remaining, contents))
         if not bool(remaining.any()):
             break

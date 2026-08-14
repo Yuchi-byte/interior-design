@@ -6,8 +6,8 @@ delete. Both are named class by class and neither is the other's complement:
 the ids in neither list — outdoors, people, stuff — are the ones a mask has to
 decide about without being told, which is the whole reason to spell the lists
 out. The derived sets answer narrower questions: what keeps its identity
-(structural), what a strip removes (removable), what an inpainted hole may be
-filled with (fill).
+(structural), what a strip removes and refuses as an inpainted fill
+(removable).
 """
 
 from typing import Final
@@ -219,42 +219,13 @@ ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
 # The soft furnishings inside the shell: reward-valid depth (their pixels read
 # the floor and window planes they dress) yet still something a renovation adds
 # or removes at will — so a strip must keep cutting them, their identity is
-# never frozen by the class term, and an inpainted hole may not be filled with
-# them. Every set below that needs one of those three answers derives it from
-# this pair rather than restating it.
+# never frozen by the class term, and a strip's acceptance repaints a hole the
+# inpainter refilled with them. Every set below that needs one of those three
+# answers derives it from this pair rather than restating it.
 SOFT_FURNISHING_CLASSES: Final[frozenset[int]] = frozenset(
     {
         18,  # curtain
         28,  # rug
-    }
-)
-
-
-def _shell_subset(ids: set[int]) -> frozenset[int]:
-    """A whitelist that must stay inside the shell it narrows, asserted where stated."""
-    subset = frozenset(ids)
-    outside = subset - ARCHITECTURAL_CLASSES
-    if outside:
-        raise ValueError(f"fill classes that are not shell: {sorted(outside)}")
-    return subset
-
-
-# What an inpainted hole may be filled *with*, by owner decision: the surfaces a
-# bare room is made of — wall, floor, ceiling — and its two fixed openings, and
-# nothing else. Deliberately stricter than `ARCHITECTURAL_CLASSES`: a railing, a
-# column or a staircase is legitimate shell for the *reward* — where the
-# photograph shows one, its depth is held — but a strip that grows one inside a
-# hole has invented structure the room never had, so none of them is an
-# acceptable fill. The whitelist reads the segmenter's labels, which is its
-# honest limit: a fill the segmenter MISlabels as wall sails through it, and
-# only the inpainter's negative prompt guards that side.
-FILL_CLASSES: Final[frozenset[int]] = _shell_subset(
-    {
-        0,  # wall
-        3,  # floor
-        5,  # ceiling
-        8,  # windowpane
-        14,  # door
     }
 )
 
@@ -299,6 +270,16 @@ def _named_contents(ids: set[int]) -> frozenset[int]:
 #   plant, flower, pot: indoors these are pots standing on the floor; the
 #     greenery a window shows is tree/grass/palm, which is in neither list.
 #   fan, hood, light, chandelier, sconce: mounted, but swapped per fit-out.
+#   base, sculpture, signboard, flag, booth: standing or hung decor and fitted
+#     seating — fit-out, not the room.
+#   bicycle, minibike, barrel, tent, animal: things that merely stand in a
+#     room — parked, stored, pitched, or walked in — and leave with the owner.
+#   screen door: deliberately in neither list — an opening like a door, so not
+#     contents to cut, but not admitted to the shell here either.
+# One limitation is structural rather than a judgment call: ADE20K-150 has NO
+# class for a vacuum cleaner, a candle, and their kin, so EoMT cannot name them
+# and no class list — blocklist or whitelist — can refuse such a fill. The
+# inpainter's negative prompt is the only guard on that side.
 CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
     {
         7,  # bed
@@ -317,7 +298,9 @@ CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
         36,  # lamp
         37,  # bathtub
         39,  # cushion
+        40,  # base
         41,  # box
+        43,  # signboard
         44,  # chest of drawers
         45,  # counter
         47,  # sink
@@ -343,6 +326,7 @@ CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
         81,  # towel
         82,  # light
         85,  # chandelier
+        88,  # booth
         89,  # television receiver
         92,  # apparel
         97,  # ottoman
@@ -352,14 +336,19 @@ CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
         107,  # washer
         108,  # plaything
         110,  # stool
+        111,  # barrel
         112,  # basket
+        114,  # tent
         115,  # bag
+        116,  # minibike
         117,  # cradle
         118,  # oven
         119,  # ball
         120,  # food
         124,  # microwave
         125,  # pot
+        126,  # animal
+        127,  # bicycle
         129,  # dishwasher
         130,  # screen
         131,  # blanket
@@ -378,6 +367,7 @@ CONTENTS_CLASSES: Final[frozenset[int]] = _named_contents(
         146,  # radiator
         147,  # glass
         148,  # clock
+        149,  # flag
     }
 )
 

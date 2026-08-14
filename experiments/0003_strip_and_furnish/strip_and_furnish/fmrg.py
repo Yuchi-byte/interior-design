@@ -37,7 +37,7 @@ from roomgen_geometry.reference import GeometricReference
 from roomgen_geometry.segmentation.ade20k import (
     ADE20K_LABELS,
     ARCHITECTURAL_CLASSES,
-    FILL_CLASSES,
+    REMOVABLE_CLASSES,
 )
 from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.adapters.flow_map import (
@@ -889,9 +889,9 @@ def _format_strip(strip: StripResult) -> str:
     )
     return (
         f"{strip.scene}: cut {numbers.contents_fraction:.0%} of the frame, "
-        f"hole not whitelisted fill {numbers.hole_not_fill_fraction:.1%} "
-        f"(not shell {numbers.hole_not_shell_fraction:.1%}, recognisable "
-        f"furniture {numbers.residual_contents_fraction:.1%}; per pass "
+        f"hole still recognisable contents "
+        f"{numbers.residual_contents_fraction:.1%} (not shell "
+        f"{numbers.hole_not_shell_fraction:.1%}; per pass "
         f"{residuals}), depth error vs photo {numbers.depth_error:.6f} "
         f"({numbers.unrepainted_shell_depth_error:.6f} on the "
         f"{numbers.unrepainted_shell_coverage:.0%} never repainted), "
@@ -979,13 +979,14 @@ def _write_results(summary: FmrgSummary, settings: RoomgenSettings) -> None:
                 # and per eval with the prediction's own shell.
                 "guidance_reference": "empty_room",
                 # The shell definition every mask in this run was read under,
-                # and the strict whitelist the strip acceptance re-checked —
-                # spelled out because both changed across runs of this study.
+                # and the removal blocklist the strip both cut and re-checked
+                # against (the contents plus curtain and rug) — spelled out
+                # because both changed across runs of this study.
                 "shell_classes": [
                     ADE20K_LABELS[index] for index in sorted(ARCHITECTURAL_CLASSES)
                 ],
-                "fill_classes": [
-                    ADE20K_LABELS[index] for index in sorted(FILL_CLASSES)
+                "removable_classes": [
+                    ADE20K_LABELS[index] for index in sorted(REMOVABLE_CLASSES)
                 ],
                 "galleries": {
                     "strip": str(summary.output_dir / GALLERY_A),

@@ -67,10 +67,10 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   that a renovation may legitimately re-dress them. `STRUCTURAL_CLASSES` is
   the shell minus those soft furnishings — identity is frozen only where the
   renovation may not change it; `REMOVABLE_CLASSES` (contents + soft
-  furnishings) is what a strip cuts; `FILL_CLASSES` is the strict whitelist of
-  what an inpainted hole may be filled with — wall, floor, ceiling,
-  windowpane, door, and nothing else, a proper subset of the shell by owner
-  decision.
+  furnishings) is what a strip cuts and what its acceptance re-checks a hole
+  against — a contents blocklist, by owner decision, with the contents list
+  expanded to every plausibly movable indoor class (vacuum cleaner and candle
+  have no ADE20K class at all, the stated limit of any label-reading check).
 - `masking.py`: `scorable_mask`, the one place a segmentation is turned into the
   pixels a reward may score, under either `MaskMode` polarity —
   `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts
@@ -82,8 +82,8 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   inverted mask (Chebyshev radius in pixels); the image border is not treated as
   a segment edge. `structural_mask` is the class term's reference side, read the
   same way and eroded the same way over `STRUCTURAL_CLASSES`; `removable_mask`
-  is a strip's cut, dilated over `REMOVABLE_CLASSES`; `fill_mask` is a strip
-  acceptance's side, read the same way over `FILL_CLASSES`.
+  is a strip's cut and its acceptance's re-check, dilated over
+  `REMOVABLE_CLASSES`.
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels, at a
   non-negative scale.
