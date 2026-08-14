@@ -22,9 +22,10 @@ py3.12 venv, fully declared in the package `pyproject.toml`s (`uv sync`).
   workspace member, not imported by our packages, outside the gate.
 - `packages/fmrg`: vendored third-party source — the official Flow Map Reward
   Guidance implementation (Apache-2.0, `packages/fmrg/NOTICE.md` records
-  upstream and commit), read and run on the GPU pod for the track-1 FLUX
-  flow-map direction. Not a workspace member, not imported by our packages,
-  outside the gate.
+  upstream and commit), driven through `roomgen_guide.adapters.fmrg_flux` as
+  the default guided sampler of `experiments/0002`. Not a workspace member,
+  not imported by our packages (deferred `sys.path` import at the one call
+  that loads it), outside the gate.
 
 ## `roomgen-geometry`
 
@@ -111,7 +112,9 @@ The guided sampler and the experiment harness shared with `experiments/`.
   cast down only at the backend's two call boundaries) over the four-call
   `FlowMapBackend` behind it; `fmrg_flux.py` is that backend for FMRG's FLUX
   sampler, the one module that reaches the vendored tree — by deferred import
-  only, and never at test time. `mfm_composite.py`'s `MfmWeightedReward` sums
+  only, and never at test time — whose loader stages the ~33GB load to fit a
+  32GB card, encodes every prompt a run will ever condition on up front
+  (`additional_prompts` / `select_cached_prompt`), and frees the text encoders. `mfm_composite.py`'s `MfmWeightedReward` sums
   several of those `score(images, prompts)` rewards per image, so the depth
   energy rides beside one of MFM's own preference models (HPSv2) as a single
   reward, with `gradient_scale` for sizing the weight between two terms whose

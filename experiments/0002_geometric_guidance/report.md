@@ -582,3 +582,91 @@ visible directly in the shell-coverage column and in the galleries. Whether
 the product wants is the owner's call. The run, its `results.json`, the
 depth map of every render and reference photo, and the 2x2 gallery are under
 `$ROOMGEN_WDIR/0002_prompt_framing/`.
+
+## Study: FMRG flow-map head-to-head (`conf/fmrg.yaml`, 2026-08-14)
+
+### Hypothesis
+
+The geometric reward is sampler-agnostic by construction (`docs/process-adapters.md`);
+the overnight pod runs showed it steering FMRG's FLUX flow map on single scenes.
+The question this study answers: on the benchmark's own eight scenes and four
+seeds, does FMRG + `GeometricGuidance` hold the room the way the SD1.5 stack
+does, at a cost the local 32GB card can pay — i.e. can the FLUX flow map be the
+repo's *default* guided method rather than a pod-only track?
+
+### Setup
+
+The benchmark's eight scenes, three prompts and seeds [0-3], verbatim (a test
+asserts the identity). FMRG's FLUX.1-dev + 512-res FlowMap LoRA behind
+`FluxFlowMapBackend`, walked by `FlowMapProcess` at 512², bf16 transformer,
+float32 state, depth and segmentation float32. Sampler: 208-point sigma grid,
+`GuidanceWindow(early_stop=51, unguided_steps=1)` — 50 guided steps, one
+uncontrolled jump to data — `start_sigma 0.9` (the walk actually starts at
+sigma 0.944 after FLUX's 512² shift), `endpoint_reuse` stepping, the cheap
+pullback (`differentiate_through_velocity: false`: the gradient traverses the
+VAE decoder and the flow-map arithmetic, never the transformer). Guidance:
+`AnnealedSignTilt` at FMRG's `eta 5.0`, `n_opt 1`, annealed over the truncated
+grid. Control is `eta 0` on the identical trajectory. Reference, resegmenting
+mask, common-mask eval and CLIP-B/32 adherence are the benchmark's, unchanged.
+
+Two fidelity caveats, recorded rather than resolved:
+
+- **This operating point is the overnight-validated variant, not upstream's
+  exact `fmrgj_nfe100`.** Upstream's sweep entry is `flow_map2`, window 26 with
+  2 unguided steps, 3 warmup particles over 11 warmup steps, Jacobian pullback;
+  ours keeps its grid and eta but widens the window (51/1), reuses the endpoint
+  velocity, runs no warmup restarts, and takes the cheap pullback.
+- **The adapter conditions every velocity call on `(t, 0)`** where upstream's
+  sampler uses `(t, t_next)`, so the control arm is not a bit-comparable FMRG
+  baseline — it is the *same adapter unguided*, which is the comparison the
+  guidance claim actually needs.
+
+### Results
+
+32 (scene, seed) pairs, both arms scored on the common mask (65% of the
+reference shell in the mean). Mean masked depth error **0.3658 control →
+0.0895 guided (−78.1%)** at adherence ratio **100.5%** of control; FLUX VAE
+reconstruction floor 0.0003. Guided 13.1s, control 8.2s per sample; peak
+allocated VRAM **28.72 GiB guided / 25.24 GiB control** on the RTX 5090
+(`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`), one ~3-minute sampler
+load serving all eight scenes through the prompt-embedding cache.
+
+Per scene (means over the four seeds; E = masked depth error):
+
+| scene                   | E ctl  | E gd   | reduction | adher. | coverage |
+|-------------------------|--------|--------|-----------|--------|----------|
+| hotel_suite_living_room | 0.4593 | 0.0802 | −82.5%    | 100.1% | 50%      |
+| scandi_living_room      | 0.2984 | 0.0382 | −87.2%    | 101.9% | 58%      |
+| lakehouse_living_room   | 0.4032 | 0.0740 | −81.6%    | 99.6%  | 67%      |
+| bedroom_warm_ensuite    | 0.0766 | 0.0223 | −70.9%    | 98.4%  | 75%      |
+| bedroom_twin_blue       | 0.1019 | 0.0243 | −76.2%    | 101.5% | 83%      |
+| ny_loft_bedroom         | 0.1594 | 0.0246 | −84.6%    | 102.9% | 55%      |
+| hostel_kitchen          | 0.3718 | 0.0454 | −87.8%    | 99.5%  | 67%      |
+| blue_white_kitchen      | 1.0555 | 0.4071 | −61.4%    | 99.8%  | 67%      |
+
+Weakest pairs, for the reader who wants the tails: blue_white_kitchen seed 1
+(0.97 guided vs 1.30 control, −25.0%, the one pair guidance did not mostly
+close), and ny_loft_bedroom seed 3, whose common mask fell to 4% of the shell —
+a comparison over a sliver, flagged by the coverage column doing its job.
+
+**SD1.5 context, same scenes and metric, not a controlled A/B** (different
+sampler, different noise space at a given seed, SD numbers from today's
+prompt-framing study's style arms — noise 0.9, strength 10, clip 0.02 — read
+from `outputs/0002_prompt_framing/results.json`, not re-run): over the ten
+(scene, seed) pairs the two studies share, SD1.5 removes 62.0% of a 0.3083
+mean control error at adherence ratio 100.5% in 3.4s guided / 0.5s control per
+sample (~8 GiB); FMRG on those same ten pairs removes 81.3% of a 0.2308 mean
+control error at adherence ratio 101.5%, in 13.1s / 8.2s at ~29 GiB. The
+sampler is ~4x slower and ~4x hungrier, and its guided walk lands materially
+lower depth error at par adherence.
+
+### Decision
+
+FMRG is usable as the local default: it fits the card with headroom, runs the
+full benchmark in under half an hour, and the guided-vs-control claim holds on
+every scene. `run.py` now defaults to `--config fmrg`; the SD1.5 claim config
+remains `conf/benchmark.yaml`, unchanged, and every recorded SD number above it
+stands. What runs next is the owner's call; the natural candidates are the
+faithful upstream operating point (flow_map2 window 26/2 + warmup particles +
+Jacobian pullback, all already expressible in `conf/`) and an eta sweep at
+matched NFE.
