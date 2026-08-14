@@ -22,9 +22,9 @@ backends:
 
 strip:
   prompt: empty room, bare floor, bare wall, no furniture, plain interior
-  negative_prompt: furniture, chair, table, desk, sofa, bed, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, cabinet, box, vacuum cleaner, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
   dilation_radius: 8
-  passes: 3
+  passes: 4
   steps: 40
   fill_strength: 0.85
   guidance_scale: 12.0

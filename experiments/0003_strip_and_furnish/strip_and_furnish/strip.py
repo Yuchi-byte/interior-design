@@ -14,10 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from roomgen_geometry.masking import contents_mask, scorable_mask
+from roomgen_geometry.masking import (
+    contents_mask,
+    erode_boundaries,
+    scorable_mask,
+    structural_mask,
+)
 from roomgen_geometry.reference import GeometricReference
 from roomgen_guide.eval import depth_error, shell_coverage
 from roomgen_guide.sampling.guided import decode_latent
@@ -30,6 +35,7 @@ from strip_and_furnish.images import (
     write_disparity_map,
     write_image,
     write_mask_overlay,
+    write_segmentation_map,
 )
 
 
@@ -62,9 +68,17 @@ class StripNumbers:
             the strip and the photograph *outside* the mask. Zero is the claim.
         generated_unmasked_max_absolute_difference: the same distance measured on
             the first pass's raw output, which is what the compositing removed.
-        residual_contents_fraction: the share of the cut region the segmenter
-            *still* calls furniture once the last pass is done — the number that
-            says whether the inpainter put a table where the sofa was.
+        hole_not_shell_fraction: the share of the cut region the final
+            segmentation does NOT read as shell — wall, floor, ceiling, door or
+            windowpane and the rest of `STRUCTURAL_CLASSES`. The requirement is
+            that the fill continues the shell around the hole and nothing else,
+            so this is the number that says whether it holds: a radiator, a
+            vacuum-shaped blob and a table all land here alike, whether or not
+            the contents list names them.
+        residual_contents_fraction: the subset of that share the segmenter
+            affirmatively calls furniture (`CONTENTS_CLASSES`, undilated) — kept
+            beside the categorical number as the "recognisable furniture" slice
+            of it.
     """
 
     contents_fraction: float
@@ -77,6 +91,7 @@ class StripNumbers:
     reconstruction_depth_error: float
     unmasked_max_absolute_difference: float
     generated_unmasked_max_absolute_difference: float
+    hole_not_shell_fraction: float
     residual_contents_fraction: float
     seconds: float
 
@@ -112,6 +127,7 @@ class StripResult:
             "generated_unmasked_max_absolute_difference": (
                 self.numbers.generated_unmasked_max_absolute_difference
             ),
+            "hole_not_shell_fraction": self.numbers.hole_not_shell_fraction,
             "residual_contents_fraction": self.numbers.residual_contents_fraction,
             "seconds": self.numbers.seconds,
             "images": self.images,
@@ -143,7 +159,7 @@ def strip_scene(
     generator = torch.Generator(device=backends.device).manual_seed(seed)
     _synchronize(backends.device)
     started = time.perf_counter()
-    empty_room, first_generated, residual = _repaint(
+    empty_room, first_generated, final_segmentation = _repaint(
         photo,
         contents,
         config=config,
@@ -153,6 +169,11 @@ def strip_scene(
     )
     _synchronize(backends.device)
     seconds = time.perf_counter() - started
+    # The requirement's own number, undilated: of the pixels the strip cut, how
+    # many does the final segmentation read as anything but shell — plus the
+    # slice of that share the segmenter can still name as furniture.
+    hole_not_shell = contents & ~structural_mask(final_segmentation, erosion_radius=0)
+    residual_contents = contents & contents_mask(final_segmentation, dilation_radius=0)
 
     # The shell the mask never reached: those pixels are the photograph's own,
     # so any depth error over them is the network reading a room that has lost
@@ -194,7 +215,8 @@ def strip_scene(
         generated_unmasked_max_absolute_difference=_outside_mask_distance(
             first_generated, photo, contents
         ),
-        residual_contents_fraction=residual,
+        hole_not_shell_fraction=_share_of(hole_not_shell, contents),
+        residual_contents_fraction=_share_of(residual_contents, contents),
         seconds=seconds,
     )
     return StripResult(
@@ -209,6 +231,7 @@ def strip_scene(
             photo=photo,
             empty_room=empty_room,
             contents=contents,
+            empty_room_segmentation=final_segmentation,
             reference=reference,
             backends=backends,
             gallery=gallery,
@@ -224,15 +247,30 @@ def _repaint(
     backends: Backends,
     inpainter: InpaintPipeline,
     generator: torch.Generator,
-) -> tuple[Float[Tensor, "1 3 height width"], Float[Tensor, "1 3 height width"], float]:
-    """Repaint the cut region until the segmenter stops calling what is in it furniture.
+) -> tuple[
+    Float[Tensor, "1 3 height width"],
+    Float[Tensor, "1 3 height width"],
+    Int[Tensor, "1 height width"],
+]:
+    """Repaint the cut region until everything in it reads as shell, and nothing else.
 
-    Returns the stripped room, the first pass's raw render, and the share of the
-    cut region still read as contents at the end. Every pass repaints a subset of
-    the *first* mask, so however many run, a pixel the first segmentation left
-    alone is still the photograph's.
+    The acceptance test is inverted on purpose: a pass does not ask "is there
+    still furniture here" but "is every pixel here shell yet" — wall, floor,
+    ceiling, door or windowpane (`STRUCTURAL_CLASSES`). A fill only had to dodge
+    the named contents list to survive the old test; a radiator (listed or not)
+    and a vacuum-shaped object ADE20K has no name for are non-shell either way,
+    so they are repainted categorically. Accepted shell must also clear the
+    dilation radius of any non-shell pixel, for the same reason the contents
+    mask was dilated: the fringe of an object is the evidence it grows back from.
+
+    Returns the stripped room, the first pass's raw render, and the final
+    image's segmentation, from which the caller reads what is left in the hole.
+    Every pass repaints a subset of the *first* mask, so however many run, a
+    pixel the first segmentation left alone is still the photograph's.
     """
     image, generated, remaining = photo, photo, contents
+    with torch.no_grad():
+        segmentation = backends.segmenter(image)
     for index in range(config.strip.passes):
         inpainting = inpaint_masked_region(
             image,
@@ -249,12 +287,18 @@ def _repaint(
         if index == 0:
             generated = inpainting.generated
         with torch.no_grad():
-            remaining = contents & contents_mask(
-                backends.segmenter(image), dilation_radius=config.strip.dilation_radius
-            )
+            segmentation = backends.segmenter(image)
+        # `erode_boundaries` keeps only shell pixels farther than the radius
+        # from any non-shell one, so its complement is exactly the non-shell
+        # region grown by the radius — the inverted, dilated acceptance test.
+        confidently_shell = erode_boundaries(
+            structural_mask(segmentation, erosion_radius=0),
+            radius=config.strip.dilation_radius,
+        )
+        remaining = contents & ~confidently_shell
         if not bool(remaining.any()):
             break
-    return image, generated, _share_of(remaining, contents)
+    return image, generated, segmentation
 
 
 def _share_of(
@@ -295,21 +339,34 @@ def _write_gallery(
     photo: Float[Tensor, "1 3 height width"],
     empty_room: Float[Tensor, "1 3 height width"],
     contents: Bool[Tensor, "1 height width"],
+    empty_room_segmentation: Int[Tensor, "1 height width"],
     reference: GeometricReference,
     backends: Backends,
     gallery: Path,
 ) -> dict[str, str]:
-    """Gallery A: the photo, what was cut out of it, the empty room, and both depth maps."""
+    """Gallery A: photo and empty room, what was cut, both segmentations, both depth maps."""
     names = {
         "photo": f"{scene}_photo.png",
         "contents_overlay": f"{scene}_contents_overlay.png",
         "empty_room": f"{scene}_empty_room.png",
+        "photo_segmentation": f"{scene}_photo_segmentation.png",
+        "empty_room_segmentation": f"{scene}_empty_room_segmentation.png",
         "photo_depth": f"{scene}_photo_depth.png",
         "empty_room_depth": f"{scene}_empty_room_depth.png",
     }
     write_image(photo, gallery / names["photo"])
     write_mask_overlay(photo, contents, gallery / names["contents_overlay"])
     write_image(empty_room, gallery / names["empty_room"])
+    # Class-coloured maps under one key (`SEGMENTATION_COLOR_KEY`, recorded in
+    # results.json): the photo's segmentation beside the final empty room's, so
+    # "did the fill become shell" is visible and not only a fraction.
+    with torch.no_grad():
+        write_segmentation_map(
+            backends.segmenter(photo), gallery / names["photo_segmentation"]
+        )
+    write_segmentation_map(
+        empty_room_segmentation, gallery / names["empty_room_segmentation"]
+    )
     # Both maps are painted against the photograph's own near/far range, and the
     # stripped room's is fitted onto it over the shell first: unaligned, two
     # inverse-depth predictions share no frame and the pair says nothing.

@@ -29,7 +29,13 @@ from roomgen_guide.process.endpoint import StepContext
 from roomgen_guide.sampling.guided import LatentDiffusionProcess, sample_guided
 from strip_and_furnish.backends import Backends
 from strip_and_furnish.config import SceneConfig, StudyConfig
-from strip_and_furnish.images import DisparityScale, write_disparity_map, write_image
+from strip_and_furnish.images import (
+    REWARD_TINT,
+    DisparityScale,
+    write_disparity_map,
+    write_image,
+    write_mask_overlay,
+)
 from strip_and_furnish.strip import StripResult, vae_roundtrip
 
 type Arm = Literal["text_only", "text_and_depth", "control"]
@@ -175,6 +181,38 @@ _COMPARISONS: Final[tuple[tuple[Arm, Arm], ...]] = (
     ("text_and_depth", "control"),
     ("text_and_depth", "text_only"),
 )
+
+
+def write_scene_gallery(
+    strip: StripResult, *, reference: GeometricReference, gallery: Path
+) -> dict[str, str]:
+    """Gallery B's per-scene frames: the empty room, and where the guidance reward acts.
+
+    The overlays paint `reference.mask` — the retained photo reference's shell,
+    the exact pixel set the guided arm's depth loss is computed over — on the
+    photograph it was read from and on the empty room stage 2 samples from.
+    """
+    names = {
+        "empty_room": f"{strip.scene}_empty_room.png",
+        "guidance_mask_on_photo": f"{strip.scene}_guidance_mask_on_photo.png",
+        "guidance_mask_on_empty_room": (
+            f"{strip.scene}_guidance_mask_on_empty_room.png"
+        ),
+    }
+    write_image(strip.empty_room, gallery / names["empty_room"])
+    write_mask_overlay(
+        strip.photo,
+        reference.mask,
+        gallery / names["guidance_mask_on_photo"],
+        tint=REWARD_TINT,
+    )
+    write_mask_overlay(
+        strip.empty_room,
+        reference.mask,
+        gallery / names["guidance_mask_on_empty_room"],
+        tint=REWARD_TINT,
+    )
+    return names
 
 
 def guidance_reference(strip: StripResult) -> GeometricReference:
@@ -387,7 +425,10 @@ def furnish_scene(
                     seed=seed,
                     renders=renders,
                     scale=scale,
+                    strip=strip,
                     reference=reference,
+                    common=common,
+                    empty_common=empty_common,
                     backends=backends,
                     gallery=gallery,
                 ),
@@ -488,15 +529,42 @@ def _write_gallery(
     seed: int,
     renders: dict[Arm, ArmRender],
     scale: DisparityScale,
+    strip: StripResult,
     reference: GeometricReference,
+    common: Bool[Tensor, "1 height width"],
+    empty_common: Bool[Tensor, "1 height width"],
     backends: Backends,
     gallery: Path,
 ) -> dict[str, str]:
-    """Gallery B: each arm's render at this seed, and the depth map behind it."""
-    names: dict[str, str] = {}
+    """Gallery B: each arm's render, its depth map, and the masks the seed was scored on.
+
+    The common-mask overlays paint the one pixel set all three arms' primary
+    (photo-reference) and diagnostic (empty-room) depth errors were read over,
+    on the image each reference was built from; each arm also gets the slice of
+    the reference shell its own segmentation left scorable, on its own render.
+    """
+    names: dict[str, str] = {
+        "common_mask_on_photo": f"{scene}_seed{seed}_common_mask_on_photo.png",
+        "empty_room_common_mask_on_empty_room": (
+            f"{scene}_seed{seed}_common_mask_on_empty_room.png"
+        ),
+    }
+    write_mask_overlay(
+        strip.photo,
+        common,
+        gallery / names["common_mask_on_photo"],
+        tint=REWARD_TINT,
+    )
+    write_mask_overlay(
+        strip.empty_room,
+        empty_common,
+        gallery / names["empty_room_common_mask_on_empty_room"],
+        tint=REWARD_TINT,
+    )
     for arm, render in renders.items():
         names[arm] = f"{scene}_seed{seed}_{arm}.png"
         names[f"{arm}_depth"] = f"{scene}_seed{seed}_{arm}_depth.png"
+        names[f"{arm}_scorable"] = f"{scene}_seed{seed}_{arm}_scorable_overlay.png"
         write_image(render.image, gallery / names[arm])
         with torch.no_grad():
             write_disparity_map(
@@ -505,6 +573,12 @@ def _write_gallery(
                 mask=reference.mask,
                 path=gallery / names[f"{arm}_depth"],
             )
+        write_mask_overlay(
+            render.image,
+            reference.mask & render.scorable,
+            gallery / names[f"{arm}_scorable"],
+            tint=REWARD_TINT,
+        )
     return names
 
 

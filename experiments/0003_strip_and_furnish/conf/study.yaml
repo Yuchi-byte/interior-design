@@ -34,21 +34,31 @@ backends:
   text_energy_checkpoint: openai/clip-vit-base-patch32
 
 strip:
-  # A bare room, never a renovation: stage 1 removes and does not restyle.
+  # A bare room, never a renovation: stage 1 removes and does not restyle. The
+  # fill must continue the shell around the hole — wall, floor, ceiling,
+  # window, door — and contain nothing else.
   prompt: empty room, bare floor, bare wall, no furniture, plain interior
   # A hole this size is filled from the furnished room around it, so asking for
-  # a bare room is not enough on its own: the furniture has to be refused by
-  # name, at a classifier-free scale high enough for the refusal to bite.
-  negative_prompt: furniture, chair, table, desk, sofa, bed, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  # a bare room is not enough on its own: what must not appear has to be
+  # refused by name, at a classifier-free scale high enough for the refusal to
+  # bite — and not only furniture. The observed hallucinations (a radiator,
+  # vacuum-cleaner-like objects) are refused explicitly, along with the
+  # appliance/fixture families they came from.
+  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, cabinet, box, vacuum cleaner, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
   # 8px at 512. Contact shadows, segment fringes and the soft edge of a sofa all
   # sit just outside the segment, and an inpainter handed the bare segment
-  # paints the furniture back from exactly that evidence.
+  # paints the furniture back from exactly that evidence. The same radius grows
+  # each later pass's not-yet-shell region before it is repainted.
   dilation_radius: 8
-  # Three passes at 0.85: one pass leaves a television where the sofa was (49%
-  # of the cut region still segments as furniture), and dropping the strength to
-  # 0.6 empties the room but blurs it enough that the depth network re-reads the
-  # *untouched* shell 3x further from the photograph. This is the measured knee.
-  passes: 3
+  # Four passes at 0.85: one pass leaves a television where the sofa was (49%
+  # of the cut region still segmented as furniture on the pilot), and dropping
+  # the strength to 0.6 empties the room but blurs it enough that the depth
+  # network re-reads the *untouched* shell 3x further from the photograph. Four
+  # rather than the previous three because the acceptance is now inverted —
+  # anything in the hole not yet reading as shell is repainted, not just
+  # recognised furniture — so the re-check bites more often and gets one more
+  # corrective pass.
+  passes: 4
   steps: 40
   fill_strength: 0.85
   guidance_scale: 12.0

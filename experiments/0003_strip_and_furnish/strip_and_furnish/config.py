@@ -97,15 +97,22 @@ class StripConfig(Config):
             filled from the furnished room around it, so an inpainter asked only
             for a bare room paints the furniture straight back in.
         dilation_radius: pixels the contents mask is grown by before it is
-            inpainted. Contact shadows and segment fringes sit just outside the
-            segment, so a mask that stops at the boundary leaves the inpainter
-            the evidence it needs to paint the furniture straight back.
+            inpainted, and the margin a later pass's non-shell region is grown
+            by before it is repainted. Contact shadows and segment fringes sit
+            just outside the segment, so a mask that stops at the boundary
+            leaves the inpainter the evidence it needs to paint the object
+            straight back.
         passes: how many times the segmenter is asked again. An inpainter fills
-            a hole from the room around it and puts furniture back into it, so
-            one pass is a strip that leaves a table where a sofa was; each
-            further pass repaints only what the segmenter still calls contents
-            *inside the first mask*, which is what keeps the untouched part of
-            the photograph untouched however many passes run.
+            a hole from the room around it and puts objects back into it, so one
+            pass is a strip that leaves a table where a sofa was; each further
+            pass repaints whatever *inside the first mask* the segmenter does
+            not yet read as shell — wall, floor, ceiling, door, windowpane. The
+            acceptance is inverted on purpose: a fill only had to dodge the
+            named contents list to survive a furniture check, and a radiator or
+            a vacuum-shaped object slipped through; not-yet-shell is
+            categorical. Repainting stays inside the first mask, which is what
+            keeps the untouched part of the photograph untouched however many
+            passes run.
         steps: denoising steps of the inpainting pipeline, per pass.
         fill_strength: how much of each pass's trajectory repaints the hole,
             which is first flooded with the colours of the surfaces around it.

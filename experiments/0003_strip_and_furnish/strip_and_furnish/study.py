@@ -35,8 +35,9 @@ from strip_and_furnish.furnish import (
     furnish_scene,
     guidance_reference,
     measure_gradient_sizing,
+    write_scene_gallery,
 )
-from strip_and_furnish.images import write_image
+from strip_and_furnish.images import SEGMENTATION_COLOR_KEY
 from strip_and_furnish.photos import ensure_photos, load_photo
 from strip_and_furnish.strip import StripResult, strip_scene
 
@@ -55,6 +56,9 @@ class Summary:
             the furnish rows are fractions of each reference's *own* shell, so
             without these two denominators the retained reference's smaller
             shell — furniture occluded part of it — would be invisible.
+        scene_images: per scene, gallery B's seed-independent frames — the
+            empty room going in, and the guidance reward mask painted on the
+            photo and on the empty room.
     """
 
     config: StudyConfig
@@ -63,6 +67,7 @@ class Summary:
     depth_weight: float
     furnishes: tuple[FurnishResult, ...]
     shell_fractions: dict[str, dict[str, float]]
+    scene_images: dict[str, dict[str, str]]
     output_dir: Path
     peak_vram_bytes: int | None
     started_at: str
@@ -201,10 +206,15 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
         f"stage 1; the stripped room's is scored as a diagnostic)"
     )
     furnishes: list[FurnishResult] = []
+    scene_images: dict[str, dict[str, str]] = {}
     for scene, strip in zip(config.scenes, strips, strict=True):
         # Gallery B stands alone: the empty room going in is beside the
-        # furnished rooms coming out, without a strip arm in sight.
-        write_image(strip.empty_room, gallery_b / f"{scene.photo}_empty_room.png")
+        # furnished rooms coming out, without a strip arm in sight — and the
+        # guidance reward mask beside both, so where the depth loss is computed
+        # is visible rather than implied.
+        scene_images[scene.photo] = write_scene_gallery(
+            strip, reference=references[scene.photo], gallery=gallery_b
+        )
         results = furnish_scene(
             scene,
             strip,
@@ -228,6 +238,7 @@ def run_study(config: StudyConfig, settings: RoomgenSettings) -> Summary:
         depth_weight=depth_weight,
         furnishes=tuple(furnishes),
         shell_fractions=shell_fractions,
+        scene_images=scene_images,
         output_dir=output_dir,
         peak_vram_bytes=(
             torch.cuda.max_memory_allocated(backends.device) if on_cuda else None
@@ -285,8 +296,10 @@ def _format_strip(strip: StripResult) -> str:
     numbers = strip.numbers
     return (
         f"{strip.scene}: cut {numbers.contents_fraction:.0%} of the frame, shell "
-        f"{numbers.shell_fraction:.0%}, {numbers.residual_contents_fraction:.0%} of it "
-        f"still reads as furniture, depth error vs photo {numbers.depth_error:.6f} "
+        f"{numbers.shell_fraction:.0%}, hole not shell "
+        f"{numbers.hole_not_shell_fraction:.1%} (recognisable furniture "
+        f"{numbers.residual_contents_fraction:.1%}), "
+        f"depth error vs photo {numbers.depth_error:.6f} "
         f"({numbers.unrepainted_shell_depth_error:.6f} on the "
         f"{numbers.unrepainted_shell_coverage:.0%} of shell never repainted) "
         f"(floor {numbers.reconstruction_depth_error:.6f}), outside the mask "
@@ -389,6 +402,14 @@ def _write_results(summary: Summary, settings: RoomgenSettings) -> None:
                 # protocol's reference, scored as a diagnostic.
                 "guidance_reference": "photo",
                 "reference_shell_fractions": summary.shell_fractions,
+                # The colour every segmentation map in gallery A is painted
+                # under, and the seed-independent gallery B frames per scene:
+                # the empty room and the guidance reward-mask overlays.
+                "segmentation_color_key": {
+                    label: list(color)
+                    for label, color in SEGMENTATION_COLOR_KEY.items()
+                },
+                "furnish_scene_images": summary.scene_images,
                 "depth_weight": summary.depth_weight,
                 "weight_sizing": {
                     scene: sizing.as_row() for scene, sizing in summary.sizings.items()
