@@ -33,6 +33,7 @@ from framework.config import (
     FmrgConfig,
     FmrgContextConfig,
     FmrgEtaConfig,
+    FmrgReduxConfig,
     FramingConfig,
     load_study_config,
 )
@@ -62,6 +63,14 @@ from framework.fmrg_study import FmrgSummary, run_fmrg_study
 from framework.framing import ARMS, FramingSummary, framing_comparisons, run_framing
 from framework.framing_gallery import write_framing_gallery
 from framework.gallery import write_gallery
+from framework.redux_study import (
+    ReduxSummary,
+    redux_arms,
+    run_redux_study,
+)
+from framework.redux_study import (
+    arm_means as redux_arm_means,
+)
 
 from roomgen_guide.settings import RoomgenSettings
 
@@ -94,7 +103,10 @@ def main() -> int:
         f"etas {list(config.etas)}"
         if isinstance(config, FmrgEtaConfig)
         else f"eta {config.guidance.eta}"
-        if isinstance(config, FmrgConfig | FmrgContextConfig | FmrgAlignmentConfig)
+        if isinstance(
+            config,
+            FmrgConfig | FmrgContextConfig | FmrgReduxConfig | FmrgAlignmentConfig,
+        )
         else f"strength {config.guidance.strength}"
     )
     print(
@@ -112,6 +124,11 @@ def main() -> int:
         # No HTML gallery of its own: the study's record is its results.json
         # and the renders, depth maps and residual maps beside it.
         _report_context(run_context_study(config, settings))
+        gallery = None
+    elif isinstance(config, FmrgReduxConfig):
+        # No HTML gallery of its own: the study's record is its results.json
+        # and the renders, depth maps and residual maps beside it.
+        _report_redux(run_redux_study(config, settings))
         gallery = None
     elif isinstance(config, FmrgEtaConfig):
         # No HTML gallery of its own: the study's record is its results.json
@@ -268,6 +285,54 @@ def _report_context(summary: ContextSummary) -> None:
     )
     if summary.peak_vram_bytes is not None:
         print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
+
+
+_REDUX_COLUMNS = (
+    f"{'arm':<9}{'scale':>7}{'depth':>10}{'vs A':>9}{'adher':>9}"
+    f"{'ratio A':>9}{'shell':>7}{'sec':>7}"
+)
+
+
+def _report_redux(summary: ReduxSummary) -> None:
+    """The image-context study's numbers per (scene, seed, arm) and in the mean. No claim is made."""
+    specs = redux_arms(summary.config)
+    print(
+        f"\n[metrics] {len(summary.results)} (scene, seed) tuples x "
+        f"{len(specs)} arms, one common mask each"
+    )
+    for result in summary.results:
+        print(f"{result.scene} seed {result.seed}:\n{_REDUX_COLUMNS}")
+        for cell in result.arms:
+            scale = "text" if cell.redux_scale is None else f"{cell.redux_scale:g}"
+            print(
+                f"{cell.arm:<9}{scale:>7}{cell.depth_error:>10.5f}"
+                f"{_signed(result.depth_delta_vs_baseline(cell.arm)):>9}"
+                f"{cell.adherence:>9.4f}"
+                f"{_share(result.adherence_ratio_vs_baseline(cell.arm)):>9}"
+                f"{cell.shell_coverage:>6.0%} {cell.seconds:>6.1f}"
+            )
+        print(f"{'common mask':<25}{'':>9}{'':>9}{'':>9}{result.common_coverage:>6.0%}")
+    means = redux_arm_means(summary.results, specs)
+    print("\n[means]   per arm, over every (scene, seed)")
+    for spec in specs:
+        row = means[spec.arm]
+        print(
+            f"{spec.arm:<9}{row['depth_error']:>10.5f}{row['adherence']:>9.4f}"
+            f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
+        )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.caching_peak_vram_bytes is not None:
+        print(
+            f"[vram]    redux caching peak "
+            f"{summary.caching_peak_vram_bytes / 1024**3:.2f} GiB"
+        )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    walk peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
     print(f"[outputs] {summary.output_dir}")
 
 

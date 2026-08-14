@@ -28,6 +28,9 @@ from roomgen_geometry.depth.depth_anything_v3 import (
 from roomgen_geometry.segmentation.eomt import (
     DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
 )
+from roomgen_guide.adapters.fmrg_flux import (
+    DEFAULT_REDUX_CHECKPOINT as REDUX_CHECKPOINT,
+)
 from roomgen_guide.config import Config
 from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.experiment import ExperimentConfig
@@ -413,6 +416,87 @@ class FmrgContextConfig(ExperimentConfig):
         return self
 
 
+class FmrgReduxBackendConfig(FmrgBackendConfig):
+    """The FMRG stack plus the Redux image-context encoders the study caches with.
+
+    Args:
+        redux_checkpoint: Hub id of FLUX.1-Redux-dev — the SigLIP image encoder
+            and the adapter projecting its patch grid into T5 embedding space.
+            Loaded once per run to encode the reference photos, freed before the
+            transformer's walks begin.
+    """
+
+    redux_checkpoint: Annotated[str, Field(min_length=1)] = REDUX_CHECKPOINT
+
+
+class FmrgReduxConfig(ExperimentConfig):
+    """The image-as-context study: the reference photo appended to the T5 context.
+
+    Per scene at one seed, six arms off one transformer load: the style prompt
+    with no image tokens, unguided (A, the baseline) and guided (C, the anchor
+    matching prior studies), then the renovation instruction with the photo's
+    Redux tokens appended at each `redux_scales` value, unguided and guided
+    (R1..R4 for two scales). All arms run at the sampler's one `start_sigma`;
+    the axis under test is the image context and its strength, not the init.
+
+    Args:
+        scenes: each photo with both framings; adherence is scored against the
+            scene's one neutral `eval_prompt` for every arm, never an arm's own
+            prompt — and never the image, which several arms were conditioned on.
+        redux_scales: multipliers on the image tokens alone (the text embeds are
+            never scaled), one unguided and one guided arm per value. 1.0 is
+            diffusers' composition and the known drowning regime; ~0.3 keeps
+            the text audible.
+    """
+
+    study: Literal["fmrg_redux"]
+    scenes: Annotated[tuple[FramingSceneConfig, ...], Field(min_length=1)]
+    redux_scales: Annotated[tuple[float, ...], Field(min_length=1)] = (0.3, 1.0)
+    resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    backends: FmrgReduxBackendConfig
+    sampler: FmrgSamplerConfig = FmrgSamplerConfig()
+    guidance: FmrgGuidanceConfig = FmrgGuidanceConfig()
+    adherence: AdherenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
+        if resolution % FLUX_LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
+                f"FLUX's packed latent grid, got {resolution}"
+            )
+        return resolution
+
+    @field_validator("redux_scales")
+    @classmethod
+    def _scales_weight_the_image_tokens(
+        cls, scales: tuple[float, ...]
+    ) -> tuple[float, ...]:
+        for scale in scales:
+            if scale <= 0.0:
+                raise ValueError(
+                    f"redux_scales must be positive, got {scale}: scale 0 is a "
+                    f"text-only arm the context study already measures"
+                )
+        return scales
+
+    @model_validator(mode="after")
+    def _adherence_is_never_the_guidance_clip(self) -> FmrgReduxConfig:
+        # The eval CLIP must stay independent of the CLIP any guidance energy in
+        # this repo descends, or a guided arm is graded on the model it optimised.
+        if (
+            self.adherence.kind == "clip"
+            and self.adherence.checkpoint == GUIDANCE_CLIP_CHECKPOINT
+        ):
+            raise ValueError(
+                f"adherence.checkpoint is {self.adherence.checkpoint!r}, the "
+                f"guidance CLIP: score adherence with an independent checkpoint "
+                f"(e.g. openai/clip-vit-large-patch14)."
+            )
+        return self
+
+
 class EtaSceneConfig(Config):
     """One photo, the style prompt every arm samples with, and the judging text.
 
@@ -702,6 +786,7 @@ def load_study_config(
     BenchmarkConfig
     | FmrgConfig
     | FmrgContextConfig
+    | FmrgReduxConfig
     | FmrgEtaConfig
     | FmrgAlignmentConfig
     | FramingConfig
@@ -724,6 +809,8 @@ def load_study_config(
             return FmrgConfig.from_file(path, overrides)
         case "fmrg_context":
             return FmrgContextConfig.from_file(path, overrides)
+        case "fmrg_redux":
+            return FmrgReduxConfig.from_file(path, overrides)
         case "fmrg_eta":
             return FmrgEtaConfig.from_file(path, overrides)
         case "fmrg_da3_alignment":
@@ -735,6 +822,6 @@ def load_study_config(
         case _:
             raise ValueError(
                 f"{path} declares unknown study {study!r}; "
-                "known studies: benchmark, fmrg, fmrg_context, fmrg_eta, "
-                "fmrg_da3_alignment, framing, da3_alignment"
+                "known studies: benchmark, fmrg, fmrg_context, fmrg_redux, "
+                "fmrg_eta, fmrg_da3_alignment, framing, da3_alignment"
             )

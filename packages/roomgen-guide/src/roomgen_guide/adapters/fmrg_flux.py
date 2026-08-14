@@ -10,12 +10,13 @@ takes the walk's generator instead of the global RNG.
 """
 
 import contextlib
+import gc
 import importlib
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import torch
 from jaxtyping import Float
@@ -24,6 +25,11 @@ from torch import Tensor
 # FLUX.1-dev's own embedded guidance scale, as both FMRG and the diffusers
 # pipeline default it. Unrelated to the reward's `strength`.
 DEFAULT_TEXT_GUIDANCE_SCALE = 3.5
+
+# FLUX.1-Redux-dev: the SigLIP image encoder plus the Redux adapter that
+# projects its patch grid into T5 embedding space, gated behind the same HF
+# licence as FLUX.1-dev itself.
+DEFAULT_REDUX_CHECKPOINT = "black-forest-labs/FLUX.1-Redux-dev"
 
 
 class SampleOutput(Protocol):
@@ -228,6 +234,122 @@ def select_cached_prompt(sampler: TwoTimeFlowMapSampler, prompt: str) -> None:
     device = sampler.cached_prompt_embeds.device
     sampler.cached_prompt_embeds = embeds.to(device)
     sampler.cached_pooled_prompt_embeds = pooled.to(device)
+
+
+def encode_redux_image_tokens(
+    image: Float[Tensor, "1 3 height width"],
+    *,
+    device: torch.device,
+    dtype: torch.dtype = torch.bfloat16,
+    cache_dir: Path | None = None,
+    checkpoint: str = DEFAULT_REDUX_CHECKPOINT,
+) -> Float[Tensor, "1 tokens embedding"]:
+    """The photo as FLUX context tokens, via FLUX.1-Redux-dev's SigLIP + adapter.
+
+    The tokens live in the same 4096-wide embedding space as the T5 prompt
+    embeds and are meant to be *appended* to them — image-as-context, exactly
+    analogous to a prompt — which is what diffusers' own
+    `FluxPriorReduxPipeline` does (`torch.cat([prompt_embeds, image_embeds],
+    dim=1)`). The encoders are loaded for this call and freed before it
+    returns: the tokens are a constant of the reference photo, computed once,
+    and nothing else here ever needs SigLIP resident.
+
+    Off the gradient path by construction — the reference image is a constant,
+    so the PIL-free but non-differentiable uint8 round trip into SigLIP's
+    processor is fine here and would not be inside a reward.
+
+    Args:
+        image: NCHW in ``[0, 1]``, the same convention every reward speaks.
+        cache_dir: the Hub snapshot cache (`RoomgenSettings.hub_cache`); the
+            checkpoint is gated like FLUX.1-dev and resolves with the same token.
+
+    Returns:
+        The Redux tokens on the CPU in `dtype`, ready for
+        :func:`register_image_context_prompt`.
+    """
+    from diffusers.pipelines.flux.pipeline_flux_prior_redux import (  # noqa: PLC0415
+        FluxPriorReduxPipeline,
+    )
+
+    pipeline = FluxPriorReduxPipeline.from_pretrained(
+        checkpoint,
+        torch_dtype=dtype,
+        cache_dir=None if cache_dir is None else str(cache_dir),
+    ).to(device)
+    # The pipeline's methods carry no annotations upstream; the shapes here are
+    # SigLIP's patch grid and the adapter's projection of it into T5 width.
+    encode_image = cast(
+        "Callable[[object, torch.device, int], Tensor]", pipeline.encode_image
+    )
+    with torch.no_grad():
+        # SigLIP's processor takes HWC uint8; the quantisation is invisible at
+        # its 384-square resample and keeps the preprocessing on its own path.
+        eight_bit = (
+            (image[0].detach().float().clamp(0.0, 1.0) * 255.0)
+            .round()
+            .to(torch.uint8)
+            .permute(1, 2, 0)
+            .cpu()
+            .numpy()
+        )
+        hidden = encode_image(eight_bit, device, 1)
+        tokens = pipeline.image_embedder(hidden).image_embeds
+    result: Float[Tensor, "1 tokens embedding"] = tokens.detach().to(
+        device="cpu", dtype=dtype
+    )
+    del pipeline, hidden, tokens
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return result
+
+
+def register_image_context_prompt(
+    sampler: TwoTimeFlowMapSampler,
+    *,
+    name: str,
+    prompt: str,
+    image_tokens: Float[Tensor, "1 tokens embedding"],
+    scale: float,
+) -> None:
+    """Cache `name` as `prompt`'s T5 embeds with `image_tokens` appended, scaled.
+
+    The combined context conditions velocity calls exactly as a text-only entry
+    does — `select_cached_prompt(sampler, name)` lifts it, and the vendored
+    sampler sizes its `text_ids` off `prompt_embeds.shape[1]` at call time, so
+    the longer context flows through with no vendored change.
+
+    Two deliberate conventions, both verified against diffusers'
+    `FluxPriorReduxPipeline`:
+
+    - the pooled embedding stays the *text* CLIP pooled — Redux produces no
+      pooled embedding, and diffusers keeps the text one (or zeros) untouched.
+    - `scale` multiplies the image tokens **alone**. Redux tokens at full
+      strength are known to drown a 512-token prompt under 729 tokens of image;
+      diffusers' own `prompt_embeds_scale` is no help, since it scales the
+      whole concatenated row (text included) and exists to weight several
+      images against each other, not the image against the text.
+
+    Args:
+        name: the cache key the walk will select; any string not already
+            naming a text prompt the run still needs.
+        prompt: the already-encoded text prompt the tokens ride behind.
+        scale: multiplier on the image tokens, non-negative; 1.0 is diffusers'
+            composition, ~0.3 is the community operating point for keeping the
+            text audible.
+    """
+    if scale < 0.0:
+        raise ValueError(f"scale must be non-negative, got {scale}")
+    if prompt not in sampler.prompt_cache:
+        raise KeyError(
+            f"prompt {prompt!r} was never encoded: the sampler's text encoders "
+            f"are freed at load, so the text half of an image-context entry "
+            f"must be named to `load_flow_map_sampler` (prompt= or "
+            f"additional_prompts=). Cached: {sorted(sampler.prompt_cache)}"
+        )
+    embeds, pooled = sampler.prompt_cache[prompt]
+    tokens = image_tokens.to(device=embeds.device, dtype=embeds.dtype) * scale
+    sampler.prompt_cache[name] = (torch.cat([embeds, tokens], dim=1), pooled)
 
 
 def load_flow_map_sampler(

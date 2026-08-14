@@ -23,6 +23,7 @@ from torch import Generator, Tensor
 from roomgen_guide.adapters.fmrg_flux import (
     DEFAULT_TEXT_GUIDANCE_SCALE,
     FluxFlowMapBackend,
+    register_image_context_prompt,
     select_cached_prompt,
 )
 
@@ -341,3 +342,87 @@ def test_a_prompt_that_was_never_encoded_is_refused_by_name(
         select_cached_prompt(sampler, "the one that was not")
 
     assert "the one that was encoded" in str(raised.value)
+
+
+def test_an_image_context_entry_appends_scaled_tokens_after_the_text(
+    sampler: _StubSampler,
+) -> None:
+    """Redux tokens ride behind the T5 embeds, and the scale touches them alone."""
+    text = torch.full((1, 2, 4), 3.0)
+    pooled = torch.full((1, 4), 5.0)
+    sampler.prompt_cache["renovate this room"] = (text, pooled)
+    tokens = torch.full((1, 3, 4), 2.0, dtype=torch.bfloat16)
+
+    register_image_context_prompt(
+        sampler,
+        name="renovate this room + photo",
+        prompt="renovate this room",
+        image_tokens=tokens,
+        scale=0.5,
+    )
+
+    combined, combined_pooled = sampler.prompt_cache["renovate this room + photo"]
+    assert combined.shape == (1, 5, 4)
+    assert combined.dtype == text.dtype
+    # The text half is untouched — the scale is not diffusers'
+    # `prompt_embeds_scale`, which would multiply this half too.
+    torch.testing.assert_close(combined[:, :2], text, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(
+        combined[:, 2:], torch.full((1, 3, 4), 1.0), rtol=0.0, atol=0.0
+    )
+    # Redux has no pooled embedding: the text CLIP pooled is passed through.
+    assert combined_pooled is pooled
+
+
+def test_an_image_context_entry_conditions_velocity_calls_like_any_prompt(
+    sampler: _StubSampler,
+) -> None:
+    """The longer context is selected and served exactly as a text-only entry is."""
+    sampler.prompt_cache["a room"] = (torch.ones(1, 2, 4), torch.ones(1, 4))
+    register_image_context_prompt(
+        sampler,
+        name="a room + photo",
+        prompt="a room",
+        image_tokens=torch.ones(1, 3, 4),
+        scale=1.0,
+    )
+    backend = FluxFlowMapBackend(sampler=sampler)
+
+    select_cached_prompt(sampler, "a room + photo")
+    backend.velocity(torch.zeros(1, 16, 4, 4), sigma=0.6, target_sigma=0.0)
+
+    call = sampler.vector_calls[0]
+    embeds = call["prompt_embeds"]
+    assert isinstance(embeds, Tensor)
+    assert embeds.shape == (1, 5, 4)
+
+
+def test_an_image_context_entry_needs_its_text_half_already_encoded(
+    sampler: _StubSampler,
+) -> None:
+    sampler.prompt_cache["the one that was encoded"] = (
+        torch.zeros(1, 2, 4),
+        torch.zeros(1, 4),
+    )
+
+    with pytest.raises(KeyError, match="never encoded"):
+        register_image_context_prompt(
+            sampler,
+            name="anything",
+            prompt="the one that was not",
+            image_tokens=torch.zeros(1, 3, 4),
+            scale=1.0,
+        )
+
+
+def test_a_negative_image_token_scale_is_refused(sampler: _StubSampler) -> None:
+    sampler.prompt_cache["a room"] = (torch.zeros(1, 2, 4), torch.zeros(1, 4))
+
+    with pytest.raises(ValueError, match="non-negative"):
+        register_image_context_prompt(
+            sampler,
+            name="a room + photo",
+            prompt="a room",
+            image_tokens=torch.zeros(1, 3, 4),
+            scale=-0.5,
+        )

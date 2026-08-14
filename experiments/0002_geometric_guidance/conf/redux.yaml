@@ -1,0 +1,70 @@
+# The image-as-context question: with the reference photo injected into the
+# prior as FLUX.1-Redux tokens appended to the T5 context — image conditioning
+# exactly analogous to the text prompt — does the model keep the layout better
+# than text alone, does the image drown the text at full scale, and what does
+# the depth reward still add on top?
+#
+# Six arms per scene at one seed, all at the sampler's one init strength:
+# A (style prompt, text only, unguided — the baseline), C (style, text only,
+# guided — the anchor matching the context and eta studies), then the
+# renovation instruction with the photo's Redux tokens at each scale, unguided
+# and guided: R1/R2 at 0.3 (the community operating point that keeps the text
+# audible), R3/R4 at 1.0 (diffusers' composition, the known drowning regime).
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config redux
+study: fmrg_redux
+name: 0002_fmrg_redux
+
+# One seed: the owner's fast-iteration setting, 12 walks total.
+seeds: [0]
+
+resolution: 512
+
+redux_scales: [0.3, 1.0]
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  # fmrg.yaml's operating point, verbatim: FMRG's `fmrgj_nfe100` grid.
+  grid_steps: 208
+  early_stop: 51
+  unguided_steps: 1
+  start_sigma: 0.9
+  text_guidance_scale: 3.5
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+
+guidance:
+  # The eta study's recommended operating point, 3x upstream's headline 5.0.
+  eta: 15.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+adherence:
+  # The eval judge, deliberately bigger than — and independent of — the ViT-B/32
+  # any CLIP guidance in this repo descends. Arm A is this study's own baseline.
+  # It reads the eval text against the render alone — never the image tokens —
+  # so an arm that merely copies the photo scores low on it, which is exactly
+  # the confound check the study needs.
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+# The context study's two scenes and its exact prompts, verbatim, so the A/C
+# pair reads directly against that run's arms — with the difference that the
+# renovation prompt's "this room" now binds to actual image tokens.
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    renovation_prompt: renovate this room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight, keep the room structure, layout, viewpoint and camera angle
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: blue_white_kitchen
+    style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    renovation_prompt: renovate this room into a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops, keep the room structure, layout, viewpoint and camera angle
+    eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

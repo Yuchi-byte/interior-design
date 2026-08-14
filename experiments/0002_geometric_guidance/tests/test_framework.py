@@ -21,6 +21,7 @@ from framework.config import (
     FmrgConfig,
     FmrgContextConfig,
     FmrgEtaConfig,
+    FmrgReduxConfig,
     FramingConfig,
     load_study_config,
 )
@@ -31,6 +32,8 @@ from framework.eta_study import eta_arms
 from framework.framing_gallery import FRAMING_GALLERY_FILENAME, write_framing_gallery
 from framework.gallery import GALLERY_FILENAME, write_gallery
 from framework.preference import ContrastPreference
+from framework.redux_study import BASELINE_ARM as REDUX_BASELINE_ARM
+from framework.redux_study import redux_arms, redux_prompt_key
 
 CONF_DIR = Path(__file__).resolve().parent.parent / "conf"
 
@@ -52,6 +55,7 @@ def test_every_shipped_variant_validates(variant: str) -> None:
         BenchmarkConfig
         | FmrgConfig
         | FmrgContextConfig
+        | FmrgReduxConfig
         | FmrgEtaConfig
         | FmrgAlignmentConfig
         | FramingConfig
@@ -154,6 +158,44 @@ def test_context_arms_pair_each_sweep_sigma_and_lead_with_the_baseline() -> None
         assert (unguided.guided, guided.guided) == (False, True)
         assert unguided.start_sigma == guided.start_sigma == sigma
         assert unguided.framing == guided.framing == "renovation"
+
+
+def test_redux_arms_pair_each_scale_and_lead_with_the_text_only_baseline() -> None:
+    """A first (it sets the colour scale), C beside it, one unguided/guided pair per scale."""
+    config = load_study_config(CONF_DIR / "redux.yaml")
+
+    assert isinstance(config, FmrgReduxConfig)
+    specs = redux_arms(config)
+    assert specs[0].arm == REDUX_BASELINE_ARM
+    assert (specs[0].guided, specs[0].redux_scale) == (False, None)
+    assert specs[1].arm == "C"
+    assert (specs[1].guided, specs[1].redux_scale) == (True, None)
+    assert specs[0].framing == specs[1].framing == "style"
+    paired = list(specs[2:])
+    assert len(paired) == 2 * len(config.redux_scales)
+    for index, scale in enumerate(config.redux_scales):
+        unguided, guided = paired[2 * index], paired[2 * index + 1]
+        assert (unguided.guided, guided.guided) == (False, True)
+        assert unguided.redux_scale == guided.redux_scale == scale
+        assert unguided.framing == guided.framing == "renovation"
+    # The drowning probe is in the shipped config: the full-strength scale is
+    # diffusers' own composition, beside the low one that keeps the text audible.
+    assert 1.0 in config.redux_scales
+
+
+def test_a_redux_scale_of_zero_is_a_config_error() -> None:
+    """Scale 0 would rerun a text-only arm the context study already measures."""
+    with pytest.raises(ValueError, match="redux_scales must be positive"):
+        load_study_config(CONF_DIR / "redux.yaml", ["redux_scales=[0.0, 1.0]"])
+
+
+def test_the_redux_cache_key_never_collides_with_a_text_prompt() -> None:
+    """The combined entry's name embeds the scale, so two scales are two entries."""
+    low = redux_prompt_key("renovate this room", 0.3)
+    full = redux_prompt_key("renovate this room", 1.0)
+
+    assert low != full
+    assert low != "renovate this room"
 
 
 def test_eta_arms_lead_with_the_baseline_and_sweep_every_eta_guided() -> None:
