@@ -207,18 +207,35 @@ def test_the_real_checkpoint_repeats_itself_on_one_image(
 
 
 def _perspective_room() -> Tensor:
-    """A one-point perspective room: floor, ceiling and side walls at a central horizon."""
+    """A corridor whose floor recedes in true perspective under a shaded ceiling.
+
+    Flat colour blocks are not enough here: the real checkpoint reads that kind
+    of cartoon as a flat poster (its disparity spans a few percent and the sign
+    of the third-vs-third comparison is noise). What convinces it is the cue a
+    photograph carries — a floor texture foreshortening as 1/v toward a central
+    horizon, and a ceiling darkening with distance. Measured, this stimulus puts
+    the bottom third's mean disparity ~3.7x the top third's, so the polarity
+    assertion below rides a wide margin rather than a coin flip.
+    """
     rows = torch.linspace(-0.5, 0.5, _ROOM_SIZE)
     columns = torch.linspace(-1.0, 1.0, _ROOM_SIZE)
     height, width = torch.meshgrid(rows, columns, indexing="ij")
-    faces_the_camera = height.abs() > width.abs()
-    is_floor = (height > 0.0) & faces_the_camera
-    image = torch.full((1, 3, _ROOM_SIZE, _ROOM_SIZE), 0.55)
-    image[0, :, is_floor] = 0.30
-    image[0, :, (height < 0.0) & faces_the_camera] = 0.80
-    receding = (0.5 / height.clamp(min=1e-3)).frac()
-    image[0, :, is_floor & (receding < 0.08)] = 0.15
-    return image
+    image = torch.full((1, 3, _ROOM_SIZE, _ROOM_SIZE), 0.6)
+    # The floor: a checkerboard drawn in world coordinates and projected, so its
+    # squares shrink toward the horizon exactly as a real tiled floor would.
+    floor_distance = 0.5 / height.clamp(min=1e-3)
+    lateral = width * floor_distance
+    checker = (floor_distance.floor() + lateral.floor()) % 2
+    is_floor = height > 0.0
+    for channel, base in enumerate((0.35, 0.25, 0.2)):
+        image[0, channel, is_floor] = base + 0.3 * checker[is_floor]
+    # The ceiling: its brightness falls off with the same projected distance.
+    ceiling_distance = 0.5 / (-height).clamp(min=1e-3)
+    shade = (1.0 / (1.0 + 0.15 * ceiling_distance)).clamp(0.1, 1.0)
+    is_ceiling = height < 0.0
+    for channel, base in enumerate((0.75, 0.7, 0.65)):
+        image[0, channel, is_ceiling] = base * shade[is_ceiling]
+    return image.clamp(0.0, 1.0)
 
 
 @pytest.mark.models
