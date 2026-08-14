@@ -452,3 +452,133 @@ study starts every walk from the renoised photo by design. Judging whether
 shift-only's absolute-level drift matters — it is the one thing the metric
 backend was brought in to hold — is the owner's call, and the `AlignmentMode`
 comment now points here rather than asserting an answer.
+
+## Study: prompt framing (`conf/framing.yaml`, 2026-08-14)
+
+### Hypothesis
+
+Every prompt this repo has sampled with is a plain style description ("a
+scandinavian style living room, pale oak furniture, ..."), and the photograph
+constrains layout only through the depth reward. The owner's question: does an
+explicit *renovation* framing — the same style content behind one fixed
+instruction prefix, "renovate this furnished room into ..." — produce (1)
+better geometric constraint, (2) better style adherence, (3) a more preferred
+image? A 2x2 per (scene, seed) at matched seeds: {style description,
+renovation instruction} x {unguided, guided}, so each axis varies exactly the
+thing it names. The owner's two comparisons are old-vs-new prompt among the
+unguided arms and among the guided ones.
+
+### Setup
+
+Five scenes over the benchmark's three room types (hotel_suite_living_room,
+scandi_living_room, bedroom_warm_ensuite, ny_loft_bedroom, hostel_kitchen),
+seeds [0, 1]. `style_prompt` is the exact prompt `benchmark.yaml` has always
+run for that room type; `renovation_prompt` is that text verbatim behind the
+one prefix (a test asserts the containment, so the prompt axis cannot drift
+into a content change). SD1.5 img2img at 512², 30 steps, `noise_strength 0.9`
+(the recorded regime decision; 0.6 sits at the metric's noise floor),
+`text_guidance_scale 7.5`, DDIM, deterministic; sampler dtype **float16**
+because the card is shared — the fp32 guided VAE backward peaks ~24 GiB and
+OOMs beside a concurrent run — with depth and segmentation float32, and the
+reward's reduction float32 by contract. Guidance is `benchmark.yaml`'s
+clipped-raw arm (strength 10, `clip 0.02`, `resegment: true`,
+`erosion_radius 2`); unguided arms are strength 0 on the same trajectory.
+
+All four arms of a (scene, seed) are scored on one common mask — the reference
+shell narrowed by each arm's own segmentation, intersected across all four —
+59% of the shell in the mean. Adherence (CLIP-B/32) and preference
+(**PickScore v1**, CLIP-H fine-tuned on human choices, eval-only and loaded
+after sampling so its ~4 GB never sits beside the guided backward) are both
+scored against the **same neutral style text** for every arm — the style
+description itself, never the arm's own prompt, which would grade the two
+framings on different text. Every render and every reference photo leaves an
+absolute self-normalised disparity map beside the signed residual maps, all
+four residual panels of a grid on the baseline (style-unguided) arm's scale.
+
+### Results
+
+Means over all 10 (scene, seed) grids. Depth error is DA2 scale/shift-
+invariant masked MSE on the common mask; shell is the share of the reference
+shell the arm's own render left visible; preference is PickScore's
+logit-scaled score against the neutral text (higher preferred).
+
+| arm                 | depth error | adherence | preference | shell visible |
+|---------------------|-------------|-----------|------------|---------------|
+| style, unguided     | 0.3083      | 0.3373    | 21.48      | 68%           |
+| renovation, unguided| 0.3085      | 0.3248    | 20.90      | 84%           |
+| style, guided       | 0.0952      | 0.3389    | 21.39      | 67%           |
+| renovation, guided  | 0.0761      | 0.3280    | 20.93      | 81%           |
+
+The owner's two comparisons (renovation minus style):
+
+- **Unguided:** depth error +0.0003 (+0.1%), adherence −0.0125 (ratio 0.963),
+  preference −0.58.
+- **Guided:** depth error −0.0191 (−20.1%), adherence −0.0109 (ratio 0.968),
+  preference −0.47.
+
+Read against the guidance axis: guidance removes 69.1% of the style arm's
+depth error and 75.4% of the renovation arm's, i.e. the framing's whole
+geometric gain appears only in combination with the geometric term, and is a
+fifth of what the term itself contributes at either prompt.
+
+Per scene (mean over both seeds; E = depth error, adh = adherence, pref =
+preference):
+
+| scene                   | arm                  | E      | adh    | pref  | shell |
+|-------------------------|----------------------|--------|--------|-------|-------|
+| hotel_suite_living_room | style, unguided      | 0.5725 | 0.3075 | 20.93 | 64%   |
+|                         | renovation, unguided | 0.7197 | 0.2987 | 20.52 | 78%   |
+|                         | style, guided        | 0.0386 | 0.3097 | 20.78 | 65%   |
+|                         | renovation, guided   | 0.0410 | 0.2998 | 20.44 | 68%   |
+| scandi_living_room      | style, unguided      | 0.2863 | 0.3215 | 22.25 | 65%   |
+|                         | renovation, unguided | 0.2150 | 0.2901 | 21.07 | 85%   |
+|                         | style, guided        | 0.0853 | 0.3179 | 21.98 | 67%   |
+|                         | renovation, guided   | 0.0499 | 0.2969 | 21.22 | 84%   |
+| bedroom_warm_ensuite    | style, unguided      | 0.1169 | 0.3549 | 20.87 | 79%   |
+|                         | renovation, unguided | 0.1126 | 0.3441 | 20.16 | 97%   |
+|                         | style, guided        | 0.0742 | 0.3550 | 20.86 | 76%   |
+|                         | renovation, guided   | 0.0834 | 0.3425 | 20.25 | 93%   |
+| ny_loft_bedroom         | style, unguided      | 0.3154 | 0.3513 | 21.79 | 61%   |
+|                         | renovation, unguided | 0.3086 | 0.3548 | 21.90 | 81%   |
+|                         | style, guided        | 0.2485 | 0.3603 | 21.88 | 61%   |
+|                         | renovation, guided   | 0.1743 | 0.3638 | 22.16 | 83%   |
+| hostel_kitchen          | style, unguided      | 0.2503 | 0.3512 | 21.55 | 70%   |
+|                         | renovation, unguided | 0.1869 | 0.3364 | 20.87 | 79%   |
+|                         | style, guided        | 0.0293 | 0.3514 | 21.46 | 68%   |
+|                         | renovation, guided   | 0.0317 | 0.3369 | 20.55 | 78%   |
+
+What the numbers show, without judging them:
+
+- **Geometry, unguided:** in the mean the two framings tie (+0.1%), and the
+  per-scene signs disagree — the renovation prompt is better on
+  scandi_living_room and hostel_kitchen, worse on hotel_suite_living_room,
+  a wash on the bedrooms. The framing alone is not a geometric constraint at
+  this noise level.
+- **Geometry, guided:** the renovation framing lowers the mean by 20.1%
+  relative, but the gap is carried almost entirely by two grids
+  (scandi_living_room and ny_loft_bedroom seed 0); on four of ten grids the
+  sign reverses. Both framings' guided arms land far below either unguided
+  arm.
+- **Shell visible is the framing's one large, consistent effect:** the
+  renovation prompt's renders leave 81–84% of the photographed shell visible
+  against the style prompt's 67–68%, in every scene, guided or not — the
+  instruction framing renovates *less*, keeping more of the furnished photo.
+  The depth tie above is therefore read over what each arm left scoreable,
+  with the common mask making the pairs commensurable.
+- **Adherence:** the renovation framing scores 3–4% below the style prompt on
+  the same neutral text in every scene but ny_loft_bedroom, guided or not.
+- **Preference:** PickScore prefers the style-prompt render in the mean
+  (−0.58 unguided, −0.47 guided) and in four of five scenes;
+  ny_loft_bedroom again dissents.
+
+### Decision
+
+Measured, not judged: the explicit renovation framing did not buy geometric
+constraint on its own, bought a modest and scene-dependent depth improvement
+under guidance, and paid a consistent 3–4% of adherence and about half a
+PickScore point for it — while changing noticeably less of the room, which is
+visible directly in the shell-coverage column and in the galleries. Whether
+"renovates less but holds a little more geometry when guided" is the trade
+the product wants is the owner's call. The run, its `results.json`, the
+depth map of every render and reference photo, and the 2x2 gallery are under
+`$ROOMGEN_WDIR/0002_prompt_framing/`.
