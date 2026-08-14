@@ -36,9 +36,11 @@ class FakeInpaintPipeline:
         self,
         *,
         prompt: str,
+        negative_prompt: str | None,
         image: Float[Tensor, "batch 3 height width"],
         mask_image: Float[Tensor, "batch 1 height width"],
         num_inference_steps: int,
+        strength: float,
         guidance_scale: float,
         generator: Generator,
         output_type: str,
@@ -48,12 +50,17 @@ class FakeInpaintPipeline:
                 f"this double returns tensors, so output_type must be 'pt', got "
                 f"{output_type!r}"
             )
-        # A stable digest of the prompt: `hash` is salted per process, which
+        # A stable digest of both prompts: `hash` is salted per process, which
         # would make a fixed-seed run reproducible only within one interpreter.
-        tone = sum(ord(character) for character in prompt) % 97 / 97.0
+        tone = (
+            sum(ord(character) for character in prompt + (negative_prompt or "")) % 97
+        ) / 97.0
         texture = torch.rand(
             image.shape, generator=generator, dtype=image.dtype, device=image.device
         )
-        painted = (tone + 0.1 * texture).clamp(0.0, 1.0)
+        # `strength` mixes the input in exactly as a diffusers pipeline's does:
+        # at 1 the fill is discarded, below it the render keeps that much of what
+        # it was handed.
+        painted = torch.lerp(image, (tone + 0.1 * texture).clamp(0.0, 1.0), strength)
         round_tripped = (image + self.round_trip_drift).clamp(0.0, 1.0)
         return _Images(torch.where(mask_image > 0.5, painted, round_tripped))

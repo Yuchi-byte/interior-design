@@ -11,6 +11,9 @@ from roomgen_guide import prefetch
 from roomgen_guide.eval.clip import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.prefetch import CHECKPOINTS, Checkpoint
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
+from roomgen_guide.sampling.inpaint import (
+    DEFAULT_CHECKPOINT as INPAINTING_CHECKPOINT,
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ def test_every_checkpoint_a_benchmark_run_loads_is_registered() -> None:
         DEPTH_CHECKPOINT,
         SEGMENTATION_CHECKPOINT,
         DIFFUSION_CHECKPOINT,
+        INPAINTING_CHECKPOINT,
         ADHERENCE_CHECKPOINT,
     }
 

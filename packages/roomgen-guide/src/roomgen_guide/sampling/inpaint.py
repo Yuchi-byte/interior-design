@@ -10,8 +10,14 @@ import torch
 from diffusers import StableDiffusionInpaintPipeline
 from jaxtyping import Bool, Float
 from torch import Tensor
+from torch.nn.functional import avg_pool2d, interpolate
 
 DEFAULT_CHECKPOINT: Final = "stable-diffusion-v1-5/stable-diffusion-inpainting"
+
+# Below this share of a pooling window, a level has no measurement of its own
+# and reads the level above instead. Small enough to trust a single known pixel
+# in a 2x2, large enough to stay clear of float32's noise after ten poolings.
+_WEIGHT_FLOOR: Final = 1e-4
 
 
 class InpaintOutput(Protocol):
@@ -32,9 +38,11 @@ class InpaintPipeline(Protocol):
         self,
         *,
         prompt: str,
+        negative_prompt: str | None,
         image: Float[Tensor, "batch 3 height width"],
         mask_image: Float[Tensor, "batch 1 height width"],
         num_inference_steps: int,
+        strength: float,
         guidance_scale: float,
         generator: torch.Generator,
         output_type: str,
@@ -65,7 +73,9 @@ def inpaint_masked_region(
     *,
     pipeline: InpaintPipeline,
     prompt: str,
+    negative_prompt: str | None = None,
     steps: int,
+    fill_strength: float = 1.0,
     guidance_scale: float,
     generator: torch.Generator,
 ) -> Inpainting:
@@ -77,6 +87,18 @@ def inpaint_masked_region(
         mask: True where the pipeline may paint — what is being removed, grown by
             whatever margin its caller chose
             (:func:`roomgen_geometry.masking.contents_mask`).
+        negative_prompt: what the fill must not contain. A large hole in a
+            furnished room is filled from its own surroundings, so an inpainter
+            asked only for a bare room will still put furniture back into it;
+            naming the furniture on the negative side is what a removal has to
+            say out loud.
+        fill_strength: how much of the trajectory the hole is repainted over,
+            having first been filled with the colours of the surfaces around it
+            (:func:`fill_from_surroundings`). At 1 the fill is discarded and the
+            model invents the region from the room around it — which is where an
+            inpainter puts a television on a wall it was asked to leave bare;
+            below 1 it starts from that fill and can only smooth what is already
+            a wall or a floor, at the cost of a softer patch.
         generator: the only source of randomness, so a strip is reproducible from
             its seed alone.
 
@@ -86,9 +108,11 @@ def inpaint_masked_region(
     """
     output = pipeline(
         prompt=prompt,
-        image=photo,
+        negative_prompt=negative_prompt,
+        image=fill_from_surroundings(photo, mask),
         mask_image=mask.unsqueeze(1).to(photo.dtype),
         num_inference_steps=steps,
+        strength=fill_strength,
         guidance_scale=guidance_scale,
         generator=generator,
         output_type="pt",
@@ -97,6 +121,43 @@ def inpaint_masked_region(
     return Inpainting(
         image=torch.where(mask.unsqueeze(1), generated, photo), generated=generated
     )
+
+
+def fill_from_surroundings(
+    image: Float[Tensor, "batch 3 height width"],
+    mask: Bool[Tensor, "batch height width"],
+) -> Float[Tensor, "batch 3 height width"]:
+    """Flood the masked region with the colours around it; leave every other pixel alone.
+
+    A coarse fill, not a repair: the hole comes out as a smooth continuation of
+    the wall and floor that surround it, with no structure of its own. What it is
+    for is to give a partial-strength inpainting something to start from that is
+    already a surface, so the model has a room to finish rather than a hole to
+    fill with whatever a room usually contains.
+    """
+    known = (~mask).unsqueeze(1).to(image.dtype)
+    # Pull-push (arXiv:2005.02436 §3.1 states the classic form): average the
+    # known pixels up a power-of-two pyramid until the hole is covered at some
+    # level, then read each level's own average back down wherever it has one.
+    # A same-resolution diffusion would need hundreds of iterations to cross a
+    # hole this size, and underflows its weights on the way.
+    numerators = [image * known]
+    weights = [known]
+    while min(numerators[-1].shape[-2:]) > 1:
+        numerators.append(avg_pool2d(numerators[-1], 2, ceil_mode=True))
+        weights.append(avg_pool2d(weights[-1], 2, ceil_mode=True))
+    filled = numerators[-1] / weights[-1].clamp(min=_WEIGHT_FLOOR)
+    for level in range(len(numerators) - 2, -1, -1):
+        coarser = interpolate(
+            filled, size=numerators[level].shape[-2:], mode="bilinear"
+        )
+        weight = weights[level]
+        filled = torch.where(
+            weight > _WEIGHT_FLOOR,
+            numerators[level] / weight.clamp(min=_WEIGHT_FLOOR),
+            coarser,
+        )
+    return torch.where(mask.unsqueeze(1), filled, image).clamp(0.0, 1.0)
 
 
 def load_inpaint_pipeline(
