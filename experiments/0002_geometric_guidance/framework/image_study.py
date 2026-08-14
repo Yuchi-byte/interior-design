@@ -703,6 +703,10 @@ def _run_scene(
             f"[sizing] step {sizing.step_index}/{sizing.total_steps}: depth rms "
             f"{sizing.depth_gradient_rms:.3e}, {rms}"
         )
+        # The sizing pass walked a state, decoded an endpoint and cycled every
+        # composite tower through the device; sweep the allocator before the
+        # first timed arm inherits that fragmentation.
+        _release(stacks.device)
 
     results: list[_PendingScene] = []
     for seed in config.seeds:
@@ -733,8 +737,16 @@ def _run_scene(
                 seed=seed,
                 reward=reward,
             )
+            # The arm's energy — and the reference features it froze on the
+            # device — is dead the moment its walk finishes; drop it before the
+            # cache is returned, or the release frees nothing. A 32GB card runs
+            # this study a few hundred MiB from its ceiling, so every arm ends
+            # with the allocator swept, not only the ones that parked a tower.
+            del reward
             if spec.model is not None:
                 bank.park(spec.model)
+            else:
+                _release(stacks.device)
             renders[spec.arm] = image
             seconds[spec.arm] = elapsed
             peaks[spec.arm] = peak
