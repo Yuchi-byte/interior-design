@@ -1,0 +1,70 @@
+# The renovation-context question: given the original room as context — an
+# explicit renovation instruction plus a stronger SDEdit init — does the model
+# keep the layout on its own, and what does the depth reward still add on top?
+#
+# Eight arms per scene at one seed: A (style prompt, unguided) and C (style
+# prompt, guided) at the default init, then B@sigma (renovation instruction,
+# unguided) and D@sigma (guided) swept over init strengths. `start_sigma` values
+# are pre-shift requests — FLUX's mu-shift warps the 512² grid, and the study
+# records the effective first sigma read off the actual schedule.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config context
+study: fmrg_context
+name: 0002_fmrg_context
+
+# One seed: the owner's fast-iteration setting, 16 samples total.
+seeds: [0]
+
+resolution: 512
+
+# The init strengths the renovation-instruction arms sweep; 0.9 is the default
+# the baseline pair (A, C) runs at, so B@0.9/D@0.9 isolate the framing axis.
+context_sigmas: [0.6, 0.75, 0.9]
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  # fmrg.yaml's operating point, verbatim: FMRG's `fmrgj_nfe100` grid.
+  grid_steps: 208
+  early_stop: 51
+  unguided_steps: 1
+  start_sigma: 0.9
+  text_guidance_scale: 3.5
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+
+guidance:
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+adherence:
+  # The eval judge, deliberately bigger than — and independent of — the ViT-B/32
+  # any CLIP guidance in this repo descends. Not comparable to fmrg.yaml's
+  # adherence column, which is scored under ViT-B/32; arm A is this study's own
+  # baseline instead.
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+# Two scenes from the FMRG benchmark set: its best-behaved living room and its
+# weakest scene by guided depth error (blue_white_kitchen, 0002_fmrg seed 0:
+# guided 0.391 against a 0.018-0.07 range elsewhere). `style_prompt` is
+# fmrg.yaml's exact prompt; `renovation_prompt` carries the identical style
+# descriptors behind the instruction framing, so the prompt axis varies framing
+# alone; `eval_prompt` is the one neutral text every arm is judged against.
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    renovation_prompt: renovate this room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight, keep the room structure, layout, viewpoint and camera angle
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: blue_white_kitchen
+    style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    renovation_prompt: renovate this room into a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops, keep the room structure, layout, viewpoint and camera angle
+    eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

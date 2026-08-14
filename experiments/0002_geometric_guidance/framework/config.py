@@ -31,6 +31,7 @@ from roomgen_geometry.segmentation.eomt import (
 from roomgen_guide.config import Config
 from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.experiment import ExperimentConfig
+from roomgen_guide.guidance.clip import DEFAULT_CHECKPOINT as GUIDANCE_CLIP_CHECKPOINT
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 
 DTypeName = Literal["float32", "float16", "bfloat16"]
@@ -339,6 +340,79 @@ class FramingSceneConfig(Config):
     eval_prompt: Annotated[str, Field(min_length=1)]
 
 
+class FmrgContextConfig(ExperimentConfig):
+    """The renovation-context study: does image context alone keep the layout?
+
+    Per scene, two prompt framings of the identical style content — the plain
+    style description and an explicit renovation instruction — each sampled
+    with and without the depth reward, the instruction arms swept over SDEdit
+    init strengths. Arm A (style, unguided, at the sampler's own `start_sigma`)
+    is the baseline every other arm's depth error and adherence are read
+    against.
+
+    Args:
+        scenes: each photo with both framings; adherence is scored against the
+            scene's one neutral `eval_prompt` for every arm, never an arm's own
+            prompt.
+        context_sigmas: the pre-shift `start_sigma` values the renovation-framed
+            arms are swept over, one unguided (B) and one guided (D) arm per
+            value. Pre-shift on purpose — FLUX warps the grid by resolution, and
+            the study records the effective first sigma read off the actual
+            schedule beside each arm.
+        resolution: side of the square the photos are centre-cropped and resized
+            to, a multiple of 16 (FLUX's VAE downsamples by 8 and packs 2x2).
+    """
+
+    study: Literal["fmrg_context"]
+    scenes: Annotated[tuple[FramingSceneConfig, ...], Field(min_length=1)]
+    context_sigmas: Annotated[tuple[float, ...], Field(min_length=1)] = (
+        0.6,
+        0.75,
+        0.9,
+    )
+    resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    backends: FmrgBackendConfig
+    sampler: FmrgSamplerConfig = FmrgSamplerConfig()
+    guidance: FmrgGuidanceConfig = FmrgGuidanceConfig()
+    adherence: AdherenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
+        if resolution % FLUX_LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
+                f"FLUX's packed latent grid, got {resolution}"
+            )
+        return resolution
+
+    @field_validator("context_sigmas")
+    @classmethod
+    def _sigmas_are_renoise_depths(cls, sigmas: tuple[float, ...]) -> tuple[float, ...]:
+        for sigma in sigmas:
+            if not 0.0 < sigma <= 1.0:
+                raise ValueError(
+                    f"context_sigmas must lie in (0, 1], got {sigma}: each is how "
+                    f"far up the interpolant the photo is renoised"
+                )
+        return sigmas
+
+    @model_validator(mode="after")
+    def _adherence_is_never_the_guidance_clip(self) -> FmrgContextConfig:
+        # The eval CLIP must stay independent of the CLIP any guidance energy in
+        # this repo descends, or a guided arm is graded on the model it optimised.
+        if (
+            self.adherence.kind == "clip"
+            and self.adherence.checkpoint == GUIDANCE_CLIP_CHECKPOINT
+        ):
+            raise ValueError(
+                f"adherence.checkpoint is {self.adherence.checkpoint!r}, the "
+                f"guidance CLIP: score adherence with an independent checkpoint "
+                f"(e.g. openai/clip-vit-large-patch14)."
+            )
+        return self
+
+
 class PreferenceConfig(Config):
     """Which human-preference model scores the finished renders — eval only, never guidance.
 
@@ -457,7 +531,13 @@ def _validate_resolution(resolution: int) -> int:
 
 def load_study_config(
     path: Path, overrides: Sequence[str] | None = None
-) -> BenchmarkConfig | FmrgConfig | FramingConfig | AlignmentStudyConfig:
+) -> (
+    BenchmarkConfig
+    | FmrgConfig
+    | FmrgContextConfig
+    | FramingConfig
+    | AlignmentStudyConfig
+):
     """Load whichever study shape `path` declares in its top-level `study` key.
 
     The key is peeked before validation because the shapes are different
@@ -473,6 +553,8 @@ def load_study_config(
             return BenchmarkConfig.from_file(path, overrides)
         case "fmrg":
             return FmrgConfig.from_file(path, overrides)
+        case "fmrg_context":
+            return FmrgContextConfig.from_file(path, overrides)
         case "framing":
             return FramingConfig.from_file(path, overrides)
         case "da3_alignment":
@@ -480,5 +562,6 @@ def load_study_config(
         case _:
             raise ValueError(
                 f"{path} declares unknown study {study!r}; "
-                "known studies: benchmark, fmrg, framing, da3_alignment"
+                "known studies: benchmark, fmrg, fmrg_context, framing, "
+                "da3_alignment"
             )

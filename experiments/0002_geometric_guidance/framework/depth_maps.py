@@ -12,9 +12,13 @@ from pathlib import Path
 from typing import Final
 
 import torch
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 from torch import Tensor
 from torchvision.io import write_png
+
+# The same neutral the residual maps paint outside the shell: pixels the mask
+# excludes are furniture the renovation may move, and score nothing.
+_OUTSIDE_MASK: Final = (0.45, 0.45, 0.45)
 
 # A magma-like piecewise-linear ramp over uniform stops, in place of a plotting
 # dependency: near surfaces (high disparity) render bright, far ones dark.
@@ -44,6 +48,38 @@ def write_disparity_map(disparity: Float[Tensor, "1 height width"], path: Path) 
     unit = (field - low) / span
     write_png(
         (_colorise(unit).clamp(0.0, 1.0) * 255.0).round().to(torch.uint8).cpu(),
+        str(path),
+    )
+
+
+def write_masked_disparity_map(
+    disparity: Float[Tensor, "1 height width"],
+    *,
+    mask: Bool[Tensor, "1 height width"],
+    path: Path,
+) -> None:
+    """Inverse depth over the scored pixels alone, neutral grey everywhere else.
+
+    Normalised over the mask's own min..max rather than the frame's, so the
+    shell's structure spends the whole colour range instead of being compressed
+    by whatever near furniture the mask excluded. An empty mask paints the
+    whole frame neutral rather than normalising over nothing.
+    """
+    field = disparity[0].to(torch.float32)
+    selected = field[mask[0]]
+    if selected.numel() == 0:
+        unit = torch.zeros_like(field)
+    else:
+        low, high = selected.min(), selected.max()
+        span = (high - low).clamp(min=torch.finfo(torch.float32).eps)
+        unit = (field - low) / span
+    colour = _colorise(unit)
+    outside = torch.tensor(
+        _OUTSIDE_MASK, dtype=colour.dtype, device=colour.device
+    ).view(3, 1, 1)
+    masked = torch.where(mask, colour, outside)
+    write_png(
+        (masked.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8).cpu(),
         str(path),
     )
 

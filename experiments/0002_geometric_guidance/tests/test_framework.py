@@ -18,9 +18,11 @@ from framework.config import (
     AlignmentStudyConfig,
     BenchmarkConfig,
     FmrgConfig,
+    FmrgContextConfig,
     FramingConfig,
     load_study_config,
 )
+from framework.context_study import BASELINE_ARM, context_arms
 from framework.depth_maps import DisparityRange, write_disparity_map
 from framework.framing_gallery import FRAMING_GALLERY_FILENAME, write_framing_gallery
 from framework.gallery import GALLERY_FILENAME, write_gallery
@@ -42,7 +44,12 @@ def test_every_shipped_variant_validates(variant: str) -> None:
     # any variant may claim is FLUX's; each config enforces its own on top.
     assert config.resolution % FLUX_LATENT_ALIGNMENT == 0
     assert isinstance(
-        config, BenchmarkConfig | FmrgConfig | FramingConfig | AlignmentStudyConfig
+        config,
+        BenchmarkConfig
+        | FmrgConfig
+        | FmrgContextConfig
+        | FramingConfig
+        | AlignmentStudyConfig,
     )
 
 
@@ -83,6 +90,50 @@ def test_the_fmrg_study_measures_the_benchmarks_scenes_at_its_seeds() -> None:
     assert fmrg.seeds == benchmark.seeds
     # Scored under the same adherence checkpoint, or the columns stop comparing.
     assert fmrg.adherence == benchmark.adherence
+
+
+def test_context_scenes_vary_framing_alone() -> None:
+    """The prompt axis is the framing: the style text is inside the instruction verbatim."""
+    config = load_study_config(CONF_DIR / "context.yaml")
+
+    assert isinstance(config, FmrgContextConfig)
+    for scene in config.scenes:
+        assert scene.style_prompt != scene.renovation_prompt
+        assert scene.style_prompt in scene.renovation_prompt
+        # One neutral text judges both framings, and it carries the style
+        # content rather than either arm's phrasing advantage.
+        assert scene.eval_prompt == scene.style_prompt
+    # The eval judge must never be the guidance CLIP the repo steers with.
+    assert config.adherence.checkpoint == "openai/clip-vit-large-patch14"
+
+
+def test_context_arms_pair_each_sweep_sigma_and_lead_with_the_baseline() -> None:
+    """A first (it sets the colour scale), C at A's sigma, one B and D per sweep value."""
+    config = load_study_config(CONF_DIR / "context.yaml")
+
+    assert isinstance(config, FmrgContextConfig)
+    specs = context_arms(config)
+    assert specs[0].arm == BASELINE_ARM
+    assert not specs[0].guided
+    assert specs[1].arm == "C"
+    assert specs[1].guided
+    assert specs[0].start_sigma == specs[1].start_sigma == config.sampler.start_sigma
+    swept = list(specs[2:])
+    assert len(swept) == 2 * len(config.context_sigmas)
+    for index, sigma in enumerate(config.context_sigmas):
+        unguided, guided = swept[2 * index], swept[2 * index + 1]
+        assert (unguided.guided, guided.guided) == (False, True)
+        assert unguided.start_sigma == guided.start_sigma == sigma
+        assert unguided.framing == guided.framing == "renovation"
+
+
+def test_the_context_adherence_judge_may_not_be_the_guidance_clip() -> None:
+    """Grading a guided arm on the model it optimised is a config error at load."""
+    with pytest.raises(ValueError, match="guidance CLIP"):
+        load_study_config(
+            CONF_DIR / "context.yaml",
+            ["adherence.checkpoint=openai/clip-vit-base-patch32"],
+        )
 
 
 def test_the_fmrg_window_stops_inside_the_grid_it_truncates() -> None:

@@ -30,8 +30,17 @@ from framework.config import (
     AlignmentStudyConfig,
     BenchmarkConfig,
     FmrgConfig,
+    FmrgContextConfig,
     FramingConfig,
     load_study_config,
+)
+from framework.context_study import (
+    ContextSummary,
+    context_arms,
+    run_context_study,
+)
+from framework.context_study import (
+    arm_means as context_arm_means,
 )
 from framework.fmrg_study import FmrgSummary, run_fmrg_study
 from framework.framing import ARMS, FramingSummary, framing_comparisons, run_framing
@@ -67,7 +76,7 @@ def main() -> int:
     settings = RoomgenSettings()
     pull = (
         f"eta {config.guidance.eta}"
-        if isinstance(config, FmrgConfig)
+        if isinstance(config, FmrgConfig | FmrgContextConfig)
         else f"strength {config.guidance.strength}"
     )
     print(
@@ -81,6 +90,11 @@ def main() -> int:
         fmrg_summary = run_fmrg_study(config, settings)
         _report_fmrg(fmrg_summary)
         gallery = write_gallery(fmrg_summary.output_dir / "results.json")
+    elif isinstance(config, FmrgContextConfig):
+        # No HTML gallery of its own: the study's record is its results.json
+        # and the renders, depth maps and residual maps beside it.
+        _report_context(run_context_study(config, settings))
+        gallery = None
     elif isinstance(config, FramingConfig):
         framing_summary = run_framing(config, settings)
         _report_framing(framing_summary)
@@ -173,6 +187,52 @@ def _report_fmrg(summary: FmrgSummary) -> None:
         f"{_mean(r.guided_seconds for r in summary.results):>8.1f}"
         f"{_mean(r.control_seconds for r in summary.results):>9.1f}"
     )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
+
+
+_CONTEXT_COLUMNS = (
+    f"{'arm':<9}{'sigma':>7}{'eff':>8}{'depth':>10}{'vs A':>9}{'adher':>9}"
+    f"{'ratio A':>9}{'shell':>7}{'sec':>7}"
+)
+
+
+def _report_context(summary: ContextSummary) -> None:
+    """The context study's numbers per (scene, seed, arm) and in the mean. No claim is made."""
+    specs = context_arms(summary.config)
+    print(
+        f"\n[metrics] {len(summary.results)} (scene, seed) tuples x "
+        f"{len(specs)} arms, one common mask each"
+    )
+    for result in summary.results:
+        print(f"{result.scene} seed {result.seed}:\n{_CONTEXT_COLUMNS}")
+        for cell in result.arms:
+            print(
+                f"{cell.arm:<9}{cell.start_sigma:>7.2f}"
+                f"{cell.effective_first_sigma:>8.4f}{cell.depth_error:>10.5f}"
+                f"{_signed(result.depth_delta_vs_baseline(cell.arm)):>9}"
+                f"{cell.adherence:>9.4f}"
+                f"{_share(result.adherence_ratio_vs_baseline(cell.arm)):>9}"
+                f"{cell.shell_coverage:>6.0%} {cell.seconds:>6.1f}"
+            )
+        print(
+            f"{'common mask':<24}{'':>10}{'':>9}{'':>9}{'':>9}"
+            f"{result.common_coverage:>6.0%}"
+        )
+    means = context_arm_means(summary.results, specs)
+    print("\n[means]   per arm, over every (scene, seed)")
+    for spec in specs:
+        row = means[spec.arm]
+        print(
+            f"{spec.arm:<9}{row['depth_error']:>10.5f}{row['adherence']:>9.4f}"
+            f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
+        )
     print(
         f"[run]     commit {summary.git_commit[:8]}, "
         f"{summary.walked_steps} walked steps, "

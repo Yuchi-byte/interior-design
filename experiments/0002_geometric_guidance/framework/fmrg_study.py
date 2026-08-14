@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,7 +25,14 @@ from jaxtyping import Bool, Float
 from torch import Tensor
 from torchvision.io import write_png
 
-from framework.config import TORCH_DTYPES, FmrgConfig, SceneConfig
+from framework.config import (
+    TORCH_DTYPES,
+    FmrgBackendConfig,
+    FmrgConfig,
+    FmrgGuidanceConfig,
+    FmrgSamplerConfig,
+    SceneConfig,
+)
 from framework.metrics import build_adherence
 from framework.photos import ensure_photos, load_photo
 from framework.residual_maps import mean_absolute_residual, write_signed_residual_map
@@ -178,8 +186,8 @@ class FmrgSummary:
 
 
 @dataclass(frozen=True)
-class _Stacks:
-    """Everything the run samples and scores with, already on the target device."""
+class Stacks:
+    """Everything an FMRG run samples and scores with, already on the target device."""
 
     flow_backend: FlowMapBackend
     sampler: TwoTimeFlowMapSampler | None
@@ -196,7 +204,12 @@ def run_fmrg_study(config: FmrgConfig, settings: RoomgenSettings) -> FmrgSummary
     image_dir.mkdir(parents=True, exist_ok=True)
 
     photo_paths = ensure_photos(settings.wdir / PHOTO_SUBDIRECTORY)
-    stacks = _build_stacks(config, settings)
+    stacks = build_stacks(
+        config.backends,
+        prompts=list(dict.fromkeys(scene.prompt for scene in config.scenes)),
+        text_guidance_scale=config.sampler.text_guidance_scale,
+        settings=settings,
+    )
     adherence = build_adherence(
         config.adherence, device=stacks.device, cache_dir=settings.hub_cache
     )
@@ -227,45 +240,56 @@ def run_fmrg_study(config: FmrgConfig, settings: RoomgenSettings) -> FmrgSummary
         ),
         started_at=started_at,
         git_commit=_git_commit(),
-        walked_steps=_walked_steps(config),
+        walked_steps=walked_steps(config.sampler),
         device_name=(torch.cuda.get_device_name(stacks.device) if on_cuda else None),
     )
     _write_results(summary, settings)
     return summary
 
 
-def _build_stacks(config: FmrgConfig, settings: RoomgenSettings) -> _Stacks:
-    if config.backends.deterministic:
+def build_stacks(
+    backends: FmrgBackendConfig,
+    *,
+    prompts: Sequence[str],
+    text_guidance_scale: float,
+    settings: RoomgenSettings,
+) -> Stacks:
+    """One FLUX flow-map stack serving every prompt in `prompts`, encoded up front.
+
+    The sampler's text encoders are freed the moment it finishes loading, so
+    every prompt any walk will ever condition on must be named here; a study
+    switches between them with `select_cached_prompt`.
+    """
+    if backends.deterministic:
         enable_determinism()
-    device = torch.device(config.backends.device)
-    prompts = list(dict.fromkeys(scene.prompt for scene in config.scenes))
-    match config.backends.kind:
+    device = torch.device(backends.device)
+    match backends.kind:
         case "real":
             sampler = load_flow_map_sampler(
-                fmrg_path=config.backends.fmrg_path or _REPO_ROOT / "packages" / "fmrg",
-                lora_path=_lora_dir(config, settings),
+                fmrg_path=backends.fmrg_path or _REPO_ROOT / "packages" / "fmrg",
+                lora_path=_lora_dir(backends, settings),
                 prompt=prompts[0],
-                additional_prompts=prompts[1:],
+                additional_prompts=list(prompts[1:]),
                 device=device,
-                model_id=_flux_path(config, settings),
-                dtype=TORCH_DTYPES[config.backends.dtype],
+                model_id=_flux_path(backends, settings),
+                dtype=TORCH_DTYPES[backends.dtype],
             )
-            return _Stacks(
+            return Stacks(
                 flow_backend=FluxFlowMapBackend(
                     sampler=sampler,
-                    text_guidance_scale=config.sampler.text_guidance_scale,
+                    text_guidance_scale=text_guidance_scale,
                 ),
                 sampler=sampler,
                 depth_estimator=DepthAnythingV2(
-                    config.backends.depth_checkpoint,
+                    backends.depth_checkpoint,
                     device=device,
-                    dtype=TORCH_DTYPES[config.backends.depth_dtype],
+                    dtype=TORCH_DTYPES[backends.depth_dtype],
                     cache_dir=settings.hub_cache,
                 ),
                 segmenter=EoMT(
-                    config.backends.segmentation_checkpoint,
+                    backends.segmentation_checkpoint,
                     device=device,
-                    dtype=TORCH_DTYPES[config.backends.segmentation_dtype],
+                    dtype=TORCH_DTYPES[backends.segmentation_dtype],
                     cache_dir=settings.hub_cache,
                 ),
                 device=device,
@@ -282,10 +306,8 @@ def _build_stacks(config: FmrgConfig, settings: RoomgenSettings) -> _Stacks:
             )
             from roomgen_guide_fakes import ToyFlowMapBackend  # noqa: PLC0415
 
-            return _Stacks(
-                flow_backend=ToyFlowMapBackend(
-                    dtype=TORCH_DTYPES[config.backends.dtype]
-                ),
+            return Stacks(
+                flow_backend=ToyFlowMapBackend(dtype=TORCH_DTYPES[backends.dtype]),
                 sampler=None,
                 depth_estimator=FakeDepthEstimator(),
                 segmenter=FakeSegmenter(),
@@ -293,8 +315,8 @@ def _build_stacks(config: FmrgConfig, settings: RoomgenSettings) -> _Stacks:
             )
 
 
-def _lora_dir(config: FmrgConfig, settings: RoomgenSettings) -> Path:
-    directory = config.backends.lora_dir or settings.hf_home / DEFAULT_LORA_SUBPATH
+def _lora_dir(backends: FmrgBackendConfig, settings: RoomgenSettings) -> Path:
+    directory = backends.lora_dir or settings.hf_home / DEFAULT_LORA_SUBPATH
     if not (directory / LORA_WEIGHT_NAME).exists():
         raise RuntimeError(
             f"no {LORA_WEIGHT_NAME} under {directory}. Fetch the FlowMap LoRA "
@@ -305,13 +327,13 @@ def _lora_dir(config: FmrgConfig, settings: RoomgenSettings) -> Path:
     return directory
 
 
-def _flux_path(config: FmrgConfig, settings: RoomgenSettings) -> str:
+def _flux_path(backends: FmrgBackendConfig, settings: RoomgenSettings) -> str:
     """The cached snapshot directory, resolved offline — never the repo id.
 
     Handed the id, `from_pretrained` re-resolves the whole repo and pulls the
     24GB single-file roots the diffusers-format load never reads.
     """
-    checkpoint = config.backends.flux_checkpoint
+    checkpoint = backends.flux_checkpoint
     if Path(checkpoint).exists():
         return checkpoint
     from huggingface_hub import snapshot_download  # noqa: PLC0415
@@ -340,7 +362,7 @@ def _run_scene(
     scene: SceneConfig,
     *,
     config: FmrgConfig,
-    stacks: _Stacks,
+    stacks: Stacks,
     adherence: PromptAdherence,
     photo_path: Path,
     image_dir: Path,
@@ -377,24 +399,33 @@ def _run_scene(
     )
 
     if warm_up:
-        _warm_up(photo, config=config, stacks=stacks, reference=reference)
+        warm_up_walk(
+            photo,
+            stacks=stacks,
+            sampler=config.sampler,
+            guidance=config.guidance,
+            reference=reference,
+            seed=config.seeds[0],
+        )
 
     results: list[FmrgPairResult] = []
     for seed in config.seeds:
         mask_log = _MaskLog()
-        guided, guided_seconds, guided_peak = _sample(
+        guided, guided_seconds, guided_peak = sample_walk(
             photo,
-            config=config,
             stacks=stacks,
+            sampler=config.sampler,
+            guidance=config.guidance,
             reference=reference,
             eta=config.guidance.eta,
             seed=seed,
             on_mask=mask_log,
         )
-        control, control_seconds, control_peak = _sample(
+        control, control_seconds, control_peak = sample_walk(
             photo,
-            config=config,
             stacks=stacks,
+            sampler=config.sampler,
+            guidance=config.guidance,
             reference=reference,
             eta=0.0,
             seed=seed,
@@ -488,24 +519,32 @@ def _run_scene(
     return results
 
 
-def _sample(
+def sample_walk(
     photo: Float[Tensor, "1 3 height width"],
     *,
-    config: FmrgConfig,
-    stacks: _Stacks,
+    stacks: Stacks,
+    sampler: FmrgSamplerConfig,
+    guidance: FmrgGuidanceConfig,
     reference: GeometricReference,
     eta: float,
     seed: int,
+    start_sigma: float | None = None,
     on_mask: _MaskLog | None = None,
     grid_steps: int | None = None,
     window: GuidanceWindow | bool | None = True,
 ) -> tuple[Float[Tensor, "1 3 height width"], float, int | None]:
-    """One walk at `seed`; `eta` 0 is the control on the identical trajectory."""
+    """One walk at `seed`; `eta` 0 is the control on the identical trajectory.
+
+    Args:
+        start_sigma: overrides `sampler.start_sigma` for this walk alone, which
+            is how an init-strength sweep varies it without reloading anything —
+            the schedule is re-derived per `FlowMapProcess`.
+    """
     generator = torch.Generator(device=stacks.device).manual_seed(seed)
     resolved_window = (
         GuidanceWindow(
-            early_stop=config.sampler.early_stop,
-            unguided_steps=config.sampler.unguided_steps,
+            early_stop=sampler.early_stop,
+            unguided_steps=sampler.unguided_steps,
         )
         if window is True
         else (window or None)
@@ -513,12 +552,12 @@ def _sample(
     process = FlowMapProcess(
         stacks.flow_backend,
         photo,
-        steps=grid_steps if grid_steps is not None else config.sampler.grid_steps,
-        start_sigma=config.sampler.start_sigma,
+        steps=grid_steps if grid_steps is not None else sampler.grid_steps,
+        start_sigma=sampler.start_sigma if start_sigma is None else start_sigma,
         generator=generator,
         window=resolved_window,
-        stepping=config.sampler.stepping,
-        differentiate_through_velocity=config.sampler.differentiate_through_velocity,
+        stepping=sampler.stepping,
+        differentiate_through_velocity=sampler.differentiate_through_velocity,
     )
     tilt = AnnealedSignTilt(
         strength=eta,
@@ -528,15 +567,13 @@ def _sample(
         # Upstream anneals over the whole truncated grid — the guided steps plus
         # the terminal jump it never guides — not the guided window alone.
         anneal_steps=process.steps,
-        iterations=config.guidance.iterations,
+        iterations=guidance.iterations,
     )
     reward = GeometricGuidance(
         depth_estimator=stacks.depth_estimator,
         reference=reference,
-        segmenter=stacks.segmenter if config.guidance.resegment else None,
-        erosion_radius=(
-            config.guidance.erosion_radius if config.guidance.resegment else None
-        ),
+        segmenter=stacks.segmenter if guidance.resegment else None,
+        erosion_radius=(guidance.erosion_radius if guidance.resegment else None),
         on_mask=on_mask,
     )
     on_cuda = stacks.device.type == "cuda"
@@ -552,12 +589,14 @@ def _sample(
     return image.to(torch.float32), seconds, peak
 
 
-def _warm_up(
+def warm_up_walk(
     photo: Float[Tensor, "1 3 height width"],
     *,
-    config: FmrgConfig,
-    stacks: _Stacks,
+    stacks: Stacks,
+    sampler: FmrgSamplerConfig,
+    guidance: FmrgGuidanceConfig,
     reference: GeometricReference,
+    seed: int,
 ) -> None:
     """One tiny guided walk before the first timed arm; its output is discarded.
 
@@ -566,13 +605,14 @@ def _warm_up(
     growing its pools — on both the forward and the reward's backward path.
     """
     print("[warmup] 2 throwaway steps (1 guided), untimed")
-    _sample(
+    sample_walk(
         photo,
-        config=config,
         stacks=stacks,
+        sampler=sampler,
+        guidance=guidance,
         reference=reference,
-        eta=max(config.guidance.eta, 1.0),
-        seed=config.seeds[0],
+        eta=max(guidance.eta, 1.0),
+        seed=seed,
         grid_steps=2,
         window=None,
     )
@@ -583,7 +623,7 @@ def _evaluation_masks(
     control: Float[Tensor, "1 3 height width"],
     *,
     config: FmrgConfig,
-    stacks: _Stacks,
+    stacks: Stacks,
     reference: GeometricReference,
 ) -> tuple[
     Bool[Tensor, "1 height width"],
@@ -591,25 +631,37 @@ def _evaluation_masks(
     Bool[Tensor, "1 height width"],
 ]:
     """The one pixel set the pair is scored on, beside each arm's own for diagnosis."""
-    guided_own = _scorable(guided, config=config, stacks=stacks, reference=reference)
-    control_own = _scorable(control, config=config, stacks=stacks, reference=reference)
+    guided_own = scorable(
+        guided,
+        stacks=stacks,
+        reference=reference,
+        resegment=config.guidance.resegment,
+        erosion_radius=config.guidance.erosion_radius,
+    )
+    control_own = scorable(
+        control,
+        stacks=stacks,
+        reference=reference,
+        resegment=config.guidance.resegment,
+        erosion_radius=config.guidance.erosion_radius,
+    )
     return guided_own & control_own, guided_own, control_own
 
 
-def _scorable(
+def scorable(
     image: Float[Tensor, "1 3 height width"],
     *,
-    config: FmrgConfig,
-    stacks: _Stacks,
+    stacks: Stacks,
     reference: GeometricReference,
+    resegment: bool,
+    erosion_radius: int,
 ) -> Bool[Tensor, "1 height width"]:
-    if not config.guidance.resegment:
+    """The reference shell narrowed by one finished render's own segmentation."""
+    if not resegment:
         return reference.mask
     with torch.no_grad():
         segmentation = stacks.segmenter(image)
-    return reference.mask & scorable_mask(
-        segmentation, erosion_radius=config.guidance.erosion_radius
-    )
+    return reference.mask & scorable_mask(segmentation, erosion_radius=erosion_radius)
 
 
 def _vae_roundtrip(
@@ -689,13 +741,13 @@ def _git_commit() -> str:
     return completed.stdout.strip() or "unknown"
 
 
-def _walked_steps(config: FmrgConfig) -> int:
+def walked_steps(sampler: FmrgSamplerConfig) -> int:
     """The steps the truncated walk actually takes, by the window's own arithmetic."""
     window = GuidanceWindow(
-        early_stop=config.sampler.early_stop,
-        unguided_steps=config.sampler.unguided_steps,
+        early_stop=sampler.early_stop,
+        unguided_steps=sampler.unguided_steps,
     )
-    return window.guided_steps + config.sampler.unguided_steps
+    return window.guided_steps + sampler.unguided_steps
 
 
 def _write_results(summary: FmrgSummary, settings: RoomgenSettings) -> None:
