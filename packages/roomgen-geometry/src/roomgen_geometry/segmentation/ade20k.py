@@ -204,6 +204,35 @@ ARCHITECTURAL_CLASSES: Final[frozenset[int]] = frozenset(
 )
 
 
+def _shell_subset(ids: set[int]) -> frozenset[int]:
+    """A whitelist that must stay inside the shell it narrows, asserted where stated."""
+    subset = frozenset(ids)
+    outside = subset - ARCHITECTURAL_CLASSES
+    if outside:
+        raise ValueError(f"fill classes that are not shell: {sorted(outside)}")
+    return subset
+
+
+# What an inpainted hole may be filled *with*, by owner decision: the surfaces a
+# bare room is made of — wall, floor, ceiling — and its two fixed openings, and
+# nothing else. Deliberately stricter than `ARCHITECTURAL_CLASSES`: a railing, a
+# column or a staircase is legitimate shell for the *reward* — where the
+# photograph shows one, its depth is held — but a strip that grows one inside a
+# hole has invented structure the room never had, so none of them is an
+# acceptable fill. The whitelist reads the segmenter's labels, which is its
+# honest limit: a fill the segmenter MISlabels as wall sails through it, and
+# only the inpainter's negative prompt guards that side.
+FILL_CLASSES: Final[frozenset[int]] = _shell_subset(
+    {
+        0,  # wall
+        3,  # floor
+        5,  # ceiling
+        8,  # windowpane
+        14,  # door
+    }
+)
+
+
 def _named_contents(ids: set[int]) -> frozenset[int]:
     """The contents list, checked against the shell it must not overlap.
 

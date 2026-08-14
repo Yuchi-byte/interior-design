@@ -63,7 +63,10 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   so their depth is scored, and what a monocular network reads on glass (pane
   or view) is accepted as ambiguous. `STRUCTURAL_CLASSES` coincides with the
   shell and keeps its own name because the class term asks a different question
-  of the same pixels than the depth term does.
+  of the same pixels than the depth term does. `FILL_CLASSES` is the strict
+  whitelist of what an inpainted hole may be filled with — wall, floor,
+  ceiling, windowpane, door, and nothing else, a proper subset of the shell by
+  owner decision.
 - `masking.py`: `scorable_mask`, the one place a segmentation is turned into the
   pixels a reward may score, under either `MaskMode` polarity —
   `intersect_shell` keeps only affirmative shell, `subtract_contents` exempts
@@ -74,7 +77,8 @@ change. Layered `depth`/`segmentation` -> `masking` -> `alignment` -> `reward`
   segment edge where monocular depth is unreliable — a max-pool over the
   inverted mask (Chebyshev radius in pixels); the image border is not treated as
   a segment edge. `structural_mask` is the class term's reference side, read the
-  same way and eroded the same way over `STRUCTURAL_CLASSES`.
+  same way and eroded the same way over `STRUCTURAL_CLASSES`; `fill_mask` is a
+  strip acceptance's side, read the same way over `FILL_CLASSES`.
 - `alignment.py`: `align_scale_shift`, the closed-form weighted least-squares
   fit of a prediction onto a reference over the masked pixels, at a
   non-negative scale.

@@ -7,12 +7,14 @@ from roomgen_geometry.masking import (
     architectural_mask,
     contents_mask,
     erode_boundaries,
+    fill_mask,
     scorable_mask,
 )
 from roomgen_geometry.segmentation.ade20k import (
     ADE20K_LABELS,
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
+    FILL_CLASSES,
     NUM_CLASSES,
 )
 
@@ -75,6 +77,21 @@ def test_the_mask_is_true_on_exactly_the_shell_classes() -> None:
     )
 
     mask = architectural_mask(segmentation, erosion_radius=0)
+
+    assert torch.equal(mask[0, 0], torch.ones_like(mask[0, 0]))
+    assert torch.equal(mask[0, 1], torch.zeros_like(mask[0, 1]))
+
+
+def test_the_fill_mask_refuses_shell_that_is_not_an_acceptable_fill() -> None:
+    # A railing is shell the reward must hold where the photograph shows one,
+    # but not something a strip may leave standing in an inpainted hole: the
+    # whitelist admits the five bare surfaces and refuses the rest of the shell
+    # alongside the furniture.
+    railing = ADE20K_LABELS.index("railing")
+    sofa = ADE20K_LABELS.index("sofa")
+    segmentation = torch.tensor([[sorted(FILL_CLASSES), [railing, sofa] * 2 + [sofa]]])
+
+    mask = fill_mask(segmentation, erosion_radius=0)
 
     assert torch.equal(mask[0, 0], torch.ones_like(mask[0, 0]))
     assert torch.equal(mask[0, 1], torch.zeros_like(mask[0, 1]))

@@ -2,6 +2,7 @@ from roomgen_geometry.segmentation.ade20k import (
     ADE20K_LABELS,
     ARCHITECTURAL_CLASSES,
     CONTENTS_CLASSES,
+    FILL_CLASSES,
     NUM_CLASSES,
     STRUCTURAL_CLASSES,
 )
@@ -66,6 +67,19 @@ def test_the_structural_classes_hold_the_whole_shell_glazing_included() -> None:
     assert ARCHITECTURAL_CLASSES <= STRUCTURAL_CLASSES
     assert ADE20K_LABELS.index("windowpane") in STRUCTURAL_CLASSES
     assert ADE20K_LABELS.index("door") in STRUCTURAL_CLASSES
+
+
+def test_the_fill_whitelist_is_the_five_bare_surfaces_and_nothing_else() -> None:
+    # Owner decision: an inpainted hole may only be filled with wall, floor,
+    # ceiling, door or windowpane. A proper subset of the shell on purpose —
+    # railing, column and stairs keep their depth in the reward where the
+    # photograph shows them, but a strip that grows one inside a hole has
+    # invented structure the room never had.
+    assert {
+        ADE20K_LABELS.index(name)
+        for name in ("wall", "floor", "ceiling", "windowpane", "door")
+    } == FILL_CLASSES
+    assert FILL_CLASSES < ARCHITECTURAL_CLASSES
 
 
 def test_nothing_a_renovation_may_replace_is_held_to_its_photographed_class() -> None:
