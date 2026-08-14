@@ -13,7 +13,7 @@
 study: fmrg
 name: 0003_fmrg
 
-# One seed: the owner's fast-iteration setting, 2 scenes x 3 walks.
+# One seed: the owner's fast-iteration setting, 3 scenes x 3 walks.
 seeds: [0]
 
 resolution: 512
@@ -30,13 +30,19 @@ backends:
   scheduler: ddim
 
 strip:
-  # study.yaml's strip, verbatim: the shell-only inverted acceptance and the
-  # extended negative prompt were committed after the radiator/vacuum
-  # hallucinations and never validated by a run — this run validates them.
+  # study.yaml's strip, verbatim. The acceptance is the strict fill whitelist
+  # (`FILL_CLASSES`: wall, floor, ceiling, door, windowpane — nothing else, by
+  # owner decision) because the shell-wide check waved through a hallucinated
+  # ledge and a wheeled machine EoMT labelled as shell; the negative prompt
+  # refuses those shapes by name, which is the only guard against fills the
+  # segmenter mislabels as wall — a label-reading whitelist cannot catch those.
   prompt: empty room, bare floor, bare wall, no furniture, plain interior
-  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, cabinet, box, vacuum cleaner, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, ledge, counter, cabinet, box, machine, vacuum cleaner, cart, trolley, wheels, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
   dilation_radius: 8
-  passes: 4
+  # One more than the shell-wide acceptance ran: the stricter whitelist
+  # repaints more, the loop stops early once clean, and the per-pass residuals
+  # in results.json report whether the budget was used.
+  passes: 5
   steps: 40
   fill_strength: 0.85
   guidance_scale: 12.0
@@ -67,9 +73,14 @@ adherence:
   kind: clip
   checkpoint: openai/clip-vit-large-patch14
 
-# Two of the SD1.5-era study's three scenes, prompts verbatim.
+# Two of the SD1.5-era study's three scenes, prompts verbatim, plus the
+# kitchen that was FMRG's hardest scene in 0002 (worst guided depth error
+# there) — included exactly because it was, to see whether the two-stage
+# protocol changes that.
 scenes:
   - photo: scandi_living_room
     prompt: a warm scandinavian living room, pale oak furniture, linen sofa, wool rug, soft daylight
   - photo: ny_loft_bedroom
     prompt: a minimalist loft bedroom, low platform bed, linen bedding, paper lantern, potted plant
+  - photo: blue_white_kitchen
+    prompt: a modern farmhouse kitchen, sage green cabinets, marble worktop, brass fixtures, pendant lights
