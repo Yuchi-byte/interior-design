@@ -13,9 +13,15 @@ from roomgen_guide.eval.depth import (
     shell_coverage,
     signed_depth_residual_map,
 )
+from roomgen_guide.eval.image_similarity import (
+    DEFAULT_IMAGE_SIMILARITY_CHECKPOINT,
+    ClipImageSimilarity,
+)
 
 __all__ = [
     "DEFAULT_CHECKPOINT",
+    "DEFAULT_IMAGE_SIMILARITY_CHECKPOINT",
+    "ClipImageSimilarity",
     "ClipPromptAdherence",
     "ContentsChangeAdherence",
     "PromptAdherence",

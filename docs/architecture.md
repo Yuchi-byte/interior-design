@@ -151,6 +151,13 @@ The guided sampler and the experiment harness shared with `experiments/`.
   frozen CLIP scoring the decoded x̂₀ against a prompt embedding with the
   gradient kept alive through tensor-op preprocessing — and `ClipTextEnergies`,
   the loaded-once model that turns each prompt into one.
+- `guidance/image_reference.py`: the image-reference energies that hold the
+  render near the user's photo in a frozen vision model's feature space —
+  `ImageReferenceGuidance` (negative embedding cosine) and
+  `PerceptualReferenceGuidance` (LPIPS-shaped multi-stage feature distance),
+  each built by a loaded-once factory (CLIP tower, DINOv2 patch tokens, the
+  SigLIP tower Redux ships, or torchvision's VGG16 pyramid) that freezes the
+  photo's features as a constant while the render side stays differentiable.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
   re-runs the depth model, and scores it against a `GeometricReference` over the
   reference's shell — intersected, whenever a segmenter is configured, with the
@@ -203,7 +210,10 @@ The guided sampler and the experiment harness shared with `experiments/`.
   score because a render scored on nothing scores zero — and the
   `adherence.py` `PromptAdherence` boundary whose
   `clip.py` implementation scores the render against the prompt — the metric
-  that catches the degenerate win where guidance succeeds by not renovating.
+  that catches the degenerate win where guidance succeeds by not renovating —
+  and `image_similarity.py`'s `ClipImageSimilarity`, the render-to-photo cosine
+  under an independent eval CLIP, read beside adherence so copying the photo is
+  visible as similarity without renovation.
 
 ## Test doubles
 

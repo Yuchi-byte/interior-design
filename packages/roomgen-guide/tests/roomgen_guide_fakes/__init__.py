@@ -18,6 +18,11 @@ from roomgen_guide_fakes.flow_map import (
     ToyFlowMapBackend,
     ToyFlowMapProcess,
 )
+from roomgen_guide_fakes.image_reference import (
+    FakePerceptualExtractor,
+    fake_image_reference_energies,
+    fake_perceptual_energies,
+)
 from roomgen_guide_fakes.inpaint import FakeInpaintPipeline
 from roomgen_guide_fakes.pipeline import (
     LATENT_CHANNELS,
@@ -33,10 +38,13 @@ __all__ = [
     "START_TIME",
     "FakeClipImageEncoder",
     "FakeInpaintPipeline",
+    "FakePerceptualExtractor",
     "FakePipeline",
     "FakeScheduler",
     "FakeVae",
     "ToyFlowMapBackend",
     "ToyFlowMapProcess",
     "fake_clip_text_guidance",
+    "fake_image_reference_energies",
+    "fake_perceptual_energies",
 ]
