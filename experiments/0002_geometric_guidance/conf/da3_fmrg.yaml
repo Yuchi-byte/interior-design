@@ -47,9 +47,9 @@ sampler:
   differentiate_through_velocity: false
 
 guidance:
-  # The eta sweep's recommended default; one guided arm per mode beside the
-  # shared control, all at this strength.
-  eta: 15.0
+  # Upstream's headline strength, the owner-set default; one guided arm per
+  # mode beside the shared control, all at this strength.
+  eta: 5.0
   iterations: 1
   erosion_radius: 2
   resegment: true

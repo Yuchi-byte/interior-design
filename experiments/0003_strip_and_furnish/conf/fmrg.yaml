@@ -59,8 +59,8 @@ furnish:
   probe_sigmas: [0.75]
   stepping: endpoint_reuse
   differentiate_through_velocity: false
-  # The eta sweep's recommended default: 5 under-steers, 45 degrades renders.
-  eta: 15.0
+  # Upstream's headline strength, the owner-set default (15 judged too high).
+  eta: 5.0
   iterations: 1
   erosion_radius: 2
   resegment: true

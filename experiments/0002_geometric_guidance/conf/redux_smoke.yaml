@@ -34,7 +34,7 @@ sampler:
   differentiate_through_velocity: false
 
 guidance:
-  eta: 15.0
+  eta: 5.0
   iterations: 1
   erosion_radius: 2
   resegment: true

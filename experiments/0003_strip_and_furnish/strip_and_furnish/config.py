@@ -303,7 +303,7 @@ class FmrgFurnishConfig(Config):
     probe_sigmas: tuple[Annotated[float, Field(gt=0.0, le=1.0)], ...] = ()
     stepping: Literal["endpoint_reuse", "two_time"] = "endpoint_reuse"
     differentiate_through_velocity: bool = False
-    eta: Annotated[float, Field(gt=0.0)] = 15.0
+    eta: Annotated[float, Field(gt=0.0)] = 5.0
     iterations: Annotated[int, Field(ge=1)] = 1
     erosion_radius: Annotated[int, Field(ge=0)] = 2
     resegment: bool = True
