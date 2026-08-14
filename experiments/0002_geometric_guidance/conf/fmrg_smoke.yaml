@@ -1,0 +1,45 @@
+# Plumbing, not a claim: the whole FMRG study flow on the weightless
+# `ToyFlowMapBackend` and the geometry doubles, CPU-only, offline, in seconds.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config fmrg_smoke
+study: fmrg
+name: 0002_fmrg_smoke
+
+seeds: [0, 1]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  # bfloat16 on purpose: the toy backend speaks it at its boundary, which is
+  # exactly the trap the adapter's float32 state rule exists for.
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  grid_steps: 24
+  early_stop: 6
+  unguided_steps: 1
+  start_sigma: 0.9
+  text_guidance_scale: 3.5
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+
+guidance:
+  # The toy walk's states are O(1) pixels, so upstream's eta lands in range.
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: ny_loft_bedroom
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami

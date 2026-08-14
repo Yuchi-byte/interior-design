@@ -1,9 +1,10 @@
 """The typed configuration of this framework's studies; one variant per `conf/` file.
 
-Two study shapes share the machinery: `benchmark` is guided-vs-control at one
-prompt per scene, `framing` is the prompt-framing 2x2 (style description vs
-renovation instruction, each unguided and guided). A `conf/` file names its
-shape in a top-level `study` key and `load_study_config` dispatches on it.
+The study shapes share the machinery: `benchmark` is guided-vs-control at one
+prompt per scene on the SD1.5 stack, `fmrg` is the same claim on FMRG's FLUX
+flow map, `framing` is the prompt-framing 2x2 (style description vs renovation
+instruction, each unguided and guided). A `conf/` file names its shape in a
+top-level `study` key and `load_study_config` dispatches on it.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Annotated, Final, Literal
 
 import torch
 from omegaconf import DictConfig, OmegaConf
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from roomgen_geometry.alignment import AlignmentMode
 from roomgen_geometry.depth.depth_anything import DEFAULT_CHECKPOINT as DEPTH_CHECKPOINT
@@ -44,6 +45,10 @@ TORCH_DTYPES: Final[dict[DTypeName, torch.dtype]] = {
 # side that is not a multiple of 64 is silently rounded by the pipeline and the
 # render no longer matches the reference the reward was built from.
 LATENT_ALIGNMENT: Final = 64
+
+# FLUX's VAE downsamples by 8 and its transformer packs the latents 2x2, so a
+# side has to be a multiple of 16 to survive the round trip unrounded.
+FLUX_LATENT_ALIGNMENT: Final = 16
 
 
 class SceneConfig(Config):
@@ -178,6 +183,138 @@ class BenchmarkConfig(ExperimentConfig):
     @classmethod
     def _aligned_to_the_latent_grid(cls, resolution: int) -> int:
         return _validate_resolution(resolution)
+
+
+class FmrgBackendConfig(Config):
+    """The FLUX flow-map stack an `fmrg` study drives, and where its pieces live.
+
+    Args:
+        kind: `real` loads FLUX.1-dev with the FlowMap LoRA through the vendored
+            FMRG sampler; `fake` swaps in the weightless `ToyFlowMapBackend` the
+            adapter's tests walk, which is what `conf/fmrg_smoke.yaml` selects.
+        dtype: the transformer's and VAE's parameter dtype. The walk's state is
+            float32 regardless (`FlowMapProcess`), and the depth reward is
+            evaluated in the depth backend's own dtype.
+        flux_checkpoint: Hub id (or local path) of the FLUX base weights,
+            resolved against the `ROOMGEN_HF_HOME` cache offline — the run never
+            re-downloads a 33GB checkpoint mid-benchmark.
+        lora_dir: directory holding the FlowMap LoRA's
+            `pytorch_lora_weights.safetensors` for the sampled resolution;
+            `None` means `<ROOMGEN_HF_HOME>/fmrg/flux-flowmap-lora-512`, where
+            the repo's download instructions put it.
+        fmrg_path: the vendored FMRG checkout, reached through `sys.path`
+            because upstream ships no installable package; `None` means this
+            repo's `packages/fmrg`.
+    """
+
+    kind: Literal["real", "fake"]
+    device: Annotated[str, Field(min_length=1)] = "cpu"
+    deterministic: bool = False
+    dtype: DTypeName = "bfloat16"
+    depth_dtype: DTypeName = "float32"
+    segmentation_dtype: DTypeName = "float32"
+    flux_checkpoint: Annotated[str, Field(min_length=1)] = (
+        "black-forest-labs/FLUX.1-dev"
+    )
+    lora_dir: Path | None = None
+    fmrg_path: Path | None = None
+    depth_checkpoint: Annotated[str, Field(min_length=1)] = DEPTH_CHECKPOINT
+    segmentation_checkpoint: Annotated[str, Field(min_length=1)] = (
+        SEGMENTATION_CHECKPOINT
+    )
+
+
+class FmrgSamplerConfig(Config):
+    """FMRG's sampling budget, identical for the guided walk and its control.
+
+    The defaults are upstream's `fmrgj_nfe100` reward-guidance operating point
+    (`packages/fmrg/experiments/geneval_nfe_sweep/generate_fmrg.sh`), which the
+    overnight pod runs validated on this reward: a dense sigma grid, the walk
+    truncated to its head, and one flow-map jump covering the rest.
+
+    Args:
+        grid_steps: resolution of the dense sigma grid (`num_steps`); the walk
+            never visits most of it.
+        early_stop: how many of the grid's sigmas the walk traverses before the
+            jump to data — FMRG's `early_stop`, the guidance window.
+        unguided_steps: how many steps the final jump is split into, unguided.
+        start_sigma: how far up the interpolant the photo is renoised, pre-shift
+            (`FlowMapProcess` warps it by resolution); 1.0 discards the photo.
+        text_guidance_scale: FLUX.1-dev's embedded guidance — conditioning, not
+            reward steering.
+        stepping: which velocity the step is taken off
+            (`roomgen_guide.adapters.flow_map.FlowMapStepping`).
+        differentiate_through_velocity: FMRG-J's pullback through the
+            transformer rather than the cheap decoder-only one.
+    """
+
+    grid_steps: Annotated[int, Field(ge=1)] = 208
+    early_stop: Annotated[int, Field(ge=2)] = 51
+    unguided_steps: Annotated[int, Field(ge=1)] = 1
+    start_sigma: Annotated[float, Field(gt=0.0, le=1.0)] = 0.9
+    text_guidance_scale: Annotated[float, Field(ge=0.0)] = 3.5
+    stepping: Literal["endpoint_reuse", "two_time"] = "endpoint_reuse"
+    differentiate_through_velocity: bool = False
+
+    @model_validator(mode="after")
+    def _the_window_stops_inside_the_grid(self) -> FmrgSamplerConfig:
+        # `GuidanceWindow.truncate` enforces the same bound, but only once a
+        # 24GB transformer is already loaded; a config error should not cost one.
+        if self.early_stop > self.grid_steps:
+            raise ValueError(
+                f"early_stop {self.early_stop} is past the end of a "
+                f"{self.grid_steps}-step grid: the window has to stop inside "
+                f"the walk it truncates"
+            )
+        return self
+
+
+class FmrgGuidanceConfig(Config):
+    """The geometric guidance term, in FMRG's own step rule.
+
+    Args:
+        eta: FMRG's `step_size` — the annealed per-unit-time displacement of
+            `AnnealedSignTilt`, not comparable to the benchmark's raw-gradient
+            `strength`; 0 is the unguided control.
+        iterations: FMRG's `n_opt` inner loop, model calls per guided step.
+        erosion_radius: pixels trimmed either side of a segment edge before a
+            shell mask is trusted.
+        resegment: score depth only on reference-shell AND prediction-shell, as
+            the benchmark study does.
+    """
+
+    eta: Annotated[float, Field(ge=0.0)] = 5.0
+    iterations: Annotated[int, Field(ge=1)] = 1
+    erosion_radius: Annotated[int, Field(ge=0)] = 2
+    resegment: bool = True
+
+
+class FmrgConfig(ExperimentConfig):
+    """Guided-vs-control on FMRG's FLUX flow map: the benchmark claim, new sampler.
+
+    Args:
+        scenes: the (photo, prompt) pairs the run measures, each at every seed.
+        resolution: side of the square the photos are centre-cropped and resized
+            to, a multiple of 16 (FLUX's VAE downsamples by 8 and packs 2x2).
+    """
+
+    study: Literal["fmrg"]
+    scenes: Annotated[tuple[SceneConfig, ...], Field(min_length=1)]
+    resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    backends: FmrgBackendConfig
+    sampler: FmrgSamplerConfig = FmrgSamplerConfig()
+    guidance: FmrgGuidanceConfig = FmrgGuidanceConfig()
+    adherence: AdherenceConfig
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
+        if resolution % FLUX_LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
+                f"FLUX's packed latent grid, got {resolution}"
+            )
+        return resolution
 
 
 class FramingSceneConfig(Config):
@@ -320,7 +457,7 @@ def _validate_resolution(resolution: int) -> int:
 
 def load_study_config(
     path: Path, overrides: Sequence[str] | None = None
-) -> BenchmarkConfig | FramingConfig | AlignmentStudyConfig:
+) -> BenchmarkConfig | FmrgConfig | FramingConfig | AlignmentStudyConfig:
     """Load whichever study shape `path` declares in its top-level `study` key.
 
     The key is peeked before validation because the shapes are different
@@ -334,6 +471,8 @@ def load_study_config(
     match study:
         case "benchmark":
             return BenchmarkConfig.from_file(path, overrides)
+        case "fmrg":
+            return FmrgConfig.from_file(path, overrides)
         case "framing":
             return FramingConfig.from_file(path, overrides)
         case "da3_alignment":
@@ -341,5 +480,5 @@ def load_study_config(
         case _:
             raise ValueError(
                 f"{path} declares unknown study {study!r}; "
-                "known studies: benchmark, framing, da3_alignment"
+                "known studies: benchmark, fmrg, framing, da3_alignment"
             )

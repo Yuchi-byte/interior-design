@@ -14,9 +14,10 @@ import pytest
 import torch
 from framework.alignment_study import CONTROL_ARM, arm_specs
 from framework.config import (
-    LATENT_ALIGNMENT,
+    FLUX_LATENT_ALIGNMENT,
     AlignmentStudyConfig,
     BenchmarkConfig,
+    FmrgConfig,
     FramingConfig,
     load_study_config,
 )
@@ -37,8 +38,12 @@ def test_every_shipped_variant_validates(variant: str) -> None:
 
     assert config.scenes
     assert config.seeds
-    assert config.resolution % LATENT_ALIGNMENT == 0
-    assert isinstance(config, BenchmarkConfig | FramingConfig | AlignmentStudyConfig)
+    # Every stack's latent grid divides the SD one's, so the loosest alignment
+    # any variant may claim is FLUX's; each config enforces its own on top.
+    assert config.resolution % FLUX_LATENT_ALIGNMENT == 0
+    assert isinstance(
+        config, BenchmarkConfig | FmrgConfig | FramingConfig | AlignmentStudyConfig
+    )
 
 
 def test_framing_scenes_vary_framing_alone() -> None:
@@ -65,6 +70,28 @@ def test_the_alignment_study_runs_one_guided_arm_per_mode_beside_one_control() -
     assert all(spec.guided for spec in specs[1:])
     # The claim under test is raw against shift-only; both must actually run.
     assert set(config.guidance.arms) == {"none", "shift"}
+
+
+def test_the_fmrg_study_measures_the_benchmarks_scenes_at_its_seeds() -> None:
+    """The head-to-head claim: an FMRG row sits beside an SD1.5 row at the same (scene, seed)."""
+    fmrg = load_study_config(CONF_DIR / "fmrg.yaml")
+    benchmark = load_study_config(CONF_DIR / "benchmark.yaml")
+
+    assert isinstance(fmrg, FmrgConfig)
+    assert isinstance(benchmark, BenchmarkConfig)
+    assert fmrg.scenes == benchmark.scenes
+    assert fmrg.seeds == benchmark.seeds
+    # Scored under the same adherence checkpoint, or the columns stop comparing.
+    assert fmrg.adherence == benchmark.adherence
+
+
+def test_the_fmrg_window_stops_inside_the_grid_it_truncates() -> None:
+    """A window past the grid's end is a config error at load, not a mid-run crash."""
+    with pytest.raises(ValueError, match="early_stop"):
+        load_study_config(
+            CONF_DIR / "fmrg_smoke.yaml",
+            ["sampler.grid_steps=4", "sampler.early_stop=6"],
+        )
 
 
 def test_a_dotlist_override_reaches_a_nested_field() -> None:

@@ -1,0 +1,76 @@
+# The benchmark claim on FMRG's FLUX flow map: geometric guidance keeps the
+# room while restyling it, guided against an unguided control at the identical
+# seed. The default variant of this framework — `run.py` runs it when no
+# `--config` is named. Needs a GPU (~28GiB peak at 512²), the FLUX.1-dev
+# diffusers weights in ROOMGEN_HF_HOME and the 512-res FlowMap LoRA under
+# <ROOMGEN_HF_HOME>/fmrg/flux-flowmap-lora-512.
+study: fmrg
+name: 0002_fmrg
+
+# The benchmark's own seed set, so a row here sits beside an SD1.5 row measured
+# at the same (scene, seed).
+seeds: [0, 1, 2, 3]
+
+# The 512-res LoRA's training resolution; photos are centre-cropped square.
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  # bf16 is what the FlowMap LoRA was trained in and the only dtype the 12B
+  # transformer fits a 32GB card in. The walk's state stays float32 by the
+  # adapter's contract, and the depth reward runs float32 beside it.
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  # FMRG's `fmrgj_nfe100` operating point, read off upstream's own sweep script
+  # rather than re-tuned: a 208-point sigma grid, the walk truncated to its
+  # first 51 sigmas, one uncontrolled flow-map jump covering the rest.
+  grid_steps: 208
+  early_stop: 51
+  unguided_steps: 1
+  # The renovation setting: renoise the photo deep enough that the restyle is
+  # real (FLUX warps this by resolution — the walk actually starts at ~0.94).
+  # The SD1.5 v1 claim was frozen at noise 0.6; new comparisons run at 0.9.
+  start_sigma: 0.9
+  # FLUX.1-dev's own embedded guidance default — conditioning, not steering.
+  text_guidance_scale: 3.5
+  stepping: endpoint_reuse
+  # The cheap pullback: the reward gradient traverses the decoder and the flow
+  # map's arithmetic, never the transformer.
+  differentiate_through_velocity: false
+
+guidance:
+  # FMRG's `step_size` lambda at upstream's headline value; n_opt 1.
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+adherence:
+  # The same metric and checkpoint the SD1.5 benchmark rows were scored under,
+  # so the adherence columns are comparable across the two stacks.
+  kind: clip
+  checkpoint: openai/clip-vit-base-patch32
+
+# The benchmark's eight scenes and three prompts, verbatim.
+scenes:
+  - photo: hotel_suite_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: scandi_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: lakehouse_living_room
+    prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: bedroom_warm_ensuite
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: bedroom_twin_blue
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: ny_loft_bedroom
+    prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: hostel_kitchen
+    prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+  - photo: blue_white_kitchen
+    prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

@@ -2,14 +2,15 @@
 
 Glue only — the sampler and the eval are `roomgen_guide`'s, the run loop is
 `framework/`'s. A variant names its study shape in a top-level `study` key
-(`benchmark` is guided-vs-control, `framing` is the prompt-framing 2x2). The
-run reports numbers and renders the gallery beside them; reading them is the
+(`fmrg` is guided-vs-control on the FLUX flow map and the default, `benchmark`
+is the same claim on SD1.5, `framing` is the prompt-framing 2x2). The run
+reports numbers and renders the gallery beside them; reading them is the
 owner's job, so it exits non-zero only on an actual error.
 
-    uv run --no-sync python experiments/0002_geometric_guidance/run.py --config smoke
+    uv run --no-sync python experiments/0002_geometric_guidance/run.py --config fmrg_smoke
+    uv run --no-sync python experiments/0002_geometric_guidance/run.py                # fmrg
     uv run --no-sync python experiments/0002_geometric_guidance/run.py --config benchmark
-    uv run --no-sync python experiments/0002_geometric_guidance/run.py --config framing
-    ... --config benchmark --set guidance.strength=150
+    ... --config fmrg --set guidance.eta=2.5
 """
 
 from __future__ import annotations
@@ -28,9 +29,11 @@ from framework.benchmark import Summary, run_benchmark
 from framework.config import (
     AlignmentStudyConfig,
     BenchmarkConfig,
+    FmrgConfig,
     FramingConfig,
     load_study_config,
 )
+from framework.fmrg_study import FmrgSummary, run_fmrg_study
 from framework.framing import ARMS, FramingSummary, framing_comparisons, run_framing
 from framework.framing_gallery import write_framing_gallery
 from framework.gallery import write_gallery
@@ -44,8 +47,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config",
-        default="benchmark",
-        help=f"variant to run, by file stem in {CONF_DIR} (default: benchmark)",
+        default="fmrg",
+        help=f"variant to run, by file stem in {CONF_DIR} (default: fmrg, the "
+        "FLUX flow-map study — the SD1.5 claim config is `benchmark`)",
     )
     parser.add_argument(
         "--set",
@@ -61,14 +65,23 @@ def main() -> int:
         CONF_DIR / f"{arguments.config}.yaml", arguments.overrides
     )
     settings = RoomgenSettings()
+    pull = (
+        f"eta {config.guidance.eta}"
+        if isinstance(config, FmrgConfig)
+        else f"strength {config.guidance.strength}"
+    )
     print(
         f"[config] {config.name} ({arguments.config}.yaml, study {config.study}): "
         f"{len(config.scenes)} scenes x {len(config.seeds)} seeds on "
         f"{config.backends.kind} backends, device {config.backends.device}, "
-        f"{config.backends.dtype}, guidance strength {config.guidance.strength}"
+        f"{config.backends.dtype}, guidance {pull}"
     )
 
-    if isinstance(config, FramingConfig):
+    if isinstance(config, FmrgConfig):
+        fmrg_summary = run_fmrg_study(config, settings)
+        _report_fmrg(fmrg_summary)
+        gallery = write_gallery(fmrg_summary.output_dir / "results.json")
+    elif isinstance(config, FramingConfig):
         framing_summary = run_framing(config, settings)
         _report_framing(framing_summary)
         gallery = write_framing_gallery(framing_summary.output_dir / "results.json")
@@ -108,6 +121,47 @@ def _report(summary: Summary) -> None:
             f"{_share(metrics.adherence_ratio):>11}"
             f"{metrics.common_coverage:>9.0%} "
             f"{result.guided_seconds:>8.1f}{result.control_seconds:>9.1f}"
+        )
+    print(
+        f"{'mean':<26}{'':>5}"
+        f"{_mean(r.metrics.control_depth_error for r in summary.results):>11.5f}"
+        f"{_mean(r.metrics.guided_depth_error for r in summary.results):>11.5f}"
+        f"{_signed(_optional_mean(r.metrics.depth_error_reduction for r in summary.results)):>9}"
+        f"{_share(_optional_mean(r.metrics.adherence_ratio for r in summary.results)):>11}"
+        f"{_mean(r.metrics.common_coverage for r in summary.results):>9.0%} "
+        f"{_mean(r.guided_seconds for r in summary.results):>8.1f}"
+        f"{_mean(r.control_seconds for r in summary.results):>9.1f}"
+    )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
+
+
+_FMRG_COLUMNS = (
+    f"{'scene':<26}{'seed':>5}{'depth ctl':>11}{'depth gd':>11}{'Δdepth':>9}"
+    f"{'adherence':>11}{'coverage':>10}{'sec gd':>9}{'sec ctl':>9}{'GiB gd':>8}"
+)
+
+
+def _report_fmrg(summary: FmrgSummary) -> None:
+    """The FLUX study's numbers, per (scene, seed) and in the mean. No claim is made."""
+    print(f"\n[metrics] {len(summary.results)} (scene, seed) pairs\n{_FMRG_COLUMNS}")
+    for result in summary.results:
+        metrics = result.metrics
+        peak = result.guided_peak_vram_bytes
+        print(
+            f"{result.scene[:25]:<26}{result.seed:>5}"
+            f"{metrics.control_depth_error:>11.5f}{metrics.guided_depth_error:>11.5f}"
+            f"{_signed(metrics.depth_error_reduction):>9}"
+            f"{_share(metrics.adherence_ratio):>11}"
+            f"{metrics.common_coverage:>9.0%} "
+            f"{result.guided_seconds:>8.1f}{result.control_seconds:>9.1f}"
+            f"{'' if peak is None else f'{peak / 1024**3:>8.2f}'}"
         )
     print(
         f"{'mean':<26}{'':>5}"
