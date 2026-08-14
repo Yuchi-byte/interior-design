@@ -5,9 +5,9 @@ from torch import Tensor
 from roomgen_fakes import FakeSegmenter
 from roomgen_geometry.masking import (
     architectural_mask,
+    contents_mask,
     erode_boundaries,
     scorable_mask,
-    structural_mask,
 )
 from roomgen_geometry.segmentation.ade20k import (
     ADE20K_LABELS,
@@ -129,7 +129,9 @@ def test_the_two_sides_agree_on_every_id_one_of_the_lists_names() -> None:
     assert int(shell.sum()) == len(ARCHITECTURAL_CLASSES)
 
 
-def test_an_id_neither_list_names_is_the_photo_s_to_drop_and_a_render_s_to_keep() -> None:
+def test_an_id_neither_list_names_is_the_photo_s_to_drop_and_a_render_s_to_keep() -> (
+    None
+):
     unclaimed = sorted(
         set(range(NUM_CLASSES)) - ARCHITECTURAL_CLASSES - CONTENTS_CLASSES
     )
@@ -196,6 +198,55 @@ def test_erosion_grows_the_region_a_render_is_excused_from() -> None:
     assert int(uneroded.sum()) == 16 * 16 - 4 * 4
     assert bool((eroded <= uneroded).all())
     assert int(eroded.sum()) == 16 * 16 - 8 * 8
+
+
+def test_the_contents_mask_is_true_on_exactly_the_furniture() -> None:
+    segmentation = torch.tensor(
+        [
+            [
+                sorted(CONTENTS_CLASSES)[: len(ARCHITECTURAL_CLASSES)],
+                sorted(ARCHITECTURAL_CLASSES),
+            ]
+        ]
+    )
+
+    contents = contents_mask(segmentation, dilation_radius=0)
+
+    assert torch.equal(contents[0, 0], torch.ones_like(contents[0, 0]))
+    assert torch.equal(contents[0, 1], torch.zeros_like(contents[0, 1]))
+
+
+def test_an_id_neither_list_names_is_not_contents_to_remove() -> None:
+    unclaimed = sorted(
+        set(range(NUM_CLASSES)) - ARCHITECTURAL_CLASSES - CONTENTS_CLASSES
+    )
+    segmentation = torch.tensor(unclaimed).reshape(1, 1, len(unclaimed))
+
+    assert not bool(contents_mask(segmentation, dilation_radius=0).any())
+
+
+@pytest.mark.parametrize("radius", [1, 2, 3])
+def test_dilation_grows_the_furniture_by_exactly_the_radius(radius: int) -> None:
+    segmentation = _room_with_block(_SOFA)
+
+    dilated = contents_mask(segmentation, dilation_radius=radius)
+
+    assert int(dilated.sum()) == (4 + 2 * radius) ** 2
+    assert bool(dilated[:, 6 - radius : 10 + radius, 6 - radius : 10 + radius].all())
+
+
+def test_the_strip_removes_exactly_what_the_reward_declines_to_score(
+    fake_segmenter: FakeSegmenter, room_photo: Tensor
+) -> None:
+    # The two masks are one decision read in opposite directions: a pixel the
+    # inpainter is handed is a pixel the depth reward would have excused anyway,
+    # so a strip can never paint over geometry the reward is still holding.
+    segmentation = fake_segmenter(room_photo)
+
+    contents = contents_mask(segmentation, dilation_radius=2)
+    scorable = scorable_mask(segmentation, erosion_radius=2)
+
+    assert torch.equal(contents, ~scorable)
 
 
 def test_erosion_follows_the_exemption_rather_than_the_label_map() -> None:

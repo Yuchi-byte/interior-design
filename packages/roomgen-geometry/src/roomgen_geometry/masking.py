@@ -1,4 +1,4 @@
-"""The architectural shell mask and the boundary erosion that trims it."""
+"""The masks read off a segmentation: what a reward may score, what a strip may remove."""
 
 from __future__ import annotations
 
@@ -77,6 +77,48 @@ def structural_mask(
     return erode_boundaries(
         _is_any_of(segmentation, STRUCTURAL_CLASSES), radius=erosion_radius
     )
+
+
+def contents_mask(
+    segmentation: Int[Tensor, "batch height width"], *, dilation_radius: int
+) -> Bool[Tensor, "batch height width"]:
+    """The pixels holding what a renovation may remove, grown by `dilation_radius`.
+
+    Args:
+        segmentation: ADE20K-150 model output ids, as
+            :class:`~roomgen_geometry.segmentation.base.Segmenter` returns them.
+        dilation_radius: in pixels (Chebyshev), how far past the segment the mask
+            reaches.
+
+    True on :data:`~roomgen_geometry.segmentation.ade20k.CONTENTS_CLASSES` and on
+    nothing else — an id the partition does not name is not contents, the same
+    affirmative reading `scorable_mask` excuses a prediction under. Dilated
+    rather than eroded because this mask is the region an object is *taken out
+    of*: a contact shadow, a segment fringe and a soft edge all sit just outside
+    the segment, and a caller that stops at the boundary leaves the evidence of
+    the object it removed.
+    """
+    return _dilate(_is_any_of(segmentation, CONTENTS_CLASSES), radius=dilation_radius)
+
+
+def _dilate(
+    mask: Bool[Tensor, "batch height width"], *, radius: int
+) -> Bool[Tensor, "batch height width"]:
+    if radius < 0:
+        raise ValueError(f"dilation radius must not be negative, got {radius}")
+    if radius == 0:
+        return mask
+    # Binary dilation as a max-pool over the mask: a pixel is kept if any True
+    # pixel falls in its (2*radius+1)² neighbourhood. The pool pads with -inf,
+    # which is below the False 0.0, so the frame edge grows against real
+    # neighbours only.
+    neighbourhood_has_true = max_pool2d(
+        mask.to(torch.float32).unsqueeze(1),
+        kernel_size=2 * radius + 1,
+        stride=1,
+        padding=radius,
+    )
+    return neighbourhood_has_true.squeeze(1) > 0.0
 
 
 def _is_any_of(
