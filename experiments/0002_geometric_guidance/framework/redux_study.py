@@ -30,6 +30,7 @@ from torch import Tensor
 
 from framework.config import TORCH_DTYPES, FmrgReduxConfig, FramingSceneConfig
 from framework.depth_maps import write_disparity_map, write_masked_disparity_map
+from framework.fmrg_alignment_study import shell_class_table
 from framework.fmrg_study import (
     PHOTO_SUBDIRECTORY,
     Stacks,
@@ -634,6 +635,11 @@ def _write_results(summary: ReduxSummary, settings: RoomgenSettings) -> None:
                 },
                 "started_at": summary.started_at,
                 "git_commit": summary.git_commit,
+                # The shell definition is under revision (windows, doors, soft
+                # furnishings joining): the results must say which one scored
+                # them, not point at whatever the package says later.
+                "shell_classes": shell_class_table(),
+                "eta": summary.config.guidance.eta,
                 "torch_version": torch.__version__,
                 "device_name": summary.device_name,
                 "walked_steps": summary.walked_steps,

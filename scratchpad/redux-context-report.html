@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image as context: the photo as Redux tokens in the FMRG prior</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #ddd;
+    --accent: #0b6e4f; --warn: #a05a00; --card: #f7f7f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181c; --fg: #e6e4de; --muted: #9a9890; --line: #33363c;
+            --accent: #5bc79a; --warn: #e0a458; --card: #1e2126; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1120px; padding: 2rem 1.25rem 5rem;
+         background: var(--bg); color: var(--fg);
+         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.25rem; margin: 2.8rem 0 .5rem; border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1.02rem; margin: 1.8rem 0 .4rem; }
+  p  { margin: .55rem 0; }
+  ul { margin: .55rem 0; }
+  li { margin: .35rem 0; }
+  .sub { color: var(--muted); font-size: .92rem; }
+  .headline { background: var(--card); border-left: 4px solid var(--accent);
+              padding: .8rem 1rem; margin: 1.2rem 0; border-radius: 0 6px 6px 0; }
+  .caveat { background: var(--card); border-left: 4px solid var(--warn);
+            padding: .8rem 1rem; margin: 1.2rem 0; border-radius: 0 6px 6px 0; }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: .88em; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .88rem; }
+  th, td { border: 1px solid var(--line); padding: .35rem .55rem; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: var(--card); font-weight: 600; }
+  .tablewrap { overflow-x: auto; }
+  .grid4 { display: grid; gap: 8px; margin: .6rem 0 1.4rem; grid-template-columns: repeat(2, 1fr); }
+  @media (min-width: 720px) { .grid4 { grid-template-columns: repeat(4, 1fr); } }
+  figure { margin: 0; }
+  figure.ghost { min-height: 1px; }
+  figure img { width: 100%; height: auto; display: block; border-radius: 4px; border: 1px solid var(--line); }
+  figure img + img { margin-top: 4px; }
+  figcaption { font-size: .74rem; color: var(--muted); text-align: center; padding-top: .25rem; line-height: 1.35; }
+</style>
+</head>
+<body>
+
+<h1>Image as context: the reference photo as FLUX.1-Redux tokens in the FMRG prior</h1>
+<p class="sub">Study <span class="mono">fmrg_redux</span> in framework <span class="mono">0002_geometric_guidance</span> ·
+2026-08-14 rerun, local RTX 5090 · commit <span class="mono">fab13673</span> ·
+2 scenes × 6 arms, seed 0, <b>eta 5.0</b> guided (owner reset from 15),
+start_sigma 0.9 (effective 0.9441),
+Redux scales 0.3, 1 · shell incl. windowpane/door/curtain/rug, recorded in
+<span class="mono">results.json</span> · eta-15 run preserved as <span class="mono">results_eta15.json</span></p>
+
+<h2>Verdict</h2>
+<div class="headline">
+<p><b>Does image-as-context keep the layout better than text alone?</b> In the mean, yes — unguided depth error falls from 0.888 (A) to 0.150 at scale 0.3 (R1) and 0.041 at 1.0 (R3) — but not reliably: on scandi_living_room R1 is <i>worse</i> than A (+43%), inventing a sofa where the sideboard was while pulling the old sofa back. The unguided arms are pixel-identical to the eta-15 run (no eta dependence at seed 0), so this half of the picture is unchanged: what the tokens keep is the whole room, furniture included, not the shell.</p><p><b>Does the image drown the text at full scale?</b> Yes, unchanged. R3/R4 are near-copies of the reference photo in both scenes — the renovation instruction is inert. The kitchen's adherence collapses to 58% of A's; the scandi scene's adherence stays high only because the original room already matches the eval text. At 0.3 the text is audible but still losing: the kitchen keeps green-vintage styling instead of matte-black industrial (adherence 61% of A).</p><p><b>Is the depth reward still additive at eta 5?</b> Yes — every guided arm still lands below its unguided twin (kitchen C 0.431 vs A 1.616, R2 0.0027 vs R1 0.070, R4 0.0011 vs R3 0.0040; scandi C 0.032 vs A 0.161, R2 0.054 vs R1 0.230) — but the hold is 2–83× looser than at eta 15, and the slack is not spent evenly (see below).</p><p><b>The eta-15 headline is broken on the hard scene.</b> At eta 15, text-only guided C was the one arm that renovated <i>and</i> held depth. At eta 5, C still does both on scandi (depth 0.032, −80% vs A, visibly renovated) — but on the kitchen C's depth error is 0.431: the render is still A's loft galley, nudged toward the reference, not the reference room recovered. At eta 5 <b>no arm renovates the kitchen and holds its depth at once</b>: C renovates but loses the room; R2/R4 hold depth by pulling the old kitchen back. The depth reward remains the better geometry channel than Redux (it adds on top at every scale), but at this strength it is not sufficient on the scene whose prior fights it hardest.</p>
+</div>
+
+<h2>Numbers</h2>
+<h3>Per-arm means over both scenes</h3>
+<div class="tablewrap"><table>
+<tr><th>arm</th><th>depth error</th><th>adherence (ViT-L/14)</th><th>own shell</th><th>s/walk</th></tr>
+<tr><td>A · style text, no image, unguided</td><td>0.88839</td><td>0.2675</td><td>76%</td><td>8.0</td></tr><tr><td>C · style text, no image, guided</td><td>0.23161</td><td>0.2707</td><td>76%</td><td>12.9</td></tr><tr><td>R1 · renovation + Redux 0.3, unguided</td><td>0.15021</td><td>0.2139</td><td>82%</td><td>12.4</td></tr><tr><td>R2 · renovation + Redux 0.3, guided</td><td>0.02856</td><td>0.2201</td><td>87%</td><td>17.2</td></tr><tr><td>R3 · renovation + Redux 1.0, unguided</td><td>0.04113</td><td>0.2199</td><td>86%</td><td>12.4</td></tr><tr><td>R4 · renovation + Redux 1.0, guided</td><td>0.01585</td><td>0.2224</td><td>85%</td><td>17.3</td></tr>
+</table></div>
+<h3>Every (scene, arm)</h3>
+<div class="tablewrap"><table>
+<tr><th>scene</th><th>arm</th><th>Redux</th><th>guided</th><th>depth</th><th>Δ vs A</th>
+<th>adherence</th><th>ratio vs A</th><th>own shell</th><th>eff. σ₀</th><th>s</th></tr>
+<tr><td>scandi_living_room</td><td>A</td><td>—</td><td>no</td><td>0.16083</td><td>+0.0%</td><td>0.2225</td><td>100.0%</td><td>80%</td><td>0.9441</td><td>8.0</td></tr><tr><td>scandi_living_room</td><td>C</td><td>—</td><td>yes</td><td>0.03230</td><td>-79.9%</td><td>0.2255</td><td>101.4%</td><td>83%</td><td>0.9441</td><td>12.8</td></tr><tr><td>scandi_living_room</td><td>R1</td><td>0.3</td><td>no</td><td>0.23032</td><td>+43.2%</td><td>0.2349</td><td>105.6%</td><td>83%</td><td>0.9441</td><td>12.3</td></tr><tr><td>scandi_living_room</td><td>R2</td><td>0.3</td><td>yes</td><td>0.05447</td><td>-66.1%</td><td>0.2490</td><td>111.9%</td><td>86%</td><td>0.9441</td><td>17.1</td></tr><tr><td>scandi_living_room</td><td>R3</td><td>1</td><td>no</td><td>0.07825</td><td>-51.3%</td><td>0.2583</td><td>116.1%</td><td>92%</td><td>0.9441</td><td>12.3</td></tr><tr><td>scandi_living_room</td><td>R4</td><td>1</td><td>yes</td><td>0.03059</td><td>-81.0%</td><td>0.2622</td><td>117.9%</td><td>92%</td><td>0.9441</td><td>17.2</td></tr><tr><td>blue_white_kitchen</td><td>A</td><td>—</td><td>no</td><td>1.61594</td><td>+0.0%</td><td>0.3126</td><td>100.0%</td><td>72%</td><td>0.9441</td><td>8.1</td></tr><tr><td>blue_white_kitchen</td><td>C</td><td>—</td><td>yes</td><td>0.43091</td><td>-73.3%</td><td>0.3158</td><td>101.0%</td><td>69%</td><td>0.9441</td><td>13.0</td></tr><tr><td>blue_white_kitchen</td><td>R1</td><td>0.3</td><td>no</td><td>0.07010</td><td>-95.7%</td><td>0.1929</td><td>61.7%</td><td>81%</td><td>0.9441</td><td>12.5</td></tr><tr><td>blue_white_kitchen</td><td>R2</td><td>0.3</td><td>yes</td><td>0.00265</td><td>-99.8%</td><td>0.1912</td><td>61.2%</td><td>87%</td><td>0.9441</td><td>17.3</td></tr><tr><td>blue_white_kitchen</td><td>R3</td><td>1</td><td>no</td><td>0.00401</td><td>-99.8%</td><td>0.1814</td><td>58.0%</td><td>79%</td><td>0.9441</td><td>12.4</td></tr><tr><td>blue_white_kitchen</td><td>R4</td><td>1</td><td>yes</td><td>0.00112</td><td>-99.9%</td><td>0.1826</td><td>58.4%</td><td>78%</td><td>0.9441</td><td>17.4</td></tr>
+</table></div>
+<p class="sub">Depth: shell-masked aligned (scale/shift) inverse-depth MSE against the reference photo's
+DA2 reading, on the one pixel set every arm of the scene left visible. Adherence: CLIP ViT-L/14 against
+the neutral eval text — never an arm's own prompt, never the image. Shell columns are diagnostics, not scores.</p>
+
+<h2>Then vs now: the eta-15 run against this one</h2>
+<div class="caveat">
+<p><b>Two settings nominally changed between the runs' commits</b> — guidance eta 15 → 5.0
+(<span class="mono">59d7963</span>) and curtain + rug joining the reward shell
+(<span class="mono">bf1e094</span>; windowpane and door were already in it) — so per-arm deltas against
+<span class="mono">results_eta15.json</span> would ordinarily be confounded, and within-run comparisons are
+the trustworthy ones. The forensics, however, say the confound largely isn't there: the eta-15 run's
+reference-side coverages are <b>bit-identical</b> to this run's (scandi A own-shell
+0.8018761233515762 in both, kitchen 0.7156526664083227 in both) despite the scandi photo segmenting
+10.8% of its frame as curtain, and <span class="mono">bf1e094</span> was committed at 21:34 — four minutes
+<i>after</i> that run started at 21:30 — so its working tree evidently already carried the enlarged shell.
+Every then-vs-now delta below is therefore effectively <b>eta alone</b>. That reading rests on inferring an
+uncommitted working tree, so the within-run comparisons remain the ones to trust; the shell's own effect is
+measured directly, at fixed eta, in the ablation underneath.</p>
+</div>
+<h3>Per arm, eta 15 → eta 5 (same seed; shell effectively unchanged)</h3>
+<div class="tablewrap"><table>
+<tr><th>scene</th><th>arm</th><th>depth then</th><th>depth now</th><th>×</th><th>adh then</th><th>adh now</th><th>own shell then → now</th></tr>
+<tr><td>scandi_living_room</td><td>A</td><td>0.14426</td><td>0.16083</td><td>1.11</td><td>0.2225</td><td>0.2225</td><td>80% → 80%</td></tr>
+<tr><td>scandi_living_room</td><td>C</td><td>0.01183</td><td>0.03230</td><td>2.73</td><td>0.2502</td><td>0.2255</td><td>80% → 83%</td></tr>
+<tr><td>scandi_living_room</td><td>R1</td><td>0.20199</td><td>0.23032</td><td>1.14</td><td>0.2349</td><td>0.2349</td><td>83% → 83%</td></tr>
+<tr><td>scandi_living_room</td><td>R2</td><td>0.01591</td><td>0.05447</td><td>3.42</td><td>0.2543</td><td>0.2490</td><td>88% → 86%</td></tr>
+<tr><td>scandi_living_room</td><td>R3</td><td>0.07540</td><td>0.07825</td><td>1.04</td><td>0.2583</td><td>0.2583</td><td>92% → 92%</td></tr>
+<tr><td>scandi_living_room</td><td>R4</td><td>0.01345</td><td>0.03059</td><td>2.27</td><td>0.2510</td><td>0.2622</td><td>92% → 92%</td></tr>
+<tr><td>blue_white_kitchen</td><td>A</td><td>1.54365</td><td>1.61594</td><td>1.05</td><td>0.3126</td><td>0.3126</td><td>72% → 72%</td></tr>
+<tr><td>blue_white_kitchen</td><td>C</td><td>0.00518</td><td>0.43091</td><td><b>83.2</b></td><td>0.2994</td><td>0.3158</td><td>69% → 69%</td></tr>
+<tr><td>blue_white_kitchen</td><td>R1</td><td>0.06924</td><td>0.07010</td><td>1.01</td><td>0.1929</td><td>0.1929</td><td>81% → 81%</td></tr>
+<tr><td>blue_white_kitchen</td><td>R2</td><td>0.00076</td><td>0.00265</td><td>3.49</td><td>0.2087</td><td>0.1912</td><td>84% → 87%</td></tr>
+<tr><td>blue_white_kitchen</td><td>R3</td><td>0.00395</td><td>0.00401</td><td>1.02</td><td>0.1814</td><td>0.1814</td><td>79% → 79%</td></tr>
+<tr><td>blue_white_kitchen</td><td>R4</td><td>0.00052</td><td>0.00112</td><td>2.15</td><td>0.1819</td><td>0.1826</td><td>80% → 80%</td></tr>
+</table></div>
+<ul>
+<li><b>Unguided arms (A, R1, R3) are the same renders</b> — identical adherence to four decimals and
+identical own-shell to full precision. Their small depth shifts (1.01–1.14×) come only from the common
+pixel set moving, because the guided arms' resegmentations changed with eta (common coverage: scandi
+68% → 70%, kitchen 52.7% → 53.4%).</li>
+<li><b>Guided arms with image tokens degrade gracefully</b>: 2–3.5× looser depth at a third of the pull,
+still far below their unguided twins — the Redux tokens carry most of the geometry for them and eta only
+polishes.</li>
+<li><b>Text-only guided C degrades unevenly</b>: 2.7× on scandi (A is only 0.16 there — little to correct),
+but <b>83× on the kitchen</b>, where the style prompt alone puts the unguided sample at 1.62 and eta 5 can
+no longer drag it home. C's kitchen adherence actually <i>rises</i> (0.299 → 0.316): the weaker pull
+leaves the render more loft-industrial and less reference-shaped — adherence and depth trade places.</li>
+<li><b>R4's scandi adherence rises</b> (0.251 → 0.262) for the mirror-image reason: a looser pull leaves
+the near-copy nearer the (already scandinavian) photo, which the eval text likes. The blind spot below.</li>
+</ul>
+<h3>What the shell enlargement itself is worth (ablation at fixed eta 5)</h3>
+<p>Scoring this run's renders under the pre-<span class="mono">bf1e094</span> shell (curtain and rug
+removed; windowpane and door kept, as they predate the eta-15 run):</p>
+<div class="tablewrap"><table>
+<tr><th>scene</th><th>shell of frame</th><th>A</th><th>C</th><th>R1</th><th>R2</th><th>R3</th><th>R4</th></tr>
+<tr><td>scandi · pre-curtain/rug</td><td>65.1%</td><td>0.17972</td><td>0.03289</td><td>0.25319</td><td>0.05194</td><td>0.08324</td><td>0.02932</td></tr>
+<tr><td>scandi · enlarged</td><td>75.6%</td><td>0.16104</td><td>0.03239</td><td>0.23042</td><td>0.05421</td><td>0.07813</td><td>0.03072</td></tr>
+<tr><td>kitchen · pre-curtain/rug</td><td>50.8%</td><td>1.61528</td><td>0.43312</td><td>0.06981</td><td>0.00268</td><td>0.00404</td><td>0.00112</td></tr>
+<tr><td>kitchen · enlarged</td><td>51.2%</td><td>1.61528</td><td>0.43312</td><td>0.06981</td><td>0.00268</td><td>0.00404</td><td>0.00112</td></tr>
+</table></div>
+<p class="sub">(Renders reloaded from PNG for the ablation, so the enlarged row differs from results.json in
+the 4th decimal.) The enlargement is a <b>coverage story, not an error story</b>: on scandi the curtain adds
+10.5pp of scored frame and moves every arm's error by under 12% with <b>no rank changes</b> — the curtain
+pixels read the window plane slightly more forgivingly (A, R1, R3 improve a touch; the guided copies pay a
+touch). On the kitchen the rug adds 0.4pp and changes nothing to five decimals. No arm's relative standing
+moves because curtains and rugs now count.</p>
+
+<h2>scandi_living_room (seed 0)</h2><p class='sub'>renovation prompt: <span class='mono'>renovate this room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight, keep the room structure, layout, viewpoint and camera angle</span><br>eval text: <span class='mono'>a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight</span></p><h3>Renders: image-token influence left to right (Redux scale 0 → 0.3 → 1.0)</h3><div class='grid4'><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_photo.png" alt="reference photo"><figcaption>reference photo</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_A.png" alt="A · Redux 0 · unguided"><figcaption>A · Redux 0 · unguided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R1.png" alt="R1 · Redux 0.3 · unguided"><figcaption>R1 · Redux 0.3 · unguided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R3.png" alt="R3 · Redux 1 · unguided"><figcaption>R3 · Redux 1 · unguided</figcaption></figure></div><div class='grid4'><figure class='ghost'></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_C.png" alt="C · Redux 0 · guided"><figcaption>C · Redux 0 · guided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R2.png" alt="R2 · Redux 0.3 · guided"><figcaption>R2 · Redux 0.3 · guided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R4.png" alt="R4 · Redux 1 · guided"><figcaption>R4 · Redux 1 · guided</figcaption></figure></div><h3>Depth beside the reference, per arm (render · masked depth · signed error vs reference, A's colour scale)</h3><div class='grid4'><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_photo.png" alt="photo"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_photo_depth_masked.png" alt="photo depth masked"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_shell_mask.png" alt="shell mask"><figcaption><b>reference</b> · photo, masked depth, shell mask<br>shell 75.6% of frame, scored in common: 70% · VAE floor 0.00034</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_A.png" alt="A render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_A_depth.png" alt="A depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_A_residual.png" alt="A residual"><figcaption><b>A · style text, no image, unguided</b> · depth 0.1608 (+0.0% vs A) · adh 0.2225<br>Visual (same render as eta-15 run): a different room — window and sofa relocated; only a blue armchair echoes the photo. No old furniture (nothing to pull from).</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_C.png" alt="C render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_C_depth.png" alt="C depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_C_residual.png" alt="C residual"><figcaption><b>C · style text, no image, guided</b> · depth 0.0323 (-79.9% vs A) · adh 0.2255<br>Visual: still a renovation — new grey sofa, coffee table, rug; the photo's blue armchair persists at left. At eta 5 the window narrows to two panes where eta 15 kept the reference's wide four-pane wall: the shell hold is visibly looser.</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R1.png" alt="R1 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R1_depth.png" alt="R1 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R1_residual.png" alt="R1 residual"><figcaption><b>R1 · renovation + Redux 0.3, unguided</b> · depth 0.2303 (+43.2% vs A) · adh 0.2349<br>Visual (same render as eta-15 run): OLD FURNITURE PARTLY BACK — the blue sofa returns un-renovated at left while a new grey sofa is invented at right where the sideboard was; that contradiction is why depth is worse than A here.</figcaption></figure></div><div class='grid4'><figure class='ghost'></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R2.png" alt="R2 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R2_depth.png" alt="R2 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R2_residual.png" alt="R2 residual"><figcaption><b>R2 · renovation + Redux 0.3, guided</b> · depth 0.0545 (-66.1% vs A) · adh 0.2490<br>Visual: shell and sideboard back in place, wall art added; the OLD BLUE SOFA is back un-renovated at lower left; the wire chair is gone. A renovation of half the room, as at eta 15.</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R3.png" alt="R3 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R3_depth.png" alt="R3 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R3_residual.png" alt="R3 residual"><figcaption><b>R3 · renovation + Redux 1.0, unguided</b> · depth 0.0783 (-51.3% vs A) · adh 0.2583<br>Visual (same render as eta-15 run): NEAR-COPY of the photo — blue sofa, sheepskin wire chair, sideboard, patterned curtain all return. The renovation text is drowned; adherence cannot see it because the room was already scandinavian.</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R4.png" alt="R4 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R4_depth.png" alt="R4 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/scandi_living_room_seed0_R4_residual.png" alt="R4 residual"><figcaption><b>R4 · renovation + Redux 1.0, guided</b> · depth 0.0306 (-81.0% vs A) · adh 0.2622<br>Visual: near-copy again — blue sofa, wire chair with sheepskin, patterned curtain, sideboard, candles. Nothing was renovated; the weaker pull leaves it even nearer the photo, and the eval text rewards that (adh above C's).</figcaption></figure></div><h2>blue_white_kitchen (seed 0)</h2><p class='sub'>renovation prompt: <span class='mono'>renovate this room into a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops, keep the room structure, layout, viewpoint and camera angle</span><br>eval text: <span class='mono'>a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops</span></p><h3>Renders: image-token influence left to right (Redux scale 0 → 0.3 → 1.0)</h3><div class='grid4'><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_photo.png" alt="reference photo"><figcaption>reference photo</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_A.png" alt="A · Redux 0 · unguided"><figcaption>A · Redux 0 · unguided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R1.png" alt="R1 · Redux 0.3 · unguided"><figcaption>R1 · Redux 0.3 · unguided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R3.png" alt="R3 · Redux 1 · unguided"><figcaption>R3 · Redux 1 · unguided</figcaption></figure></div><div class='grid4'><figure class='ghost'></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_C.png" alt="C · Redux 0 · guided"><figcaption>C · Redux 0 · guided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R2.png" alt="R2 · Redux 0.3 · guided"><figcaption>R2 · Redux 0.3 · guided</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R4.png" alt="R4 · Redux 1 · guided"><figcaption>R4 · Redux 1 · guided</figcaption></figure></div><h3>Depth beside the reference, per arm (render · masked depth · signed error vs reference, A's colour scale)</h3><div class='grid4'><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_photo.png" alt="photo"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_photo_depth_masked.png" alt="photo depth masked"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_shell_mask.png" alt="shell mask"><figcaption><b>reference</b> · photo, masked depth, shell mask<br>shell 51.2% of frame, scored in common: 53% · VAE floor 0.00012</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_A.png" alt="A render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_A_depth.png" alt="A depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_A_residual.png" alt="A residual"><figcaption><b>A · style text, no image, unguided</b> · depth 1.6159 (+0.0% vs A) · adh 0.3126<br>Visual (same render as eta-15 run): a loft-industrial galley — the prompt fully honoured, the room fully lost.</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_C.png" alt="C render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_C_depth.png" alt="C depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_C_residual.png" alt="C residual"><figcaption><b>C · style text, no image, guided</b> · depth 0.4309 (-73.3% vs A) · adh 0.3158<br>Visual: THE ETA-5 CASUALTY — still A's loft galley (steel shelving, exposed ducting, high ceiling), only nudged toward the reference. At eta 15 this arm recovered the kitchen's shell (depth 0.005); at eta 5 it does not (0.431), and no arm renovates this kitchen while holding its depth.</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R1.png" alt="R1 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R1_depth.png" alt="R1 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R1_residual.png" alt="R1 residual"><figcaption><b>R1 · renovation + Redux 0.3, unguided</b> · depth 0.0701 (-95.7% vs A) · adh 0.1929<br>Visual (same render as eta-15 run): OLD KITCHEN PARTLY BACK — fridge, island and teal backsplash return in cream vintage styling; matte-black industrial is mostly gone (adherence 62% of A).</figcaption></figure></div><div class='grid4'><figure class='ghost'></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R2.png" alt="R2 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R2_depth.png" alt="R2 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R2_residual.png" alt="R2 residual"><figcaption><b>R2 · renovation + Redux 0.3, guided</b> · depth 0.0027 (-99.8% vs A) · adh 0.1912<br>Visual: hybrid — layout back (fridge, island with chairs, window wall), green walls, traces of the teal backsplash; industrial text largely lost, as at eta 15.</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R3.png" alt="R3 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R3_depth.png" alt="R3 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R3_residual.png" alt="R3 residual"><figcaption><b>R3 · renovation + Redux 1.0, unguided</b> · depth 0.0040 (-99.8% vs A) · adh 0.1814<br>Visual (same render as eta-15 run): NEAR-COPY of the photo — white cabinets, teal island and stools, pendants, hood. Depth now beats guided C (0.004 vs 0.431) by copying the room; adherence 58% of A exposes it.</figcaption></figure><figure><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R4.png" alt="R4 render"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R4_depth.png" alt="R4 depth"><img loading="lazy" src="../outputs/0002_fmrg_redux/images/blue_white_kitchen_seed0_R4_residual.png" alt="R4 residual"><figcaption><b>R4 · renovation + Redux 1.0, guided</b> · depth 0.0011 (-99.9% vs A) · adh 0.1826<br>Visual: the same copy — teal island, pendants, hood, white cabinets — geometry polished by the reward. A reproduction, not a renovation.</figcaption></figure></div>
+
+<h2>Confounds and what checks them</h2>
+<ul>
+<li><b>Depth won by copying, now beating guidance.</b> At eta 15, R3 merely matched guided C on the kitchen; at eta 5 it beats C outright (0.0040 vs 0.4309) — by reproducing the room. The adherence collapse (58% of A) plus the side-by-side renders expose it; depth never travels alone.</li><li><b>The scandi adherence blind spot.</b> The eval text is 'scandinavian living room' and the reference already is one, so a copy scores <i>high</i> adherence (R3: 116%, R4: 118% of A — R4 now tops the scene's adherence table while renovating nothing). Only the visual check catches the un-renovated blue sofa. Scene pairs whose target style differs from the source (the kitchen) are the informative ones for this axis.</li><li><b>Shell coverage reads higher on image arms</b> (82–87% vs 76% own shell): a render that mirrors the photo re-exposes the photo's shell. More shell is not more renovation — it is consistent with copying, as the study's design notes anticipate.</li><li><b>One seed, two scenes.</b> Fast-iteration setting; the directional findings (drowning at 1.0, furniture pull-back at both scales, additive reward, the eta-5 collapse of text-only C on the hard scene) are consistent across both scenes, but the magnitudes are not population estimates — and the C collapse in particular is one (scene, seed) and deserves a second seed before it drives an eta decision.</li>
+</ul>
+
+<h2>Methods</h2>
+<ul>
+<li><b>Injection</b>: the photo through FLUX.1-Redux-dev (SigLIP so400m-patch14-384 → Redux adapter) gives
+729 tokens in the T5's 4096-wide space, appended after the 512 text tokens:
+<span class="mono">cat([text_embeds, scale · image_tokens], dim=1)</span>. The scale multiplies the image
+tokens alone (diffusers' <span class="mono">prompt_embeds_scale</span> scales the whole row, text included).
+Pooled embedding stays the text CLIP pooled, as diffusers' Redux pipeline keeps it. The combined context
+is cached and selected exactly like a text prompt; the vendored sampler sizes <span class="mono">text_ids</span>
+off <span class="mono">prompt_embeds.shape[1]</span>, so no vendored edit.
+Code: <span class="mono">roomgen_guide/adapters/fmrg_flux.py</span>
+(<span class="mono">encode_redux_image_tokens</span>, <span class="mono">register_image_context_prompt</span>).</li>
+<li><b>Sampler</b>: FMRG FLUX flow map (fmrgj_nfe100 grid: 208 grid steps, early stop
+51, 51 walked), start_sigma 0.9 pre-shift
+(effective 0.9441 at 512²), text guidance 3.5,
+endpoint-reuse stepping, cheap pullback (FMRG-E). Guided arms: AnnealedSignTilt <b>eta 5.0</b>
+(owner reset from 15, <span class="mono">59d7963</span>), 1 iteration. Seed 0, explicit generators end to end.</li>
+<li><b>Reward shell</b>: <span class="mono">ARCHITECTURAL_CLASSES</span> incl. windowpane 8, door 14,
+curtain 18, rug 28 (<span class="mono">50f3ec9</span>/<span class="mono">bf1e094</span>); the class table the
+run actually scored under is now recorded in <span class="mono">results.json</span>
+(<span class="mono">shell_classes</span>, alongside a top-level <span class="mono">eta</span>).</li>
+<li><b>Prompts</b>: exact texts from the context study's <span class="mono">conf/context.yaml</span> — the
+style description (A, C) and the renovation instruction (R1–R4), whose “this room” now binds to actual image
+tokens. Eval text = the neutral style description, all arms.</li>
+<li><b>Versions</b>: torch 2.13.0+cu132, diffusers 0.39.0 (FluxPriorReduxPipeline; vendored FMRG
+pins 0.34, no resolver moves needed), FLUX.1-Redux-dev snapshot <span class="mono">c95859fb</span> (941 MB:
+857 MB SigLIP + 129 MB adapter) in the repo HF cache.</li>
+<li><b>VRAM</b>: Redux caching phase peak 1.00 GiB (before the transformer loads);
+walk-phase peak 28.17 GiB on NVIDIA GeForce RTX 5090. Study wall-clock 2 min 52 s.</li>
+</ul>
+
+</body>
+</html>
