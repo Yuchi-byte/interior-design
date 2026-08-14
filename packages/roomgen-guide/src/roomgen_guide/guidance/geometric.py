@@ -73,7 +73,5 @@ class GeometricGuidance:
         # the gradient back to the latent.
         with torch.no_grad():
             segmentation = segmenter(predicted_image.detach())
-        prediction_shell = scorable_mask(
-            segmentation, erosion_radius=erosion_radius
-        )
+        prediction_shell = scorable_mask(segmentation, erosion_radius=erosion_radius)
         return self.reference.mask & prediction_shell

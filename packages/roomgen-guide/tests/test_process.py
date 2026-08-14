@@ -100,9 +100,7 @@ def _walk(
         generator=torch.Generator().manual_seed(seed),
     )
     return RecordedWalk(
-        sample_endpoint_process(
-            process, reward=guidance, tilt=tilt, restarts=restarts
-        ),
+        sample_endpoint_process(process, reward=guidance, tilt=tilt, restarts=restarts),
         process,
     )
 
@@ -413,7 +411,9 @@ def test_the_sign_step_drives_the_energy_down_on_a_real_walk(
     room_photo: Tensor, geometric_guidance: GeometricGuidance
 ) -> None:
     guided = _walk(room_photo, geometric_guidance, tilt=AnnealedSignTilt(strength=1.0))
-    unguided = _walk(room_photo, geometric_guidance, tilt=AnnealedSignTilt(strength=0.0))
+    unguided = _walk(
+        room_photo, geometric_guidance, tilt=AnnealedSignTilt(strength=0.0)
+    )
 
     assert float(geometric_guidance(guided.image)) < 0.9 * float(
         geometric_guidance(unguided.image)
@@ -436,11 +436,15 @@ def test_a_sign_step_that_cannot_steer_is_refused_at_construction(
         AnnealedSignTilt(**kwargs)  # type: ignore[arg-type]
 
 
-def _unguided_to(process: ToyFlowMapProcess, state: Tensor, *, start: int, stop: int) -> Tensor:
+def _unguided_to(
+    process: ToyFlowMapProcess, state: Tensor, *, start: int, stop: int
+) -> Tensor:
     for index in range(start, stop):
         state = process.advance(
             state,
-            StepContext(index=index, total=process.steps, span=process.step_span(index)),
+            StepContext(
+                index=index, total=process.steps, span=process.step_span(index)
+            ),
             prediction=None,
             steering=None,
         )
@@ -487,9 +491,7 @@ def test_the_particle_the_reward_scores_best_is_the_one_that_continues(
     )
     starts = [replay.initial_state() for _ in range(particles)]
     warmed = [_unguided_to(replay, start, start=0, stop=warmup) for start in starts]
-    judged = StepContext(
-        index=warmup, total=_STEPS, span=replay.step_span(warmup)
-    )
+    judged = StepContext(index=warmup, total=_STEPS, span=replay.step_span(warmup))
     with torch.no_grad():
         energies = [
             float(geometric_guidance(replay.endpoint(state, judged).image).mean())

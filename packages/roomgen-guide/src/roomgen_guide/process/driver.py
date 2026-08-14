@@ -47,12 +47,18 @@ def sample_endpoint_process[Prediction](
         state, resume = _best_particle(process, reward=reward, tilt=tilt, of=restarts)
     for index in range(resume, total):
         state = _advance(
-            process, reward=reward, tilt=tilt, state=state, step=_context(process, index)
+            process,
+            reward=reward,
+            tilt=tilt,
+            state=state,
+            step=_context(process, index),
         )
     return process.to_image(state)
 
 
-def _context[Prediction](process: EndpointProcess[Prediction], index: int) -> StepContext:
+def _context[Prediction](
+    process: EndpointProcess[Prediction], index: int
+) -> StepContext:
     return StepContext(index=index, total=process.steps, span=process.step_span(index))
 
 
@@ -114,7 +120,11 @@ def _warmed_up[Prediction](
     state = process.initial_state()
     for index in range(steps):
         state = _advance(
-            process, reward=reward, tilt=tilt, state=state, step=_context(process, index)
+            process,
+            reward=reward,
+            tilt=tilt,
+            state=state,
+            step=_context(process, index),
         )
     return state
 

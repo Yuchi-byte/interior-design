@@ -78,7 +78,5 @@ class StructuralGuidance:
         # set membership, an erosion — and there is no gradient in it to keep.
         with torch.no_grad():
             segmentation = self.segmenter(predicted_image.detach())
-        uncovered = scorable_mask(
-            segmentation, erosion_radius=self.erosion_radius
-        )
+        uncovered = scorable_mask(segmentation, erosion_radius=self.erosion_radius)
         return self.reference.mask & uncovered

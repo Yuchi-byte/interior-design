@@ -193,7 +193,9 @@ class AnnealedSignTilt:
                 f"guided_steps must be non-negative, got {self.guided_steps}"
             )
         if self.anneal_steps is not None and self.anneal_steps < 1:
-            raise ValueError(f"anneal_steps must be at least 1, got {self.anneal_steps}")
+            raise ValueError(
+                f"anneal_steps must be at least 1, got {self.anneal_steps}"
+            )
         if self.iterations < 1:
             raise ValueError(f"iterations must be at least 1, got {self.iterations}")
 

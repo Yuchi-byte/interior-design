@@ -146,9 +146,7 @@ class LatentDiffusionProcess:
         # timesteps are a subsample of the schedule's own horizon, which is what
         # `alphas_cumprod` is indexed by, and the last step lands at 0.
         timestep = int(self._timesteps[index])
-        following = (
-            int(self._timesteps[index + 1]) if index + 1 < self.steps else 0
-        )
+        following = int(self._timesteps[index + 1]) if index + 1 < self.steps else 0
         return (timestep - following) / len(self._alphas_cumprod)
 
     def initial_state(self) -> Float[Tensor, "batch channels height width"]:
