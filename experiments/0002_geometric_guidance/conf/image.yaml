@@ -5,7 +5,7 @@
 # the depth-only anchor under the plain style prompt (continuity anchors), the
 # same pair under the renovation instruction, one image-only arm per helper
 # (CLIP ViT-B/32 embedding cosine, DINOv2 patch-token cosine, the SigLIP tower
-# Redux already ships, a VGG16 LPIPS-shaped perceptual distance) and an
+# Redux already ships) and an
 # image+depth composite for every helper, at per-scene measured weights — the
 # helper arms all steering under the instruction prompt. The photo reaches the
 # prior only through the one SDEdit init every arm shares.
@@ -30,7 +30,7 @@
 study: fmrg_image
 name: 0002_fmrg_image
 
-# One seed: the owner's fast-iteration setting, 12 arms x 4 scenes = 48 walks.
+# One seed: the owner's fast-iteration setting, 10 arms x 4 scenes = 40 walks.
 seeds: [0]
 
 resolution: 512
@@ -65,8 +65,8 @@ guidance:
 image:
   # The helper-model comparison: every image-only arm, and the completed grid —
   # every helper also runs an image+depth composite.
-  models: [clip, dinov2, siglip, vgg]
-  composite_models: [clip, dinov2, siglip, vgg]
+  models: [clip, dinov2, siglip]
+  composite_models: [clip, dinov2, siglip]
   # null measures the depth weight per (scene, model) as the gradient-RMS
   # ratio at the midpoint of the guided window, on the walk the arms run.
   depth_weight: null
@@ -77,7 +77,6 @@ image:
   dinov2_checkpoint: facebook/dinov2-base
   # The SigLIP so400m tower inside the Redux snapshot: already on disk.
   siglip_checkpoint: black-forest-labs/FLUX.1-Redux-dev
-  vgg_input_size: 256
 
 adherence:
   # The eval judge, deliberately bigger than — and independent of — every

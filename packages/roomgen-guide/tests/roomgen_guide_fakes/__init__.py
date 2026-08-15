@@ -20,11 +20,9 @@ from roomgen_guide_fakes.flow_map import (
 )
 from roomgen_guide_fakes.image_reference import (
     PATCH_GRID_SIDE,
-    FakePerceptualExtractor,
     FakeSpatialPatchEncoder,
     fake_image_reference_energies,
     fake_masked_patch_energies,
-    fake_perceptual_energies,
 )
 from roomgen_guide_fakes.inpaint import FakeInpaintPipeline
 from roomgen_guide_fakes.pipeline import (
@@ -42,7 +40,6 @@ __all__ = [
     "START_TIME",
     "FakeClipImageEncoder",
     "FakeInpaintPipeline",
-    "FakePerceptualExtractor",
     "FakePipeline",
     "FakeScheduler",
     "FakeSpatialPatchEncoder",
@@ -52,5 +49,4 @@ __all__ = [
     "fake_clip_text_guidance",
     "fake_image_reference_energies",
     "fake_masked_patch_energies",
-    "fake_perceptual_energies",
 ]

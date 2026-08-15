@@ -43,7 +43,6 @@ from roomgen_guide.guidance.clip import DEFAULT_CHECKPOINT as GUIDANCE_CLIP_CHEC
 from roomgen_guide.guidance.image_reference import (
     DEFAULT_DINOV2_CHECKPOINT,
     DEFAULT_SIGLIP_CHECKPOINT,
-    DEFAULT_VGG_INPUT_SIZE,
 )
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 
@@ -801,7 +800,7 @@ class FmrgAlignmentConfig(ExperimentConfig):
         return self
 
 
-ImageModelName = Literal["clip", "dinov2", "siglip", "vgg"]
+ImageModelName = Literal["clip", "dinov2", "siglip"]
 
 
 class ImageSceneConfig(EtaSceneConfig):
@@ -858,8 +857,7 @@ class ImageGuidanceConfig(Config):
     Args:
         models: the helper models under comparison, one image-only guided arm
             each. `clip`/`siglip` descend a pooled-embedding cosine, `dinov2` a
-            cosine over its spatial patch-token grid, `vgg` an LPIPS-shaped
-            perceptual distance.
+            cosine over its spatial patch-token grid.
         composite_models: the models that also run an image-plus-depth arm; a
             subset of `models`, so every composite has its image-only twin.
         depth_weight: the depth term's weight beside an image term held at 1.0;
@@ -877,15 +875,12 @@ class ImageGuidanceConfig(Config):
             card's ceiling, measured, not estimated. Half precision costs the
             walk nothing it can see: the energy still scores and reduces in
             float32, and FMRG's tilt keeps only the gradient's sign.
-        vgg_input_size: the square side the render is resized to before the VGG
-            pyramid; the model has no fixed input size of its own.
     """
 
     models: Annotated[tuple[ImageModelName, ...], Field(min_length=1)] = (
         "clip",
         "dinov2",
         "siglip",
-        "vgg",
     )
     composite_models: tuple[ImageModelName, ...] = ("clip", "dinov2")
     depth_weight: Annotated[float, Field(gt=0.0)] | None = None
@@ -894,7 +889,6 @@ class ImageGuidanceConfig(Config):
     dinov2_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_DINOV2_CHECKPOINT
     siglip_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_SIGLIP_CHECKPOINT
     siglip_dtype: DTypeName = "bfloat16"
-    vgg_input_size: Annotated[int, Field(ge=32)] = DEFAULT_VGG_INPUT_SIZE
 
     @model_validator(mode="after")
     def _every_composite_has_its_image_only_twin(self) -> ImageGuidanceConfig:

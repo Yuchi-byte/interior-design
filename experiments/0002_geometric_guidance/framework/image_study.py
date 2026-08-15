@@ -82,7 +82,6 @@ from roomgen_guide.guidance.image_reference import (
     load_clip_image_reference_energies,
     load_dinov2_image_reference_energies,
     load_siglip_image_reference_energies,
-    load_vgg_perceptual_energies,
 )
 from roomgen_guide.guidance.preference import ImagePreferenceModel
 from roomgen_guide.process.endpoint import Endpoint, StepContext
@@ -366,17 +365,10 @@ def build_energy_bank(
                 sys.path.insert(0, str(package))
         # Importable only once the fakes are on the path, exactly as the fake
         # sampler stack is reached.
-        from roomgen_guide_fakes import (  # noqa: PLC0415
-            fake_image_reference_energies,
-            fake_perceptual_energies,
-        )
+        from roomgen_guide_fakes import fake_image_reference_energies  # noqa: PLC0415
 
         for index, model in enumerate(needed):
-            factories[model] = (
-                fake_perceptual_energies()
-                if model == "vgg"
-                else fake_image_reference_energies(seed=index)
-            )
+            factories[model] = fake_image_reference_energies(seed=index)
         return _EnergyBank(factories=factories, device=device)
 
     dtype = TORCH_DTYPES[config.backends.depth_dtype]
@@ -402,13 +394,6 @@ def build_energy_bank(
                     device=device,
                     dtype=TORCH_DTYPES[config.image.siglip_dtype],
                     cache_dir=settings.hub_cache,
-                )
-            case "vgg":
-                factories[model] = load_vgg_perceptual_energies(
-                    device=device,
-                    dtype=dtype,
-                    cache_dir=settings.hf_home,
-                    input_size=config.image.vgg_input_size,
                 )
         factories[model].module.to("cpu")
         parameters = sum(

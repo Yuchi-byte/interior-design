@@ -153,14 +153,13 @@ The guided sampler and the experiment harness shared with `experiments/`.
   the loaded-once model that turns each prompt into one.
 - `guidance/image_reference.py`: the image-reference energies that hold the
   render near the user's photo in a frozen vision model's feature space —
-  `ImageReferenceGuidance` (negative embedding cosine),
-  `PerceptualReferenceGuidance` (LPIPS-shaped multi-stage feature distance) and
+  `ImageReferenceGuidance` (negative embedding cosine) and
   `MaskedPatchReferenceGuidance` (DINOv2's spatial patch cosine restricted to
   the patch positions a reference mask names, per-step intersected with the
   prediction's resegmented shell like the depth reward's mask), each built by a
-  loaded-once factory (CLIP tower, DINOv2 patch tokens, the SigLIP tower Redux
-  ships, or torchvision's VGG16 pyramid) that freezes the photo's features as a
-  constant while the render side stays differentiable.
+  loaded-once factory (CLIP tower, DINOv2 patch tokens, or the SigLIP tower
+  Redux ships) that freezes the photo's features as a constant while the render
+  side stays differentiable.
 - `guidance/geometric.py`: `GeometricGuidance`, the energy that decodes x̂₀,
   re-runs the depth model, and scores it against a `GeometricReference` over the
   reference's shell — intersected, whenever a segmenter is configured, with the

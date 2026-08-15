@@ -4,12 +4,12 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol, cast, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 import torch
 from jaxtyping import Bool, Float
 from torch import Tensor
-from torch.nn import Module, Sequential
+from torch.nn import Module
 from torch.nn.functional import adaptive_avg_pool2d, cosine_similarity
 from transformers import (
     AutoModel,
@@ -34,13 +34,8 @@ DEFAULT_SIGLIP_CHECKPOINT: Final = "black-forest-labs/FLUX.1-Redux-dev"
 DEFAULT_SIGLIP_SUBFOLDER: Final = "image_encoder"
 DEFAULT_SIGLIP_PROCESSOR_SUBFOLDER: Final = "feature_extractor"
 
-# LPIPS evaluates at 256 and VGG's stride-32 pyramid wants nothing finer for a
-# similarity score; a 512 render backward through five conv stacks would only
-# spend VRAM the sampler needs.
-DEFAULT_VGG_INPUT_SIZE: Final = 256
-
-# The three energies score and reduce in float32 whatever dtype the tower runs
-# in: a bfloat16 cosine quantises the energy, not just the model.
+# The energies score and reduce in float32 whatever dtype the tower runs in:
+# a bfloat16 cosine quantises the energy, not just the model.
 _ENERGY_DTYPE: Final = torch.float32
 
 
@@ -84,77 +79,6 @@ class ImageReferenceGuidance:
                 device=image_features.device, dtype=_ENERGY_DTYPE
             ),
         )
-
-
-@runtime_checkable
-class PerceptualFeatureExtractor(Protocol):
-    """A feature pyramid for perceptual distance: preprocessed pixels in, one map per stage out.
-
-    Args:
-        pixel_values: already resized and normalised for the backbone, and still
-            attached to the latent it came from — every returned map must carry
-            the gradient back, so nothing here may detach.
-    """
-
-    def __call__(
-        self, pixel_values: Float[Tensor, "batch 3 size size"]
-    ) -> tuple[Float[Tensor, "batch channels height width"], ...]: ...
-
-
-@dataclass(frozen=True)
-class PerceptualReferenceGuidance:
-    """LPIPS-shaped perceptual distance between the render and the reference photo (arXiv:1801.03924).
-
-    Per stage, both feature maps are unit-normalised along channels, differenced,
-    and the squared difference averaged over space and channels; the stages sum.
-    LPIPS with uniform stage weights in place of the learned calibration — an
-    energy only ever competes against its own gradient scale, so the calibration
-    that makes LPIPS a human-aligned *metric* buys nothing here. Zero exactly at
-    the photo and spatial by construction, where an embedding cosine is global.
-
-    Args:
-        extractor: frozen and in eval, never under `no_grad`.
-        reference_features: the photo's pyramid, frozen once: constants, so
-            construction rejects any still carrying gradient.
-    """
-
-    extractor: PerceptualFeatureExtractor
-    reference_features: tuple[Float[Tensor, "1 channels height width"], ...]
-    preprocessing: ClipPreprocessing
-
-    def __post_init__(self) -> None:
-        if not self.reference_features:
-            raise ValueError(
-                "a perceptual distance needs at least one feature stage; an "
-                "empty pyramid has no gradient to steer by"
-            )
-        for features in self.reference_features:
-            if features.requires_grad:
-                raise ValueError(
-                    "the reference photo's feature maps are constants of the "
-                    "walk: detach them before freezing them into a "
-                    "PerceptualReferenceGuidance"
-                )
-
-    def __call__(
-        self, predicted_image: Float[Tensor, "batch 3 height width"]
-    ) -> Float[Tensor, "batch"]:
-        stages = self.extractor(self.preprocessing(predicted_image))
-        if len(stages) != len(self.reference_features):
-            raise ValueError(
-                f"the extractor returned {len(stages)} feature stages against "
-                f"{len(self.reference_features)} frozen from the reference: the "
-                f"two pyramids must come from the same extractor"
-            )
-        energy: Tensor | None = None
-        for features, reference in zip(stages, self.reference_features, strict=True):
-            difference = _unit_channels(features.to(_ENERGY_DTYPE)) - _unit_channels(
-                reference.to(device=features.device, dtype=_ENERGY_DTYPE)
-            )
-            term = difference.square().mean(dim=(1, 2, 3))
-            energy = term if energy is None else energy + term
-        assert energy is not None  # the empty pyramid was rejected at construction
-        return energy
 
 
 @runtime_checkable
@@ -372,26 +296,6 @@ class ImageReferenceEnergies:
         )
 
 
-@dataclass(frozen=True)
-class PerceptualReferenceEnergies:
-    """One loaded feature backbone, turning any reference photo into the perceptual energy toward it."""
-
-    extractor: PerceptualFeatureExtractor
-    preprocessing: ClipPreprocessing
-    module: Module
-
-    def __call__(
-        self, photo: Float[Tensor, "1 3 height width"]
-    ) -> PerceptualReferenceGuidance:
-        with torch.no_grad():
-            reference = self.extractor(self.preprocessing(photo))
-        return PerceptualReferenceGuidance(
-            extractor=self.extractor,
-            reference_features=tuple(stage.detach() for stage in reference),
-            preprocessing=self.preprocessing,
-        )
-
-
 def load_clip_image_reference_energies(
     checkpoint: str = DEFAULT_CLIP_CHECKPOINT,
     *,
@@ -520,69 +424,6 @@ def load_siglip_image_reference_energies(
     )
 
 
-def load_vgg_perceptual_energies(
-    *,
-    device: torch.device,
-    dtype: torch.dtype = torch.float32,
-    cache_dir: Path | None = None,
-    input_size: int = DEFAULT_VGG_INPUT_SIZE,
-) -> PerceptualReferenceEnergies:
-    """VGG16's five ReLU stacks as the perceptual pyramid LPIPS is built on.
-
-    Args:
-        cache_dir: where torchvision's weight download lands
-            (`RoomgenSettings.hf_home`-adjacent rather than the home-directory
-            hub default); `None` follows torch hub's own environment.
-    """
-    from torchvision.models import VGG16_Weights, vgg16  # noqa: PLC0415
-
-    weights = VGG16_Weights.IMAGENET1K_V1
-    network = vgg16()
-    network.load_state_dict(
-        weights.get_state_dict(
-            progress=False,
-            model_dir=None if cache_dir is None else str(cache_dir / "torchvision"),
-            check_hash=True,
-        )
-    )
-    features = cast(Sequential, _frozen(network.features, device=device, dtype=dtype))
-    transforms = weights.transforms()
-    return PerceptualReferenceEnergies(
-        extractor=_VggFeaturePyramid(features),
-        preprocessing=_preprocessing(
-            size=input_size,
-            mean=list(transforms.mean),
-            std=list(transforms.std),
-            device=device,
-            dtype=dtype,
-        ),
-        module=features,
-    )
-
-
-# The indices just past relu1_2, relu2_2, relu3_3, relu4_3 and relu5_3 in
-# torchvision's `vgg16().features` — the five stages LPIPS reads.
-_VGG_STAGE_ENDS: Final = (4, 9, 16, 23, 30)
-
-
-@dataclass(frozen=True)
-class _VggFeaturePyramid:
-    features: Sequential
-
-    def __call__(
-        self, pixel_values: Float[Tensor, "batch 3 size size"]
-    ) -> tuple[Float[Tensor, "batch channels height width"], ...]:
-        stages: list[Tensor] = []
-        current: Tensor = pixel_values
-        start = 0
-        for end in _VGG_STAGE_ENDS:
-            for index in range(start, end):
-                current = self.features[index](current)
-            stages.append(current)
-            start = end
-        return tuple(stages)
-
-
 @dataclass(frozen=True)
 class _TowerEncoder:
     module: Module
@@ -657,12 +498,3 @@ def _preprocessing(
         image_mean=torch.tensor(mean, device=device, dtype=dtype).view(1, 3, 1, 1),
         image_std=torch.tensor(std, device=device, dtype=dtype).view(1, 3, 1, 1),
     )
-
-
-def _unit_channels(
-    features: Float[Tensor, "batch channels height width"],
-) -> Float[Tensor, "batch channels height width"]:
-    # LPIPS's unit normalisation: each spatial position's channel vector to unit
-    # length, so a stage's magnitude does not decide its vote.
-    norm = features.square().sum(dim=1, keepdim=True).sqrt()
-    return features / (norm + 1e-10)

@@ -1,6 +1,6 @@
 # Plumbing, not a claim: the whole image-reward study flow on the weightless
 # `ToyFlowMapBackend`, the geometry doubles and the checkpoint-free image
-# energies (fixed random projections and a two-stage pixel pyramid), CPU-only,
+# energies (fixed random projections), CPU-only,
 # offline, in seconds. What this exercises is the arm structure, the per-scene
 # weight sizing, the CPU parking of the helper bank, the common-mask scoring,
 # the three-phase deferred eval and the artifact writing.
@@ -38,8 +38,8 @@ guidance:
   resegment: true
 
 image:
-  models: [clip, dinov2, siglip, vgg]
-  composite_models: [clip, dinov2, siglip, vgg]
+  models: [clip, dinov2, siglip]
+  composite_models: [clip, dinov2, siglip]
   depth_weight: null
   sizing_fraction: 0.5
 
