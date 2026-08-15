@@ -198,9 +198,8 @@ class AlignmentSummary:
 def shell_class_table() -> dict[int, str]:
     """The shell definition this run scored under, read off the package at runtime.
 
-    Recorded because the class lists are under active revision (windows and
-    doors joining the shell): the results must say which definition produced
-    them, not point at whatever the package says later.
+    Recorded so the results say which definition produced them, not point at
+    whatever the package says later.
     """
     return {index: ADE20K_LABELS[index] for index in sorted(ARCHITECTURAL_CLASSES)}
 

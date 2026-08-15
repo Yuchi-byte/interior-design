@@ -5,7 +5,8 @@ energy. Stage 2 is steered by the *photograph's* shell depth, retained from the
 reference stage 1 froze to score itself — never re-estimated from the inpainted
 room, so guidance inherits nothing the inpainting got wrong. The stripped
 room's own reference is still computed and every arm scored against it too, as
-the diagnostic that keeps the run comparable with the previous protocol.
+the diagnostic that keeps this run comparable with the empty-room-steered
+protocol (`fmrg.py`'s).
 """
 
 from __future__ import annotations
@@ -399,8 +400,8 @@ def _write_results(summary: Summary, settings: RoomgenSettings) -> None:
                     "furnish": str(summary.output_dir / GALLERY_B),
                 },
                 # What steered stage 2 and what the primary numbers are read
-                # against; the `*_empty_room` fields are the previous
-                # protocol's reference, scored as a diagnostic.
+                # against; the `*_empty_room` fields are scored against the
+                # stripped room's reference, as a diagnostic.
                 "guidance_reference": "photo",
                 "reference_shell_fractions": summary.shell_fractions,
                 # The colour every segmentation map in gallery A is painted

@@ -107,22 +107,19 @@ class StripConfig(Config):
             filled from the furnished room around it, so an inpainter asked only
             for a bare room paints the furniture straight back in.
         dilation_radius: pixels the contents mask is grown by before it is
-            inpainted, and the margin a later pass's non-shell region is grown
-            by before it is repainted. Contact shadows and segment fringes sit
+            inpainted, and the margin a later pass's still-removable region is
+            grown by before it is repainted. Contact shadows and segment fringes sit
             just outside the segment, so a mask that stops at the boundary
             leaves the inpainter the evidence it needs to paint the object
             straight back.
         passes: how many times the segmenter is asked again. An inpainter fills
             a hole from the room around it and puts objects back into it, so one
             pass is a strip that leaves a table where a sofa was; each further
-            pass repaints whatever *inside the first mask* the segmenter does
-            not yet read as shell — wall, floor, ceiling, door, windowpane. The
-            acceptance is inverted on purpose: a fill only had to dodge the
-            named contents list to survive a furniture check, and a radiator or
-            a vacuum-shaped object slipped through; not-yet-shell is
-            categorical. Repainting stays inside the first mask, which is what
-            keeps the untouched part of the photograph untouched however many
-            passes run.
+            pass repaints whatever *inside the first mask* the segmenter still
+            reads as removable (`REMOVABLE_CLASSES`, dilated), and the loop
+            stops early once the hole segments clean. Repainting stays inside
+            the first mask, which is what keeps the untouched part of the
+            photograph untouched however many passes run.
         steps: denoising steps of the inpainting pipeline, per pass.
         fill_strength: how much of each pass's trajectory repaints the hole,
             which is first flooded with the colours of the surfaces around it.
@@ -330,7 +327,7 @@ class FmrgStudyConfig(ExperimentConfig):
     """The two-stage study with its furnish stage on FMRG's FLUX flow map.
 
     Stage 1 is byte-identical to `StudyConfig`'s: EoMT decides, SD-inpainting
-    fills, the acceptance is the inverted shell check. Stage 2 swaps SD1.5's
+    fills, the contents-blocklist acceptance re-checks. Stage 2 swaps SD1.5's
     guided img2img for the FMRG walk of `FmrgFurnishConfig`, steered by the
     stripped empty room's shell depth.
 

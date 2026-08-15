@@ -918,9 +918,8 @@ def _write_results(summary: ReduxSummary, settings: RoomgenSettings) -> None:
                 },
                 "started_at": summary.started_at,
                 "git_commit": summary.git_commit,
-                # The shell definition is under revision (windows, doors, soft
-                # furnishings joining): the results must say which one scored
-                # them, not point at whatever the package says later.
+                # The results must say which shell definition scored them, not
+                # point at whatever the package says later.
                 "shell_classes": shell_class_table(),
                 # What steered every guided arm and what every depth number is
                 # read against: the stripped empty room's shell depth,

@@ -131,8 +131,8 @@ class ImageArmSpec:
 def image_arms(config: FmrgImageConfig) -> tuple[ImageArmSpec, ...]:
     """The arms: both prompt-matched baseline pairs, then the model sweep, the composites.
 
-    Style-prompt control and depth anchor first (continuity with the study's
-    first run), then the same pair under the instruction prompt, then every
+    Style-prompt control and depth anchor first, then the same pair under the
+    instruction prompt, then every
     helper arm — image-only and composite — under the instruction prompt.
     """
     arms = [
@@ -1099,9 +1099,8 @@ def _write_results(summary: ImageSummary, settings: RoomgenSettings) -> None:
                 },
                 "started_at": summary.started_at,
                 "git_commit": summary.git_commit,
-                # The shell definition is under revision: the results must say
-                # which one scored them, not point at whatever the package says
-                # later.
+                # The results must say which shell definition scored them, not
+                # point at whatever the package says later.
                 "shell_classes": shell_class_table(),
                 "eta": summary.config.guidance.eta,
                 "torch_version": torch.__version__,

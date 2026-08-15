@@ -408,8 +408,7 @@ def test_a_fill_in_neither_class_list_is_accepted_the_blocklist_honest_limit(
 
     The pass paints the hole a colour that segments as *person* — in neither
     class list, exactly like the vacuum-shaped hallucinations ADE20K has no
-    name for. The blocklist accepts it (the reverted whitelist would have
-    repainted it, the documented trade); `hole_not_shell_fraction` is the
+    name for. The blocklist accepts it; `hole_not_shell_fraction` is the
     diagnostic that still reports it.
     """
     strip, inpainter, _ = _colour_coded_strip(tmp_path, fills=((1.0, 0.0, 0.2),))
@@ -425,8 +424,7 @@ def test_a_shell_labelled_fill_is_accepted_and_invisible_to_both_numbers(
 ) -> None:
     """A fill that segments as railing — shell — sails through the blocklist.
 
-    This is the loophole the strict whitelist existed to close, accepted back
-    knowingly: a hallucinated ledge EoMT labels as railing/column/stairs is not
+    A hallucinated ledge EoMT labels as railing/column/stairs is not
     removable, so the acceptance stops, and even the not-shell diagnostic reads
     it as a success. Only the negative prompt argues with such a fill.
     """
@@ -559,7 +557,7 @@ def test_fmrg_guidance_descends_the_empty_rooms_own_reference(tmp_path: Path) ->
 
     The reference's disparity and mask are exactly a fresh depth read and shell
     segmentation of the empty room — never the photograph's retained reference,
-    which the previous protocol steered by.
+    which is what `study.py`'s protocol steers by.
     """
     config, backends, strip, _ = _fake_fmrg_run(tmp_path)
 

@@ -64,7 +64,7 @@ sampler:
   differentiate_through_velocity: false
 
 guidance:
-  # Upstream's headline strength, the owner-set default (15 judged too high).
+  # Upstream's headline strength, the owner-set default.
   eta: 5.0
   iterations: 1
   erosion_radius: 2

@@ -256,8 +256,8 @@ def _named_contents(ids: set[int]) -> frozenset[int]:
 # `subtract_contents` excuses a pixel from the reward only where the segmenter
 # commits to one of these, so a class in neither list (sky, tree, person,
 # water, road: what a window shows, or what walks through the frame) is never
-# excused here. Curtain and rug are deliberately absent: they moved to the
-# shell (see `SOFT_FURNISHING_CLASSES`) so their depth is scored rather than
+# excused here. Curtain and rug are deliberately absent: they are shell
+# (`SOFT_FURNISHING_CLASSES`), their depth scored rather than
 # excused, while `REMOVABLE_CLASSES` below keeps them strippable. Borderline
 # calls:
 #   blind: hangs off the wall and swings clear of it, so a new window
@@ -388,7 +388,8 @@ def _disjoint_from_contents(ids: frozenset[int]) -> frozenset[int]:
 
 # The classes whose *identity* a renovation may not change: the shell minus its
 # soft furnishings. The two lists answer different questions about a pixel —
-# where it is (depth) versus what it is (class) — and they no longer coincide:
+# where it is (depth) versus what it is (class) — and they part ways exactly
+# on the soft furnishings:
 # a curtain or a rug is scored for depth (it reads the plane it dresses) but a
 # renovation may re-dress a window or bare a floor, so freezing their *class*
 # would forbid exactly that change. The class term still earns its keep on the

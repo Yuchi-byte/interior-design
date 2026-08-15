@@ -277,7 +277,7 @@ def _repaint(
     `REMOVABLE_CLASSES` names, from sofa to radiator to sconce — and repaints
     exactly that, grown by the dilation radius for the same reason the contents
     mask was dilated: the fringe of an object is the evidence it grows back
-    from. The accepted trade against the strict fill whitelist this reverts: a
+    from. The accepted limit: a
     fill in *neither* class list — the vacuum-shaped object ADE20K has no name
     for, or a hallucination the segmenter reads as railing-shaped shell — is
     accepted as-is, and only the negative prompt argues with it. The blocklist

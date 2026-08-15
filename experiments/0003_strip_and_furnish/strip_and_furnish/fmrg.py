@@ -1,13 +1,14 @@
 """Stage 2 on FMRG: the stripped room refurnished by the FLUX flow map, held by its own depth.
 
 Stage 1 is the unchanged strip — EoMT decides, SD-inpainting fills, the
-inverted shell acceptance re-checks — and stage 2 swaps SD1.5's guided img2img
-for the FMRG walk: the empty room renoised to `start_sigma` and steered by the
-masked depth reward alone, FLUX's native text conditioning carrying the prompt.
+contents-blocklist acceptance re-checks — and stage 2 swaps SD1.5's guided
+img2img for the FMRG walk: the empty room renoised to `start_sigma` and steered
+by the masked depth reward alone, FLUX's native text conditioning carrying the
+prompt.
 
-The guidance reference is the *stripped empty room's* shell depth, not the
-photograph's retained one: the empty room's shell is nearly the whole frame —
-windows and doors included, since they joined the shell — so the valid
+The guidance reference is the *stripped empty room's* shell depth, by owner
+decision: the empty room's shell is nearly the whole frame — windows and doors
+included — so the valid
 comparison area is much larger than photo-shell ∩ prediction-shell. The
 per-step resegmentation keeps the prediction side honest: the effective mask is
 empty-room shell ∩ prediction shell (`GeometricGuidance._scored_pixels`), so
@@ -143,12 +144,12 @@ def furnish_reference(
     """The geometry the furnishing must keep: the *stripped empty room's*, by owner decision.
 
     Deliberately the opposite of the retained-photo protocol: the empty room's
-    shell is nearly the whole frame — the furniture is gone and, since windows
-    and doors joined the shell, the glazing counts too — so the valid comparison
+    shell is nearly the whole frame — the furniture is gone and the glazing
+    counts as shell — so the valid comparison
     area is far larger than photo-shell ∩ prediction-shell. Any residual
     contents the strip left are still excluded, because the mask is read off a
     fresh segmentation of the empty room rather than assumed full-frame. The
-    trade is that guidance no longer knows the original furniture's occlusions;
+    trade is that guidance does not know the original furniture's occlusions;
     what it inherits instead is whatever geometry the inpainting got wrong,
     which `reconstruction_depth_error` and the strip numbers bound.
     """
@@ -270,8 +271,8 @@ class FmrgSceneResult:
             scores.
         common_frame_fraction: the same mask as a share of the whole frame — the
             enlarged valid area the empty-room reference was chosen for, read
-            beside `photo_shell_frame_fraction`, what the old protocol's
-            reference-side mask held before any intersection.
+            beside `photo_shell_frame_fraction`, the retained-photo protocol's
+            reference-side share before any intersection.
     """
 
     scene: str
@@ -391,7 +392,7 @@ def run_fmrg_study(config: FmrgStudyConfig, settings: RoomgenSettings) -> FmrgSu
 
     # The guidance reference is the stripped room's own shell depth, computed
     # while stage 1's judges are still resident; the photo's shell fraction is
-    # kept beside it as the coverage the old protocol's reference-side mask had.
+    # kept beside it as the retained-photo protocol's reference-side coverage.
     references = {
         strip.scene: furnish_reference(
             strip,
@@ -988,8 +989,8 @@ def _write_results(summary: FmrgSummary, settings: RoomgenSettings) -> None:
                 "guidance_reference": "empty_room",
                 # The shell definition every mask in this run was read under,
                 # and the removal blocklist the strip both cut and re-checked
-                # against (the contents plus curtain and rug) — spelled out
-                # because both changed across runs of this study.
+                # against (the contents plus curtain and rug) — spelled out so
+                # each run's results name the definitions that scored them.
                 "shell_classes": [
                     ADE20K_LABELS[index] for index in sorted(ARCHITECTURAL_CLASSES)
                 ],

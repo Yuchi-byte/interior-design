@@ -52,7 +52,7 @@ strip:
   # 8px at 512. Contact shadows, segment fringes and the soft edge of a sofa all
   # sit just outside the segment, and an inpainter handed the bare segment
   # paints the furniture back from exactly that evidence. The same radius grows
-  # each later pass's not-yet-shell region before it is repainted.
+  # each later pass's still-removable region before it is repainted.
   dilation_radius: 8
   # Five passes at 0.85: one pass leaves a television where the sofa was (49%
   # of the cut region still segmented as furniture on the pilot), and dropping

@@ -4,7 +4,7 @@
 # SD1.5 study's separate CLIP text energy has no counterpart here.
 #
 # The guidance reference is the stripped empty room's shell depth, by owner
-# decision: the empty shell is nearly the whole frame (windows and doors now
+# decision: the empty shell is nearly the whole frame (windows and doors
 # included), so the valid comparison area is much larger than the retained
 # photo shell's. The per-step resegmentation excuses whatever furniture the
 # furnishing adds, so the enlarged mask never punishes furnishing itself.
@@ -59,7 +59,7 @@ furnish:
   probe_sigmas: [0.75]
   stepping: endpoint_reuse
   differentiate_through_velocity: false
-  # Upstream's headline strength, the owner-set default (15 judged too high).
+  # Upstream's headline strength, the owner-set default.
   eta: 5.0
   iterations: 1
   erosion_radius: 2

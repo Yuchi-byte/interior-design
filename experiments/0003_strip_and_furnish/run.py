@@ -209,8 +209,8 @@ def _report(summary: Summary) -> None:
     """The study's numbers in the mean, per arm. No claim is made about them.
 
     `depth` is read against the photograph's retained reference — the one the
-    guided arm descends — and `depth(empty)` against the stripped room's, the
-    previous protocol's reference, kept as a diagnostic. Each reference scores
+    guided arm descends — and `depth(empty)` against the stripped room's, kept
+    as a diagnostic. Each reference scores
     all arms of a pair on its own common mask.
     """
     results = summary.furnishes

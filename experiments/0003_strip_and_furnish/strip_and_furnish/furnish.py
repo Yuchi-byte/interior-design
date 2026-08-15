@@ -114,8 +114,8 @@ class FurnishResult:
     The primary numbers — `depth_errors`, `common_coverage`,
     `reconstruction_depth_error` — are read against the photograph's retained
     reference, the one the guided arm descends. The `empty_room_*` fields are
-    the same measurements against the stripped room's reference, the previous
-    protocol's, kept as a diagnostic; each reference scores all three arms over
+    the same measurements against the stripped room's reference, kept as a
+    diagnostic; each reference scores all three arms over
     its own common mask.
     """
 
@@ -234,10 +234,9 @@ def empty_room_reference(
 ) -> GeometricReference:
     """The stripped room's geometry, kept as the secondary yardstick.
 
-    Guidance no longer descends this — it is steered by the photograph's own
-    shell depth (`guidance_reference`) — but every arm is still scored against
-    it, so the run stays comparable with the previous protocol, whose reference
-    this was.
+    Guidance descends the photograph's own shell depth (`guidance_reference`);
+    every arm is still scored against this reference too, so photo-steered and
+    empty-room-steered runs stay comparable.
     """
     return GeometricReference.from_photo(
         strip.empty_room,
