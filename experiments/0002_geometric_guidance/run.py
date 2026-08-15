@@ -301,36 +301,54 @@ def _report_context(summary: ContextSummary) -> None:
 
 
 _REDUX_COLUMNS = (
-    f"{'arm':<9}{'scale':>7}{'depth':>10}{'vs A':>9}{'adher':>9}"
-    f"{'ratio A':>9}{'shell':>7}{'sec':>7}"
+    f"{'arm':<9}{'scale':>7}{'depth':>10}{'vs s0u':>9}{'adher':>9}"
+    f"{'ratio':>8}{'imgsim':>9}{'pref':>8}{'remove':>8}{'shell':>7}{'sec':>7}"
 )
 
 
 def _report_redux(summary: ReduxSummary) -> None:
-    """The image-context study's numbers per (scene, seed, arm) and in the mean. No claim is made."""
+    """The Redux sweep's numbers per (scene, seed, arm) and in the mean. No claim is made."""
     specs = redux_arms(summary.config)
     print(
         f"\n[metrics] {len(summary.results)} (scene, seed) tuples x "
         f"{len(specs)} arms, one common mask each"
     )
     for result in summary.results:
-        print(f"{result.scene} seed {result.seed}:\n{_REDUX_COLUMNS}")
+        print(
+            f"{result.scene} seed {result.seed} (photo {result.removal_object} "
+            f"share {result.photo_removal_fraction:.1%}):\n{_REDUX_COLUMNS}"
+        )
         for cell in result.arms:
-            scale = "text" if cell.redux_scale is None else f"{cell.redux_scale:g}"
+            similarity = (
+                "n/a"
+                if cell.image_similarity is None
+                else f"{cell.image_similarity:.4f}"
+            )
             print(
-                f"{cell.arm:<9}{scale:>7}{cell.depth_error:>10.5f}"
+                f"{cell.arm:<9}{cell.redux_scale:>7g}{cell.depth_error:>10.5f}"
                 f"{_signed(result.depth_delta_vs_baseline(cell.arm)):>9}"
                 f"{cell.adherence:>9.4f}"
-                f"{_share(result.adherence_ratio_vs_baseline(cell.arm)):>9}"
+                f"{_share(result.adherence_ratio_vs_baseline(cell.arm)):>8}"
+                f"{similarity:>9}{cell.preference:>8.3f}"
+                f"{cell.removal_fraction:>7.1%} "
                 f"{cell.shell_coverage:>6.0%} {cell.seconds:>6.1f}"
             )
-        print(f"{'common mask':<25}{'':>9}{'':>9}{'':>9}{result.common_coverage:>6.0%}")
+        print(
+            f"{'common mask':<25}{'':>9}{'':>9}{'':>25}{result.common_coverage:>6.0%}"
+        )
     means = redux_arm_means(summary.results, specs)
     print("\n[means]   per arm, over every (scene, seed)")
     for spec in specs:
         row = means[spec.arm]
+        similarity = (
+            "n/a"
+            if row["image_similarity"] is None
+            else f"{row['image_similarity']:.4f}"
+        )
         print(
             f"{spec.arm:<9}{row['depth_error']:>10.5f}{row['adherence']:>9.4f}"
+            f"{similarity:>9}{row['preference']:>8.3f}"
+            f"{row['removal_fraction']:>7.1%} "
             f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
         )
     print(

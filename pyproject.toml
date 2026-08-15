@@ -127,7 +127,15 @@ ban-relative-imports = "parents"
 # checks exactly what the gate checks. `experiments/` is the whole directory
 # rather than the current framework: a new `NNNN_slug/` must not be able to
 # land outside the gate the way `0002` did.
-mypy_path = ["packages/roomgen-geometry/src", "packages/roomgen-guide/src"]
+mypy_path = [
+    "packages/roomgen-geometry/src",
+    "packages/roomgen-guide/src",
+    # 0002's Redux sweep reuses 0003's strip stage (`strip_and_furnish.strip`)
+    # rather than reimplementing it; the frameworks are separate top-level
+    # directories, so the import resolves here for every per-framework mypy
+    # invocation the same way it resolves at run time through `sys.path`.
+    "experiments/0003_strip_and_furnish",
+]
 # The two src trees only. Every numbered framework under `experiments/` is
 # type-checked too, but in an invocation of its own: each one owns a top-level
 # `run.py`, a directory named `0003_strip_and_furnish` is not a valid package

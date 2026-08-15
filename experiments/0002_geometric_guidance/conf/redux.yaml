@@ -1,26 +1,36 @@
-# The image-as-context question: with the reference photo injected into the
-# prior as FLUX.1-Redux tokens appended to the T5 context — image conditioning
-# exactly analogous to the text prompt — does the model keep the layout better
-# than text alone, does the image drown the text at full scale, and what does
-# the depth reward still add on top?
+# The Redux-scale sweep on the original furnished photos: with the reference
+# photo appended to the T5 context as FLUX.1-Redux tokens, is there a scale at
+# which the photo informs the renovation without dominating it? Five scenes,
+# an unguided and a depth-guided arm per scale — scale 0 being the text-only
+# renovation-prompt baselines — all at one seed and the sampler's one init.
 #
-# Six arms per scene at one seed, all at the sampler's one init strength:
-# A (style prompt, text only, unguided — the baseline), C (style, text only,
-# guided — the anchor matching the context and eta studies), then the
-# renovation instruction with the photo's Redux tokens at each scale, unguided
-# and guided: R1/R2 at 0.3 (the community operating point that keeps the text
-# audible), R3/R4 at 1.0 (diffusers' composition, the known drowning regime).
+# Every renovation prompt carries an explicit removal instruction ("remove the
+# <object> in the room", the object read off each photo) so the dial directly
+# measures where the image tokens start to drown the text: the
+# removal-compliance fraction per arm quantifies it, adherence and
+# image-similarity expose the copying regime, and the depth reward rides on
+# top of every guided arm.
+#
+# The depth reference is the STRIPPED EMPTY ROOM's shell depth (stage zero,
+# 0003's strip machinery, owner decision): the empty shell is nearly the whole
+# frame — a far larger valid comparison area than the furnished shell — and it
+# holds none of the furniture the removal instruction targets, so the depth
+# reward never defends the removed object's mass. Redux still encodes the
+# FURNISHED photo; that is the axis under test.
 #
 #   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config redux
 study: fmrg_redux
 name: 0002_fmrg_redux
 
-# One seed: the owner's fast-iteration setting, 12 walks total.
+# One seed: the owner's fast-iteration setting, 50 walks total.
 seeds: [0]
 
 resolution: 512
 
-redux_scales: [0.3, 1.0]
+# The dial: 0 is the text-only baseline pair, 0.1/0.3 the region where the
+# text should stay audible, 0.7 the approach, 1.0 diffusers' composition and
+# the known drowning regime.
+redux_scales: [0.0, 0.1, 0.3, 0.7, 1.0]
 
 backends:
   kind: real
@@ -29,6 +39,19 @@ backends:
   dtype: bfloat16
   depth_dtype: float32
   segmentation_dtype: float32
+
+strip:
+  # 0003 fmrg.yaml's strip, verbatim: float16 SD-inpaint stack, the contents
+  # blocklist acceptance, five passes with early stop. The whole stack is
+  # released before the Redux encoders or the transformer load.
+  prompt: empty room, bare floor, bare wall, no furniture, plain interior
+  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, ledge, counter, cabinet, box, machine, vacuum cleaner, cart, trolley, wheels, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  dilation_radius: 8
+  passes: 5
+  steps: 40
+  fill_strength: 0.85
+  guidance_scale: 12.0
+  dtype: float16
 
 sampler:
   # fmrg.yaml's operating point, verbatim: FMRG's `fmrgj_nfe100` grid.
@@ -49,22 +72,60 @@ guidance:
 
 adherence:
   # The eval judge, deliberately bigger than — and independent of — the ViT-B/32
-  # any CLIP guidance in this repo descends. Arm A is this study's own baseline.
-  # It reads the eval text against the render alone — never the image tokens —
-  # so an arm that merely copies the photo scores low on it, which is exactly
-  # the confound check the study needs.
+  # any CLIP guidance in this repo descends. It reads the eval text against the
+  # render alone — never the image tokens — so an arm that merely copies the
+  # photo scores low on it, which is exactly the confound check the sweep needs.
   kind: clip
   checkpoint: openai/clip-vit-large-patch14
 
-# The context study's two scenes and its exact prompts, verbatim, so the A/C
-# pair reads directly against that run's arms — with the difference that the
-# renovation prompt's "this room" now binds to actual image tokens.
+# Render-to-photo cosine under the same independent ViT-L/14: near 1 with low
+# adherence is the copying failure named, not a win.
+image_similarity_checkpoint: openai/clip-vit-large-patch14
+
+preference:
+  # PickScore v1, eval only: CLIP-H fine-tuned on human choices.
+  kind: pickscore
+
+# The first two scenes and their style/eval texts are the prior Redux runs'
+# verbatim; ny_loft and hotel_suite carry the framing study's style texts; the
+# lakehouse scene is new to this study (its photo is a warm timber lakehouse
+# lounge, so the renovation is into a genuinely different style — a scene whose
+# photo already matches its style prompt leaves adherence half blind, which is
+# scandi_living_room's known caveat). Every renovation prompt appends the
+# removal instruction; each removal object was read off the photo itself, the
+# class ids are the ADE20K table/desk family (table 15, desk 33, coffee table
+# 64) or chair family (chair 19, armchair 30, swivel chair 75), and the scandi
+# scene — whose photo holds no table or desk at all — substitutes its shell
+# chair, recorded as such.
 scenes:
   - photo: scandi_living_room
     style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
-    renovation_prompt: renovate this room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight, keep the room structure, layout, viewpoint and camera angle
+    renovation_prompt: renovate this room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight, keep the room structure, layout, viewpoint and camera angle, remove the chair in the room
     eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    removal_object: chair
+    removal_classes: [19, 30, 75]
+    removal_substituted: true
   - photo: blue_white_kitchen
     style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
-    renovation_prompt: renovate this room into a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops, keep the room structure, layout, viewpoint and camera angle
+    renovation_prompt: renovate this room into a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops, keep the room structure, layout, viewpoint and camera angle, remove the table in the room
     eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    removal_object: table
+    removal_classes: [15, 33, 64]
+  - photo: ny_loft_bedroom
+    style_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    renovation_prompt: renovate this room into a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami, keep the room structure, layout, viewpoint and camera angle, remove the desk in the room
+    eval_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    removal_object: desk
+    removal_classes: [15, 33, 64]
+  - photo: hotel_suite_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    renovation_prompt: renovate this room into a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight, keep the room structure, layout, viewpoint and camera angle, remove the coffee table in the room
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    removal_object: coffee table
+    removal_classes: [15, 33, 64]
+  - photo: lakehouse_living_room
+    style_prompt: a mid-century modern living room, walnut furniture, mustard velvet sofa, brass floor lamp, warm evening light
+    renovation_prompt: renovate this room into a mid-century modern living room, walnut furniture, mustard velvet sofa, brass floor lamp, warm evening light, keep the room structure, layout, viewpoint and camera angle, remove the armchairs in the room
+    eval_prompt: a mid-century modern living room, walnut furniture, mustard velvet sofa, brass floor lamp, warm evening light
+    removal_object: armchairs
+    removal_classes: [19, 30, 75]

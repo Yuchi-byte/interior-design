@@ -9,6 +9,7 @@ top-level `study` key and `load_study_config` dispatches on it.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Final, Literal
@@ -425,6 +426,96 @@ class FmrgContextConfig(ExperimentConfig):
         return self
 
 
+class ReduxSceneConfig(FramingSceneConfig):
+    """A framing scene plus the one object its renovation prompt removes.
+
+    The Redux sweep's renovation prompts carry an explicit removal instruction
+    ("remove the <object> in the room") so the scale dial measures where the
+    image tokens start to drown the text; the scene names the object and the
+    ADE20K ids the removal-compliance metric counts it under.
+
+    Args:
+        removal_object: the object the renovation prompt removes, named as it
+            appears in the photo (e.g. `chair`); must appear verbatim in
+            `renovation_prompt`, or the prompt and the metric drift apart.
+        removal_classes: ADE20K-150 model-output ids the removal-compliance
+            metric counts as that object; every id must be a contents class,
+            because removing a piece of the shell would contradict the same
+            prompt's "keep" clause and the depth reward.
+        removal_substituted: true when the photo holds no table or desk at all
+            and the prompt removes the scene's most removable chair instead —
+            recorded so the report can say so.
+    """
+
+    removal_object: Annotated[str, Field(min_length=1)]
+    removal_classes: Annotated[tuple[int, ...], Field(min_length=1)]
+    removal_substituted: bool = False
+
+    @field_validator("removal_classes")
+    @classmethod
+    def _removal_targets_are_contents(cls, ids: tuple[int, ...]) -> tuple[int, ...]:
+        outside = [
+            identifier for identifier in ids if identifier not in CONTENTS_CLASSES
+        ]
+        if outside:
+            raise ValueError(
+                f"removal_classes {outside} are not ADE20K contents classes: the "
+                f"instruction removes furniture, never shell, so a non-contents "
+                f"id would score the wrong pixels as compliance"
+            )
+        return ids
+
+    @model_validator(mode="after")
+    def _the_prompt_removes_what_the_metric_counts(self) -> ReduxSceneConfig:
+        if self.removal_object not in self.renovation_prompt:
+            raise ValueError(
+                f"renovation_prompt never names {self.removal_object!r}: the "
+                f"removal-compliance metric counts an object the prompt has to "
+                f"actually ask to remove"
+            )
+        return self
+
+
+class ReduxStripConfig(Config):
+    """Stage zero of the Redux sweep: strip each photo bare before anything samples.
+
+    The fields mirror 0003's `StripConfig` plus the SD stack dtype the strip
+    runs in; the machinery itself is imported from
+    `experiments/0003_strip_and_furnish` at run time rather than reimplemented,
+    and the defaults are that study's owner-validated `fmrg.yaml` values
+    verbatim. The stripped empty room is what the depth reference is built
+    from — its shell is nearly the whole frame, which is the larger comparison
+    area the reference switch buys — while Redux still encodes the furnished
+    photo.
+
+    Args:
+        prompt: what the inpainter is asked to fill the cut region with.
+        negative_prompt: what the fill must not become; the only guard against
+            fills ADE20K has no name for.
+        dilation_radius: pixels the contents mask is grown by before the cut.
+        passes: inpainting passes; each repaints what the segmenter still calls
+            removable, and the loop stops early once the hole segments clean.
+        dtype: the SD1.5 inpainting stack's parameter dtype; the strip stack is
+            released in full before the FLUX transformer loads.
+    """
+
+    prompt: Annotated[str, Field(min_length=1)] = (
+        "empty room, bare floor, bare wall, no furniture, plain interior"
+    )
+    negative_prompt: Annotated[str, Field(min_length=1)] | None = (
+        "furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, "
+        "vent, air conditioner, fireplace, television, screen, shelf, ledge, "
+        "counter, cabinet, box, machine, vacuum cleaner, cart, trolley, wheels, "
+        "plant, lamp, curtain, rug, decoration, clutter, objects, people, text"
+    )
+    dilation_radius: Annotated[int, Field(ge=0)] = 8
+    passes: Annotated[int, Field(ge=1)] = 5
+    steps: Annotated[int, Field(ge=1)] = 40
+    fill_strength: Annotated[float, Field(gt=0.0, le=1.0)] = 0.85
+    guidance_scale: Annotated[float, Field(ge=1.0)] = 12.0
+    dtype: DTypeName = "float16"
+
+
 class FmrgReduxBackendConfig(FmrgBackendConfig):
     """The FMRG stack plus the Redux image-context encoders the study caches with.
 
@@ -439,33 +530,58 @@ class FmrgReduxBackendConfig(FmrgBackendConfig):
 
 
 class FmrgReduxConfig(ExperimentConfig):
-    """The image-as-context study: the reference photo appended to the T5 context.
+    """The Redux-scale sweep: the furnished photo's image tokens dialled against the text.
 
-    Per scene at one seed, six arms off one transformer load: the style prompt
-    with no image tokens, unguided (A, the baseline) and guided (C, the anchor
-    matching prior studies), then the renovation instruction with the photo's
-    Redux tokens appended at each `redux_scales` value, unguided and guided
-    (R1..R4 for two scales). All arms run at the sampler's one `start_sigma`;
-    the axis under test is the image context and its strength, not the init.
+    Per scene at one seed, one unguided and one depth-guided arm per
+    `redux_scales` value, every arm conditioned on the scene's one renovation
+    prompt (style descriptors, a keep-the-structure clause, and an explicit
+    remove-the-object instruction). Scale 0 is the text-only pair — the plain
+    prompt entry, never a zero-scaled token copy — and its unguided arm is the
+    baseline every delta divides by. All arms run at the sampler's one
+    `start_sigma`; the axis under test is the image context's strength alone.
+
+    The depth reference is the *stripped empty room's* shell depth (stage
+    zero, `strip`), by owner decision: the empty shell is nearly the whole
+    frame, so the valid comparison area is far larger than the furnished
+    photo's shell — and it contains none of the furniture the removal
+    instruction targets, so the depth reward never defends the removed
+    object's mass. The Redux tokens still encode the furnished photo; that is
+    the axis under test.
 
     Args:
-        scenes: each photo with both framings; adherence is scored against the
-            scene's one neutral `eval_prompt` for every arm, never an arm's own
-            prompt — and never the image, which several arms were conditioned on.
-        redux_scales: multipliers on the image tokens alone (the text embeds are
-            never scaled), one unguided and one guided arm per value. 1.0 is
-            diffusers' composition and the known drowning regime; ~0.3 keeps
-            the text audible.
+        scenes: each photo with its prompts and its removal target; adherence
+            and preference are scored against the scene's one neutral
+            `eval_prompt` for every arm, never an arm's own prompt — and never
+            the image, which most arms were conditioned on.
+        redux_scales: multipliers on the image tokens alone (the text embeds
+            are never scaled), strictly increasing from the mandatory 0.0
+            baseline. 1.0 is diffusers' composition and the known drowning
+            regime; ~0.3 the community operating point that keeps the text
+            audible.
+        image_similarity_checkpoint: the eval judge of render-to-photo cosine
+            (`None` skips it, the offline smoke setting) — read beside
+            adherence, since a photo copy scores near 1 on it.
     """
 
     study: Literal["fmrg_redux"]
-    scenes: Annotated[tuple[FramingSceneConfig, ...], Field(min_length=1)]
-    redux_scales: Annotated[tuple[float, ...], Field(min_length=1)] = (0.3, 1.0)
+    scenes: Annotated[tuple[ReduxSceneConfig, ...], Field(min_length=1)]
+    redux_scales: Annotated[tuple[float, ...], Field(min_length=2)] = (
+        0.0,
+        0.1,
+        0.3,
+        0.7,
+        1.0,
+    )
     resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
     backends: FmrgReduxBackendConfig
+    strip: ReduxStripConfig = ReduxStripConfig()
     sampler: FmrgSamplerConfig = FmrgSamplerConfig()
     guidance: FmrgGuidanceConfig = FmrgGuidanceConfig()
     adherence: AdherenceConfig
+    image_similarity_checkpoint: Annotated[str, Field(min_length=1)] | None = (
+        IMAGE_SIMILARITY_CHECKPOINT
+    )
+    preference: PreferenceConfig
 
     @field_validator("resolution")
     @classmethod
@@ -479,20 +595,25 @@ class FmrgReduxConfig(ExperimentConfig):
 
     @field_validator("redux_scales")
     @classmethod
-    def _scales_weight_the_image_tokens(
+    def _scales_dial_up_from_the_text_only_baseline(
         cls, scales: tuple[float, ...]
     ) -> tuple[float, ...]:
-        for scale in scales:
-            if scale <= 0.0:
+        if scales[0] != 0.0:
+            raise ValueError(
+                f"redux_scales must start at 0.0, got {scales[0]}: the text-only "
+                f"pair is the baseline every arm's delta divides by"
+            )
+        for lower, upper in itertools.pairwise(scales):
+            if upper <= lower:
                 raise ValueError(
-                    f"redux_scales must be positive, got {scale}: scale 0 is a "
-                    f"text-only arm the context study already measures"
+                    f"redux_scales must be strictly increasing, got {upper} "
+                    f"after {lower}: the sweep is a dial, read left to right"
                 )
         return scales
 
     @model_validator(mode="after")
-    def _adherence_is_never_the_guidance_clip(self) -> FmrgReduxConfig:
-        # The eval CLIP must stay independent of the CLIP any guidance energy in
+    def _no_judge_is_the_guidance_clip(self) -> FmrgReduxConfig:
+        # The eval CLIPs must stay independent of the CLIP any guidance energy in
         # this repo descends, or a guided arm is graded on the model it optimised.
         if (
             self.adherence.kind == "clip"
@@ -501,6 +622,13 @@ class FmrgReduxConfig(ExperimentConfig):
             raise ValueError(
                 f"adherence.checkpoint is {self.adherence.checkpoint!r}, the "
                 f"guidance CLIP: score adherence with an independent checkpoint "
+                f"(e.g. openai/clip-vit-large-patch14)."
+            )
+        if self.image_similarity_checkpoint == GUIDANCE_CLIP_CHECKPOINT:
+            raise ValueError(
+                f"image_similarity_checkpoint is "
+                f"{self.image_similarity_checkpoint!r}, the guidance CLIP: "
+                f"judge image similarity with an independent checkpoint "
                 f"(e.g. openai/clip-vit-large-patch14)."
             )
         return self
