@@ -14,10 +14,17 @@ from roomgen_geometry.depth.depth_anything import DEFAULT_CHECKPOINT as DEPTH_CH
 from roomgen_geometry.segmentation.eomt import (
     DEFAULT_CHECKPOINT as SEGMENTATION_CHECKPOINT,
 )
+from roomgen_guide.adapters.fmrg_flux import DEFAULT_REDUX_CHECKPOINT
 from roomgen_guide.config import Config
-from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
+from roomgen_guide.eval import (
+    DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT,
+)
+from roomgen_guide.eval import (
+    DEFAULT_IMAGE_SIMILARITY_CHECKPOINT,
+)
 from roomgen_guide.experiment import ExperimentConfig
 from roomgen_guide.guidance.clip import DEFAULT_CHECKPOINT as TEXT_ENERGY_CHECKPOINT
+from roomgen_guide.guidance.image_reference import DEFAULT_DINOV2_CHECKPOINT
 from roomgen_guide.renovate import DEFAULT_CHECKPOINT as DIFFUSION_CHECKPOINT
 from roomgen_guide.sampling.inpaint import DEFAULT_CHECKPOINT as INPAINTING_CHECKPOINT
 
@@ -356,6 +363,110 @@ class FmrgStudyConfig(ExperimentConfig):
         return resolution
 
 
+class ReduxContextConfig(Config):
+    """The stripped empty room handed to the *prior* as FLUX.1-Redux image context.
+
+    Args:
+        scale: multiplier on the image tokens alone, the text tokens untouched
+            (`register_image_context_prompt`). 1.0 is diffusers' composition and
+            is known to drown the prompt; 0.3 is the operating point the Redux
+            study found keeps the text audible.
+        checkpoint: the SigLIP + Redux-adapter weights, gated like FLUX.1-dev
+            and resolved from the same cache.
+    """
+
+    scale: Annotated[float, Field(ge=0.0)] = 0.3
+    checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_REDUX_CHECKPOINT
+
+
+class ImageRewardConfig(Config):
+    """The image-reward channel: DINOv2 patch cosine toward the empty room, shell patches only.
+
+    The reference is the *empty room*, which contains no furniture, so a
+    full-frame similarity would punish furnishing itself; the energy is
+    restricted to patch positions the empty room's shell mask names, and
+    intersected per step with the prediction's own resegmented shell exactly as
+    the depth reward's pixel mask is.
+
+    Args:
+        depth_weight: the depth term's weight beside the image term's 1.0 in
+            the composite arm; `None` measures it as the ratio of the two
+            terms' gradient RMS at a midpoint step of the real walk — the unit
+            conversion between a patch cosine and a masked squared disparity.
+        sizing_fraction: how far into the guided window that measurement is
+            taken.
+        min_patch_coverage: share of a patch's pixels the shell must cover
+            before the patch is scored, on the reference and the per-step
+            prediction alike.
+    """
+
+    dinov2_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_DINOV2_CHECKPOINT
+    depth_weight: Annotated[float, Field(gt=0.0)] | None = None
+    sizing_fraction: Annotated[float, Field(gt=0.0, le=1.0)] = 0.5
+    min_patch_coverage: Annotated[float, Field(gt=0.0, le=1.0)] = 0.5
+
+
+class PreferenceConfig(Config):
+    """Which human-preference model scores the finished renders — eval only, never guidance.
+
+    Args:
+        kind: `pickscore` loads PickScore v1, a CLIP-H fine-tuned on human
+            choices; `contrast` is a checkpoint-free stand-in (per-image pixel
+            spread) that lets the smoke variant exercise the plumbing offline.
+        checkpoint: Hub id of the scoring model, read only by `pickscore`.
+        processor_checkpoint: Hub id the tokenizer and image statistics come
+            from — PickScore ships no processor of its own.
+    """
+
+    kind: Literal["pickscore", "contrast"]
+    checkpoint: Annotated[str, Field(min_length=1)] = "yuvalkirstain/PickScore_v1"
+    processor_checkpoint: Annotated[str, Field(min_length=1)] = (
+        "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+    )
+
+
+class FmrgReduxConfig(FmrgStudyConfig):
+    """The Redux x depth x image-reward comparison over the FMRG furnish stage.
+
+    The strip and the walk are `FmrgStudyConfig`'s unchanged; what this variant
+    adds is the arm grid — the stripped empty room injected as Redux context
+    into the prior, the depth reward, and the shell-masked DINOv2 image reward,
+    in every combination the owner named — plus the judges the extra readouts
+    need. Every furnish arm steers under one instruction prompt built from the
+    scene's style descriptors; the neutral style text stays the eval prompt.
+
+    Args:
+        image_similarity_checkpoint: the eval judge of render-to-empty-room and
+            render-to-photo cosine; `None` skips the metric (the offline smoke
+            variant). Never the checkpoint the image reward descends.
+    """
+
+    study: Literal["fmrg_redux"]  # type: ignore[assignment]
+    redux: ReduxContextConfig = ReduxContextConfig()
+    image: ImageRewardConfig = ImageRewardConfig()
+    image_similarity_checkpoint: Annotated[str, Field(min_length=1)] | None = (
+        DEFAULT_IMAGE_SIMILARITY_CHECKPOINT
+    )
+    preference: PreferenceConfig
+
+    @model_validator(mode="after")
+    def _no_judge_shares_the_steered_tower(self) -> Self:
+        # The self-grading rule: the DINOv2 the image arms descend must never be
+        # the model that scores them.
+        steered = self.image.dinov2_checkpoint
+        if self.adherence.kind == "clip" and self.adherence.checkpoint == steered:
+            raise ValueError(
+                f"adherence.checkpoint is {steered!r}, the tower the image "
+                f"reward descends: score adherence with an independent judge."
+            )
+        if self.image_similarity_checkpoint == steered:
+            raise ValueError(
+                f"image_similarity_checkpoint is {steered!r}, the tower the "
+                f"image reward descends: judge similarity independently."
+            )
+        return self
+
+
 def load_study_config(
     path: Path, overrides: Sequence[str] | None = None
 ) -> StudyConfig | FmrgStudyConfig:
@@ -368,6 +479,10 @@ def load_study_config(
     raw = OmegaConf.load(path)
     if not isinstance(raw, DictConfig):
         raise TypeError(f"Expected a mapping at {path}, got {type(raw).__name__}")
-    if raw.get("study") == "fmrg":
-        return FmrgStudyConfig.from_file(path, overrides)
-    return StudyConfig.from_file(path, overrides)
+    match raw.get("study"):
+        case "fmrg_redux":
+            return FmrgReduxConfig.from_file(path, overrides)
+        case "fmrg":
+            return FmrgStudyConfig.from_file(path, overrides)
+        case _:
+            return StudyConfig.from_file(path, overrides)

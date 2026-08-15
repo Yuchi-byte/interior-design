@@ -17,6 +17,7 @@ from jaxtyping import Bool, Float, Int
 from strip_and_furnish.backends import Backends, build_adherence, build_backends
 from strip_and_furnish.config import (
     LATENT_ALIGNMENT,
+    FmrgReduxConfig,
     FmrgStudyConfig,
     SceneConfig,
     StudyConfig,
@@ -41,6 +42,11 @@ from strip_and_furnish.images import (
     write_image,
     write_mask_overlay,
     write_segmentation_map,
+)
+from strip_and_furnish.redux import (
+    REDUX_ARMS,
+    build_image_energy_bank,
+    instruction_prompt,
 )
 from strip_and_furnish.strip import StripResult, strip_scene
 from torch import Tensor
@@ -660,3 +666,210 @@ def test_fmrg_scene_scores_every_arm_on_the_intersected_mask(tmp_path: Path) -> 
     assert result.common_frame_fraction <= result.empty_shell_frame_fraction + 1e-9
     assert (tmp_path / result.empty_depth_map).exists()
     assert (tmp_path / result.common_mask_overlay).exists()
+
+
+def test_redux_arms_cover_the_owners_grid() -> None:
+    assert [spec.arm for spec in REDUX_ARMS] == [
+        "control",
+        "redux",
+        "redux_depth",
+        "depth",
+        "img",
+        "redux_img",
+        "redux_img_depth",
+    ]
+    assert [(spec.redux, spec.depth, spec.image) for spec in REDUX_ARMS] == [
+        (False, False, False),
+        (True, False, False),
+        (True, True, False),
+        (False, True, False),
+        (False, False, True),
+        (True, False, True),
+        (True, True, True),
+    ]
+    # Redux is conditioning, not steering: an arm with no reward is unguided.
+    assert [spec.guided for spec in REDUX_ARMS] == [
+        False,
+        False,
+        True,
+        True,
+        True,
+        True,
+        True,
+    ]
+
+
+def test_the_instruction_prompt_wraps_the_style_descriptors_verbatim() -> None:
+    scene = SceneConfig(photo="scandi_living_room", prompt="a cosy den, warm wood")
+
+    assert instruction_prompt(scene) == (
+        "renovate this room into a cosy den, warm wood, keep the windows, "
+        "doors, walls, floor and ceiling's positions"
+    )
+
+
+def test_a_judge_sharing_the_steered_dinov2_is_refused() -> None:
+    with pytest.raises(ValueError, match="image reward descends"):
+        FmrgReduxConfig.from_file(
+            CONF_DIR / "fmrg_redux.yaml",
+            ["image_similarity_checkpoint=facebook/dinov2-base"],
+        )
+
+
+def _fake_redux_run(
+    tmp_path: Path,
+) -> tuple[FmrgReduxConfig, Backends, StripResult, SceneConfig]:
+    """One scene stripped on the weightless stack, under the Redux-grid shape."""
+    config = load_study_config(
+        CONF_DIR / "fmrg_redux_smoke.yaml",
+        [
+            "seeds=[0]",
+            f"resolution={LATENT_ALIGNMENT}",
+            "strip.passes=1",
+            "strip.steps=2",
+            "furnish.grid_steps=4",
+            "furnish.early_stop=3",
+        ],
+    )
+    assert isinstance(config, FmrgReduxConfig)
+    backends = build_backends(config.backends, cache_dir=tmp_path)
+    scene = config.scenes[0]
+    photo = torch.rand(
+        (1, 3, config.resolution, config.resolution),
+        generator=torch.Generator().manual_seed(0),
+    )
+    strip = strip_scene(
+        scene,
+        photo,
+        strip=config.strip,
+        erosion_radius=config.furnish.erosion_radius,
+        backends=backends,
+        inpainter=backends.build_inpainter(),
+        seed=0,
+        gallery=tmp_path,
+    )
+    return config, backends, strip, scene
+
+
+def test_redux_scene_wires_every_arm_and_scores_the_intersected_mask(
+    tmp_path: Path,
+) -> None:
+    """The seven-arm grid: rewards wired per spec, one common mask, judges deferred.
+
+    The image arms descend the shell-masked patch energy, the composite carries
+    the measured weight, and every arm leaves a render, a segmentation map, a
+    masked depth map, a signed residual map and its scorable overlay.
+    """
+    from strip_and_furnish.redux import (  # noqa: PLC0415
+        _arm_reward,
+        _run_scene,
+        _score_pending,
+    )
+
+    from roomgen_guide.guidance.composite import WeightedGuidance  # noqa: PLC0415
+    from roomgen_guide.guidance.image_reference import (  # noqa: PLC0415
+        MaskedPatchReferenceGuidance,
+    )
+
+    config, backends, strip, scene = _fake_redux_run(tmp_path)
+    settings = RoomgenSettings(wdir=tmp_path, hf_home=tmp_path)
+    reference = furnish_reference(
+        strip,
+        depth_estimator=backends.depth_estimator,
+        segmenter=backends.segmenter,
+        erosion_radius=config.furnish.erosion_radius,
+    )
+    stacks = build_flux_stack(
+        config,
+        prompts=[scene.prompt],
+        depth_estimator=backends.depth_estimator,
+        segmenter=backends.segmenter,
+        device=backends.device,
+        settings=settings,
+    )
+    bank = build_image_energy_bank(config, device=backends.device, settings=settings)
+
+    (pending,) = _run_scene(
+        scene,
+        strip,
+        config=config,
+        stacks=stacks,
+        bank=bank,
+        reference=reference,
+        shell_fractions={
+            "photo": float(strip.reference.mask.to(torch.float32).mean()),
+            "empty_room": float(reference.mask.to(torch.float32).mean()),
+        },
+        gallery=tmp_path,
+        warm_up=False,
+    )
+    (result,) = _score_pending(
+        [pending], config=config, device=backends.device, settings=settings
+    )
+
+    assert [cell.arm for cell in result.arms] == [spec.arm for spec in REDUX_ARMS]
+    assert result.sizing is not None
+    triple = result.arm("redux_img_depth")
+    assert triple.depth_weight == pytest.approx(result.sizing.depth_weight)
+    for cell in result.arms:
+        assert result.common_coverage <= cell.shell_coverage + 1e-9
+        assert cell.depth_error >= 0.0
+        assert cell.adherence == cell.adherence  # scored, not the NaN sentinel
+        assert cell.preference == cell.preference
+        assert cell.similarity_empty_room is None  # smoke skips the judge
+        for name in (
+            cell.render,
+            cell.segmentation_map,
+            cell.depth_map,
+            cell.residual_map,
+            cell.scorable_overlay,
+        ):
+            assert (tmp_path / name).exists()
+    assert (tmp_path / result.empty_segmentation_map).exists()
+    row = result.as_row()
+    for key in (
+        "style_prompt",
+        "instruction_prompt",
+        "redux_scale",
+        "sizing",
+        "common_frame_fraction",
+    ):
+        assert key in row
+
+    # The rewards behind the arms: image-only is the masked patch energy, the
+    # triple is a weighted pair, and everything else defers to the walk's own
+    # depth default.
+    image_only = _arm_reward(
+        REDUX_ARMS[4],
+        empty_room=strip.empty_room.to(torch.float32),
+        config=config,
+        stacks=stacks,
+        bank=bank,
+        reference=reference,
+        composite_weight=None,
+    )
+    assert isinstance(image_only, MaskedPatchReferenceGuidance)
+    triple_reward = _arm_reward(
+        REDUX_ARMS[6],
+        empty_room=strip.empty_room.to(torch.float32),
+        config=config,
+        stacks=stacks,
+        bank=bank,
+        reference=reference,
+        composite_weight=2.5,
+    )
+    assert isinstance(triple_reward, WeightedGuidance)
+    assert [term.weight for term in triple_reward.terms] == [1.0, 2.5]
+    for spec in REDUX_ARMS[:4]:
+        assert (
+            _arm_reward(
+                spec,
+                empty_room=strip.empty_room.to(torch.float32),
+                config=config,
+                stacks=stacks,
+                bank=bank,
+                reference=reference,
+                composite_weight=None,
+            )
+            is None
+        )

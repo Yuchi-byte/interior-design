@@ -18,7 +18,11 @@ import argparse
 from collections.abc import Iterable
 from pathlib import Path
 
-from strip_and_furnish.config import FmrgStudyConfig, load_study_config
+from strip_and_furnish.config import (
+    FmrgReduxConfig,
+    FmrgStudyConfig,
+    load_study_config,
+)
 from strip_and_furnish.fmrg import (
     CONTROL_ARM,
     FmrgSummary,
@@ -26,6 +30,7 @@ from strip_and_furnish.fmrg import (
     run_fmrg_study,
 )
 from strip_and_furnish.furnish import ARMS, Arm, FurnishResult
+from strip_and_furnish.redux import REDUX_ARMS, ReduxSummary, run_redux_study
 from strip_and_furnish.study import Summary, run_study
 
 from roomgen_guide.settings import RoomgenSettings
@@ -54,6 +59,16 @@ def main() -> int:
         CONF_DIR / f"{arguments.config}.yaml", arguments.overrides
     )
     settings = RoomgenSettings()
+    if isinstance(config, FmrgReduxConfig):
+        print(
+            f"[config] {config.name} ({arguments.config}.yaml, study fmrg_redux): "
+            f"{len(config.scenes)} scenes x {len(config.seeds)} seeds x "
+            f"{len(REDUX_ARMS)} arms on {config.backends.kind} backends, device "
+            f"{config.backends.device}, eta {config.furnish.eta}, start sigma "
+            f"{config.furnish.start_sigma}, redux scale {config.redux.scale}"
+        )
+        _report_redux(run_redux_study(config, settings))
+        return 0
     if isinstance(config, FmrgStudyConfig):
         print(
             f"[config] {config.name} ({arguments.config}.yaml, study fmrg): "
@@ -80,6 +95,65 @@ def main() -> int:
     summary = run_study(config, settings)
     _report(summary)
     return 0
+
+
+def _report_redux(summary: ReduxSummary) -> None:
+    """The grid's numbers in the mean, per arm. No claim is made about them."""
+    results = summary.results
+    print(
+        f"\n[stage 2 mean] over {len(results)} (scene, seed) pairs, one common "
+        f"mask each vs the empty room\n"
+        f"{'arm':<17}{'depth':>11}{'Δ vs ctl':>10}{'adherence':>11}{'vs ctl':>9}"
+        f"{'sim(empty)':>11}{'sim(photo)':>11}{'pick':>8}{'cover':>7}{'sec':>7}"
+    )
+    for spec in REDUX_ARMS:
+        cells = [result.arm(spec.arm) for result in results]
+        delta = _optional_mean(
+            result.depth_delta_vs_control(spec.arm) for result in results
+        )
+        ratio = _optional_mean(
+            result.adherence_ratio_vs_control(spec.arm) for result in results
+        )
+        empty = _optional_mean(cell.similarity_empty_room for cell in cells)
+        photo = _optional_mean(cell.similarity_photo for cell in cells)
+        print(
+            f"{spec.arm:<17}"
+            f"{_mean(cell.depth_error for cell in cells):>11.6f}"
+            f"{_signed(None if spec.arm == CONTROL_ARM else delta):>10}"
+            f"{_mean(cell.adherence for cell in cells):>11.4f}"
+            f"{_share(None if spec.arm == CONTROL_ARM else ratio):>9}"
+            f"{_float(empty):>11}"
+            f"{_float(photo):>11}"
+            f"{_mean(cell.preference for cell in cells):>8.2f}"
+            f"{_mean(cell.shell_coverage for cell in cells):>7.0%}"
+            f"{_mean(cell.seconds for cell in cells):>7.1f}"
+        )
+    weights = [
+        result.sizing.depth_weight for result in results if result.sizing is not None
+    ]
+    if weights:
+        print(
+            "[weights] measured depth weight per scene: "
+            + ", ".join(f"{weight:.3g}" for weight in weights)
+            + " (image term 1.0, gradient-RMS matched)"
+        )
+    print(
+        f"[mask]    common mask holds "
+        f"{_mean(result.common_frame_fraction for result in results):.0%} of the "
+        f"frame at the mean"
+    )
+    print(
+        f"[run]     commit {summary.git_commit[:8]}, "
+        f"{summary.walked_steps} walked steps, "
+        f"device {summary.device_name or summary.config.backends.device}"
+    )
+    if summary.peak_vram_bytes is not None:
+        print(f"[vram]    peak {summary.peak_vram_bytes / 1024**3:.2f} GiB")
+    print(f"[outputs] {summary.output_dir}")
+
+
+def _float(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.4f}"
 
 
 def _report_fmrg(summary: FmrgSummary) -> None:

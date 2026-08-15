@@ -1,0 +1,91 @@
+# The Redux x depth x image-reward grid over the two-stage FMRG furnish: strip
+# exactly as `fmrg.yaml` does, then walk the stripped empty room seven times per
+# scene — control, Redux context alone, Redux+depth, depth alone, image reward
+# alone, Redux+image, and Redux+image+depth at a measured weight.
+#
+# Every furnish arm steers under one instruction prompt built verbatim from the
+# scene's style descriptors ("renovate this room into <style>, keep the
+# windows, doors, walls, floor and ceiling's positions"); the Redux arms append
+# the STRIPPED EMPTY ROOM's image tokens to that prompt at scale 0.3, the
+# operating point the Redux study found keeps the text audible. The image
+# reward is the DINOv2 patch cosine toward the empty room, restricted to shell
+# patch positions — the empty room contains no furniture, so a full-frame
+# similarity would punish furnishing itself.
+#
+#   uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config fmrg_redux
+study: fmrg_redux
+name: 0003_fmrg_redux
+
+seeds: [0]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: float16
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: ddim
+
+strip:
+  # `fmrg.yaml`'s strip, verbatim and by design unchanged.
+  prompt: empty room, bare floor, bare wall, no furniture, plain interior
+  negative_prompt: furniture, chair, table, desk, sofa, bed, radiator, heater, appliance, vent, air conditioner, fireplace, television, screen, shelf, ledge, counter, cabinet, box, machine, vacuum cleaner, cart, trolley, wheels, plant, lamp, curtain, rug, decoration, clutter, objects, people, text
+  dilation_radius: 8
+  passes: 5
+  steps: 40
+  fill_strength: 0.85
+  guidance_scale: 12.0
+
+furnish:
+  # `fmrg.yaml`'s operating point: grid, window, sigma and eta unchanged; no
+  # sigma probes — the seven arms are the grid this study sweeps.
+  grid_steps: 208
+  early_stop: 51
+  unguided_steps: 1
+  start_sigma: 0.9
+  probe_sigmas: []
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+flux:
+  dtype: bfloat16
+
+redux:
+  # 1.0 is known to copy the input over the prompt; 0.3 keeps the text audible.
+  scale: 0.3
+
+image:
+  # null = measure the depth term's weight per scene as the gradient-RMS ratio
+  # against the image term at a midpoint step of the real walk.
+  depth_weight: null
+  sizing_fraction: 0.5
+  min_patch_coverage: 0.5
+
+adherence:
+  # The eval judge, independent of every energy any arm descends, read against
+  # the scene's neutral style text.
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+# Render-to-empty-room and render-to-photo cosine, same independent tower.
+image_similarity_checkpoint: openai/clip-vit-large-patch14
+
+preference:
+  kind: pickscore
+
+# `fmrg.yaml`'s three scenes, prompts verbatim — these style descriptors are
+# both the instruction prompt's core and the judges' neutral eval text.
+scenes:
+  - photo: scandi_living_room
+    prompt: a warm scandinavian living room, pale oak furniture, linen sofa, wool rug, soft daylight
+  - photo: ny_loft_bedroom
+    prompt: a minimalist loft bedroom, low platform bed, linen bedding, paper lantern, potted plant
+  - photo: blue_white_kitchen
+    prompt: a modern farmhouse kitchen, sage green cabinets, marble worktop, brass fixtures, pendant lights

@@ -1,0 +1,70 @@
+# Plumbing, not a claim: the Redux-grid study shape on the weightless doubles —
+# the fake inpainting strip, then the seven-arm grid walked by the toy flow map
+# under the real depth reward and the fake masked patch energy — CPU-only,
+# offline, in seconds. The toy backend carries no prompt cache, so the Redux
+# arms run as their non-Redux twins and only the wiring is exercised.
+#
+#   uv run --no-sync python experiments/0003_strip_and_furnish/run.py --config fmrg_redux_smoke
+study: fmrg_redux
+name: 0003_fmrg_redux_smoke
+
+seeds: [0]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  dtype: float32
+  depth_dtype: float32
+  segmentation_dtype: float32
+  scheduler: pipeline
+
+strip:
+  prompt: empty room, bare floor, bare wall, no furniture, plain interior
+  negative_prompt: furniture, radiator, vacuum cleaner, clutter
+  dilation_radius: 2
+  passes: 2
+  steps: 4
+  fill_strength: 0.6
+  guidance_scale: 7.5
+
+furnish:
+  grid_steps: 8
+  early_stop: 4
+  unguided_steps: 1
+  start_sigma: 0.9
+  probe_sigmas: []
+  stepping: endpoint_reuse
+  differentiate_through_velocity: false
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+
+flux:
+  dtype: float32
+
+redux:
+  scale: 0.3
+
+image:
+  depth_weight: null
+  sizing_fraction: 0.5
+  min_patch_coverage: 0.5
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+# null skips the metric: it has no checkpoint-free stand-in.
+image_similarity_checkpoint: null
+
+preference:
+  kind: contrast
+
+scenes:
+  - photo: scandi_living_room
+    prompt: a warm scandinavian living room, pale oak furniture, linen sofa, wool rug, soft daylight
+  - photo: ny_loft_bedroom
+    prompt: a minimalist loft bedroom, low platform bed, linen bedding, paper lantern, potted plant

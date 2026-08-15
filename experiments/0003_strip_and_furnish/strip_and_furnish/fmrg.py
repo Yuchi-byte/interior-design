@@ -57,6 +57,7 @@ from roomgen_guide.eval import (
     shell_coverage,
     signed_depth_residual_map,
 )
+from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.process.driver import sample_endpoint_process
 from roomgen_guide.process.tilt import AnnealedSignTilt
@@ -714,8 +715,14 @@ def _sample_walk(
     seed: int,
     grid_steps: int | None = None,
     window: GuidanceWindow | bool | None = True,
+    reward: Guidance | None = None,
 ) -> tuple[Float[Tensor, "1 3 height width"], float, int | None]:
-    """One walk at `seed`; `eta` 0 is the control on the identical trajectory."""
+    """One walk at `seed`; `eta` 0 is the control on the identical trajectory.
+
+    Args:
+        reward: the energy the walk descends; `None` builds the study's default
+            depth reward against `reference`. An `eta` of 0 evaluates neither.
+    """
     furnish = config.furnish
     generator = torch.Generator(device=stacks.device).manual_seed(seed)
     resolved_window = (
@@ -745,12 +752,13 @@ def _sample_walk(
         anneal_steps=process.steps,
         iterations=furnish.iterations,
     )
-    reward = GeometricGuidance(
-        depth_estimator=stacks.depth_estimator,
-        reference=reference,
-        segmenter=stacks.segmenter if furnish.resegment else None,
-        erosion_radius=(furnish.erosion_radius if furnish.resegment else None),
-    )
+    if reward is None:
+        reward = GeometricGuidance(
+            depth_estimator=stacks.depth_estimator,
+            reference=reference,
+            segmenter=stacks.segmenter if furnish.resegment else None,
+            erosion_radius=(furnish.erosion_radius if furnish.resegment else None),
+        )
     on_cuda = stacks.device.type == "cuda"
     if on_cuda:
         torch.cuda.synchronize(stacks.device)
