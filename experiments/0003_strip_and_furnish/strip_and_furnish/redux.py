@@ -796,10 +796,14 @@ def _run_scene(
         measurements: list[ReduxArmResult] = []
         for spec in REDUX_ARMS:
             render = renders[spec.arm]
-            segmentation_map = f"{scene.photo}_seed{seed}_{spec.arm}_segmentation.png"
-            depth_map = f"{scene.photo}_seed{seed}_{spec.arm}_depth.png"
-            residual_map = f"{scene.photo}_seed{seed}_{spec.arm}_residual.png"
-            scorable_overlay = f"{scene.photo}_seed{seed}_{spec.arm}_scorable.png"
+            # A double underscore before the map kind: arm ids compose by
+            # single underscores ("redux" + depth = "redux_depth"), so a
+            # single-underscore suffix would make one arm's depth map the next
+            # arm's render and silently overwrite it.
+            segmentation_map = f"{scene.photo}_seed{seed}_{spec.arm}__segmentation.png"
+            depth_map = f"{scene.photo}_seed{seed}_{spec.arm}__depth.png"
+            residual_map = f"{scene.photo}_seed{seed}_{spec.arm}__residual.png"
+            scorable_overlay = f"{scene.photo}_seed{seed}_{spec.arm}__scorable.png"
             write_segmentation_map(segmentations[spec.arm], gallery / segmentation_map)
             with torch.no_grad():
                 write_masked_disparity_map(
