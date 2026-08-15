@@ -1,15 +1,16 @@
 """The image-reference energies: hold the render near the user's photo in a frozen vision model's feature space."""
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, cast, runtime_checkable
 
 import torch
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 from torch import Tensor
 from torch.nn import Module, Sequential
-from torch.nn.functional import cosine_similarity
+from torch.nn.functional import adaptive_avg_pool2d, cosine_similarity
 from transformers import (
     AutoModel,
     BitImageProcessor,
@@ -19,6 +20,8 @@ from transformers import (
     SiglipVisionModel,
 )
 
+from roomgen_geometry.masking import scorable_mask
+from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_guide.guidance.base import Guidance
 from roomgen_guide.guidance.clip import ClipImageEncoder, ClipPreprocessing
 
@@ -155,6 +158,186 @@ class PerceptualReferenceGuidance:
 
 
 @runtime_checkable
+class SpatialPatchEncoder(Protocol):
+    """A vision tower kept spatial: preprocessed pixels in, the patch-token grid out.
+
+    Args:
+        pixel_values: already resized and normalised for the backbone, and still
+            attached to the latent it came from — the tokens must carry the
+            gradient back, so nothing here may detach. The returned tokens are
+            the square patch grid in row-major order, with any CLS or register
+            summaries already stripped.
+    """
+
+    def __call__(
+        self, pixel_values: Float[Tensor, "batch 3 size size"]
+    ) -> Float[Tensor, "batch tokens embedding"]: ...
+
+
+def patch_positions_from_mask(
+    mask: Bool[Tensor, "batch height width"],
+    *,
+    tokens: int,
+    min_coverage: float = 0.5,
+) -> Bool[Tensor, "batch tokens"]:
+    """A pixel mask downsampled to a square patch grid, in the grid's row-major order.
+
+    Args:
+        tokens: how many patch tokens the encoder returns; must be a square
+            number, since the grid it names is square.
+        min_coverage: the share of a patch's pixels the mask must cover before
+            the patch counts. The default is a majority vote — a patch is scored
+            when at least half of it is masked, so segment fringes neither claim
+            a patch nor erase one.
+    """
+    side = math.isqrt(tokens)
+    if side * side != tokens:
+        raise ValueError(
+            f"{tokens} patch tokens do not form a square grid; a spatial encoder "
+            f"must strip its CLS and register tokens before its grid is masked"
+        )
+    coverage = adaptive_avg_pool2d(mask.unsqueeze(1).to(torch.float32), side)
+    return (coverage >= min_coverage).flatten(1)
+
+
+@dataclass(frozen=True)
+class MaskedPatchReferenceGuidance:
+    """Negative mean patch-token cosine against the reference photo, over masked patch positions only.
+
+    The spatial contrast to :class:`ImageReferenceGuidance`'s global embedding,
+    restricted to where the reference's mask is: each scored patch is compared
+    with the reference's token *at the same position*, so layout is part of the
+    similarity, and the unmasked patches — the region the renovation is free to
+    change — contribute nothing, forwards or backwards. Built for an empty-room
+    reference, whose full frame would otherwise punish furnishing itself.
+
+    The mask philosophy mirrors :class:`~roomgen_guide.guidance.geometric.GeometricGuidance`:
+    with a `segmenter`, each step's scored set is the reference's patch mask
+    intersected with the prediction's own resegmented shell (downsampled to the
+    same grid), so furniture the render adds is excused rather than pulled back
+    toward the reference's bare surfaces. A batch element whose intersection is
+    empty scores zero with no gradient, the same convention as
+    `masked_depth_error`'s empty mask.
+
+    Args:
+        encoder: frozen and in eval, and never under `no_grad` — the gradient
+            reaches the latent through it.
+        reference_tokens: the photo's patch grid, frozen once: a constant, so
+            construction rejects one still carrying gradient.
+        patch_mask: the reference-side mask on the patch grid, as
+            :func:`patch_positions_from_mask` builds it.
+        segmenter: re-segments the predicted image at every step; `None` scores
+            the reference's patch mask alone.
+        erosion_radius: for the prediction's shell mask, required with
+            `segmenter` and meaningless without it.
+        min_coverage: the patch vote threshold the prediction's shell is
+            downsampled under, matching the reference side's.
+    """
+
+    encoder: SpatialPatchEncoder
+    reference_tokens: Float[Tensor, "1 tokens embedding"]
+    patch_mask: Bool[Tensor, "1 tokens"]
+    preprocessing: ClipPreprocessing
+    segmenter: Segmenter | None = None
+    erosion_radius: int | None = None
+    min_coverage: float = 0.5
+
+    def __post_init__(self) -> None:
+        if self.reference_tokens.requires_grad:
+            raise ValueError(
+                "the reference photo's patch tokens are a constant of the walk: "
+                "detach them before freezing them into a "
+                "MaskedPatchReferenceGuidance"
+            )
+        if self.patch_mask.shape[-1] != self.reference_tokens.shape[1]:
+            raise ValueError(
+                f"patch_mask covers {self.patch_mask.shape[-1]} positions against "
+                f"{self.reference_tokens.shape[1]} reference tokens: the mask and "
+                f"the grid must come from the same encoder"
+            )
+        if not bool(self.patch_mask.any()):
+            raise ValueError(
+                "the reference's patch mask is empty: nothing would be scored and "
+                "the energy would steer by nothing"
+            )
+        if (self.segmenter is None) != (self.erosion_radius is None):
+            raise ValueError(
+                "re-segmenting the prediction needs both a segmenter and an "
+                "erosion_radius; pass neither to score the reference's patch "
+                "mask alone"
+            )
+
+    def __call__(
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, "batch"]:
+        tokens = self.encoder(self.preprocessing(predicted_image))
+        similarity = cosine_similarity(
+            tokens.to(_ENERGY_DTYPE),
+            self.reference_tokens.to(device=tokens.device, dtype=_ENERGY_DTYPE),
+            dim=-1,
+        )
+        weight = self._scored_patches(predicted_image, tokens.shape[1]).to(
+            _ENERGY_DTYPE
+        )
+        return -(similarity * weight).sum(dim=1) / weight.sum(dim=1).clamp(min=1.0)
+
+    def _scored_patches(
+        self, predicted_image: Float[Tensor, "batch 3 height width"], tokens: int
+    ) -> Bool[Tensor, "batch tokens"]:
+        segmenter, erosion_radius = self.segmenter, self.erosion_radius
+        if segmenter is None or erosion_radius is None:
+            return self.patch_mask
+        # Detached *and* under `no_grad`, exactly as `GeometricGuidance` reads
+        # its per-step mask: the segmentation is a constant of the step, and the
+        # undetached `predicted_image` above is what carries the gradient back.
+        with torch.no_grad():
+            segmentation = segmenter(predicted_image.detach())
+        prediction_shell = patch_positions_from_mask(
+            scorable_mask(segmentation, erosion_radius=erosion_radius),
+            tokens=tokens,
+            min_coverage=self.min_coverage,
+        )
+        return self.patch_mask & prediction_shell
+
+
+@dataclass(frozen=True)
+class MaskedPatchReferenceEnergies:
+    """One loaded spatial tower, turning a (photo, mask) pair into the patch energy toward it.
+
+    Not an :class:`ImageReferenceEnergyFactory`: the masked energy needs the
+    reference's pixel mask beside the photo, and optionally the segmenter that
+    keeps its per-step scored set honest.
+    """
+
+    encoder: SpatialPatchEncoder
+    preprocessing: ClipPreprocessing
+    module: Module
+
+    def __call__(
+        self,
+        photo: Float[Tensor, "1 3 height width"],
+        *,
+        mask: Bool[Tensor, "1 height width"],
+        segmenter: Segmenter | None = None,
+        erosion_radius: int | None = None,
+        min_coverage: float = 0.5,
+    ) -> MaskedPatchReferenceGuidance:
+        with torch.no_grad():
+            reference = self.encoder(self.preprocessing(photo))
+        return MaskedPatchReferenceGuidance(
+            encoder=self.encoder,
+            reference_tokens=reference.detach(),
+            patch_mask=patch_positions_from_mask(
+                mask, tokens=reference.shape[1], min_coverage=min_coverage
+            ),
+            preprocessing=self.preprocessing,
+            segmenter=segmenter,
+            erosion_radius=erosion_radius,
+            min_coverage=min_coverage,
+        )
+
+
+@runtime_checkable
 class ImageReferenceEnergyFactory(Protocol):
     """What every helper model reduces to: a reference photo in, the energy pulling renders toward it out.
 
@@ -262,6 +445,35 @@ def load_dinov2_image_reference_energies(
     processor = BitImageProcessor.from_pretrained(checkpoint, cache_dir=cache_dir)
     return ImageReferenceEnergies(
         encoder=_TowerEncoder(module, _dinov2_patch_tokens),
+        preprocessing=_preprocessing(
+            size=int(processor.crop_size["height"]),
+            mean=list(processor.image_mean),
+            std=list(processor.image_std),
+            device=device,
+            dtype=dtype,
+        ),
+        module=module,
+    )
+
+
+def load_dinov2_masked_patch_energies(
+    checkpoint: str = DEFAULT_DINOV2_CHECKPOINT,
+    *,
+    device: torch.device,
+    dtype: torch.dtype = torch.float32,
+    cache_dir: Path | None = None,
+) -> MaskedPatchReferenceEnergies:
+    """DINOv2's patch grid kept spatial, for the mask-restricted patch cosine.
+
+    The same tower `load_dinov2_image_reference_energies` flattens into one
+    embedding, handed over un-flattened so the energy can score patch positions
+    the reference's mask names and excuse the rest.
+    """
+    model: Module = AutoModel.from_pretrained(checkpoint, cache_dir=cache_dir)
+    module = _frozen(model, device=device, dtype=dtype)
+    processor = BitImageProcessor.from_pretrained(checkpoint, cache_dir=cache_dir)
+    return MaskedPatchReferenceEnergies(
+        encoder=_SpatialTowerEncoder(module, _dinov2_patch_grid),
         preprocessing=_preprocessing(
             size=int(processor.crop_size["height"]),
             mean=list(processor.image_mean),
@@ -382,6 +594,17 @@ class _TowerEncoder:
         return self.read(self.module(pixel_values=pixel_values))
 
 
+@dataclass(frozen=True)
+class _SpatialTowerEncoder:
+    module: Module
+    read: Callable[[object], Tensor]
+
+    def __call__(
+        self, pixel_values: Float[Tensor, "batch 3 size size"]
+    ) -> Float[Tensor, "batch tokens embedding"]:
+        return self.read(self.module(pixel_values=pixel_values))
+
+
 def _clip_embedding(output: object) -> Tensor:
     embedding = getattr(output, "image_embeds", None)
     if isinstance(embedding, Tensor):
@@ -401,11 +624,17 @@ def _siglip_embedding(output: object) -> Tensor:
 
 
 def _dinov2_patch_tokens(output: object) -> Tensor:
+    # Flattened into one embedding: position stays inside the similarity, but
+    # the grid is gone and no mask can name a patch. See `_dinov2_patch_grid`.
+    return _dinov2_patch_grid(output).flatten(1)
+
+
+def _dinov2_patch_grid(output: object) -> Tensor:
     hidden = getattr(output, "last_hidden_state", None)
     if isinstance(hidden, Tensor):
         # Token 0 is the CLS summary; the patch grid behind it is what carries
-        # the layout, and flattening it keeps position inside the similarity.
-        return hidden[:, 1:, :].flatten(1)
+        # the layout.
+        return hidden[:, 1:, :]
     raise TypeError(
         f"DINOv2 returned no last_hidden_state, got {type(output).__name__}"
     )
