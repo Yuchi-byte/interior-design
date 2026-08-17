@@ -1,15 +1,16 @@
-# The Kontext pilot: FLUX.1-Kontext-dev — a strong instruction-editing prior
+# The Kontext study: FLUX.1-Kontext-dev — a strong instruction-editing prior
 # that holds the reference photo as attention context — with and without the
-# depth reward, at one seed on two scenes. The unguided arm answers "does the
+# depth reward, at one seed on five scenes. The unguided arm answers "does the
 # strong prior alone already hold the geometry?"; the guided arm answers "what
-# does depth steering add on top?"; the guided walk's endpoint strip answers
-# "is the one-step endpoint estimate a usable steering signal here at all"
-# (its Tweedie analogue on SD1.5 was not — Kontext's reference anchoring is
-# the reason to re-ask).
+# does depth steering add on top?"; both arms' endpoint strips answer "is the
+# one-step endpoint estimate a usable steering signal here at all" (its
+# Tweedie analogue on SD1.5 was not — Kontext's reference anchoring is the
+# reason to re-ask), each frame carrying its own depth error so the strips
+# read as convergence curves too.
 #
 # The depth reference is the FURNISHED PHOTO's shell (GeometricReference
 # .from_photo), the 0002 studies' original setting; the walk starts from pure
-# noise at Kontext's own 28-step grid and native guidance 2.5, 512² first
+# noise at Kontext's own 28-step grid and native guidance 2.5, at 512²
 # (Kontext trained around 1024 — the report says whether 512 survived).
 #
 #   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config kontext
@@ -37,19 +38,18 @@ sampler:
   text_guidance_scale: 2.5
 
 guidance:
-  # FMRG's headline strength, the repo default — the pilot's primary arm, kept
-  # so the shipped config reproduces it. What the pilot then measured: on the
-  # native 28-step grid this overdrives the sign rule (the per-step
-  # displacement scales with the step's sigma span, ~15x FMRG's 208-step
-  # grid) and carves adversarial ceiling texture; the clean operating point
-  # found was `--set guidance.eta=1.0 --set guidance.guided_steps=20`
-  # (depth -15%/-20% at no adherence cost), with eta 2.5 the artifact-visible
-  # middle (runs 0002_kontext_g20*, 0002_kontext_g12 under the working dir).
-  eta: 5.0
+  # The pilot's clean operating point, found by sweeping eta on the native
+  # 28-step grid: eta 1.0 over the first 20 steps takes depth error down
+  # ~15-20% at no adherence, image-similarity or preference cost. FMRG's
+  # headline eta 5.0 overdrives the sign rule here — the per-step displacement
+  # scales with the step's sigma span, ~15x FMRG's 208-step grid — and carves
+  # adversarial ceiling texture; 2.5 is the artifact-visible middle (runs
+  # 0002_kontext_g20*, 0002_kontext_g12 under the working dir).
+  eta: 1.0
   iterations: 1
   erosion_radius: 2
   resegment: true
-  guided_steps: null
+  guided_steps: 20
   max_sigma: null
 
 adherence:
@@ -68,15 +68,17 @@ preference:
   # PickScore v1, eval only: CLIP-H fine-tuned on human choices.
   kind: pickscore
 
-# Decoded endpoint estimate every 4th guided step, the sharpness strip.
-endpoint_strip_every: 4
+# Decoded endpoint estimate every 2nd step of BOTH arms — dense enough that
+# the strips are the study's centerpiece evidence, judged by eye.
+endpoint_strip_every: 2
 
 # The finished Redux run whose text-only s0u/s0g arms are quoted beside these,
 # depth recomputed against the furnished photo's shell so the column compares.
 fmrg_comparison_run: 0002_fmrg_redux
 
-# The two fast-iteration scenes, style and eval texts verbatim from the Redux
-# sweep; the steering prompt is the instruction template around the style.
+# The Redux sweep's five scenes, style and eval texts verbatim; the steering
+# prompt is the instruction template around the style, without any removal
+# instruction — this study measures the prior and the reward, not removal.
 scenes:
   - photo: scandi_living_room
     style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
@@ -84,3 +86,12 @@ scenes:
   - photo: blue_white_kitchen
     style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
     eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+  - photo: ny_loft_bedroom
+    style_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    eval_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: hotel_suite_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: lakehouse_living_room
+    style_prompt: a mid-century modern living room, walnut furniture, mustard velvet sofa, brass floor lamp, warm evening light
+    eval_prompt: a mid-century modern living room, walnut furniture, mustard velvet sofa, brass floor lamp, warm evening light

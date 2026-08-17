@@ -12,10 +12,12 @@ and a preference model — all loaded only after the last walk.
 
 Two extra readouts this pilot exists for:
 
-- the guided walk's decoded one-step endpoint estimate every few steps — the
-  sharpness strip that says directly whether ``x0 = z - sigma * v`` is a
-  usable steering signal at each noise level (on SD1.5 the analogous Tweedie
-  estimate was not; Kontext's reference anchoring is the reason to re-ask);
+- both walks' decoded one-step endpoint estimates every few steps, each with
+  its depth error against the reference shell — the sharpness strip that says
+  directly whether ``x0 = z - sigma * v`` is a usable steering signal at each
+  noise level (on SD1.5 the analogous Tweedie estimate was not; Kontext's
+  reference anchoring is the reason to re-ask), and the error curve that shows
+  the geometry converging, or not, under the reward;
 - the finished FMRG text-only pair from a previous `fmrg_redux` run, quoted
   beside these arms with its depth errors *recomputed against the furnished
   photo's shell* — that run steered and scored against the stripped empty
@@ -79,7 +81,7 @@ from roomgen_guide.guidance.geometric import GeometricGuidance
 from roomgen_guide.guidance.preference import ImagePreferenceModel
 from roomgen_guide.process.driver import sample_endpoint_process
 from roomgen_guide.process.endpoint import StepContext
-from roomgen_guide.process.tilt import AnnealedSignTilt, EnergyGradient
+from roomgen_guide.process.tilt import AnnealedSignTilt, EnergyGradient, TiltPolicy
 from roomgen_guide.settings import RoomgenSettings
 
 # The powerful-prior baseline every delta divides by, and the guided arm.
@@ -144,14 +146,27 @@ class KontextArmResult:
 
 @dataclass(frozen=True)
 class EndpointSnapshot:
-    """One decoded one-step endpoint estimate of the guided walk."""
+    """One decoded one-step endpoint estimate of a walk, with its depth reading.
+
+    Args:
+        depth_error: the estimate's aligned depth error against the reference,
+            scored on the full reference shell — never a resegmentation of a
+            half-formed estimate — so the curve is one mask across all steps
+            and both arms.
+    """
 
     step: int
     sigma: float
     image: str
+    depth_error: float
 
     def as_row(self) -> dict[str, object]:
-        return {"step": self.step, "sigma": self.sigma, "image": self.image}
+        return {
+            "step": self.step,
+            "sigma": self.sigma,
+            "image": self.image,
+            "depth_error": self.depth_error,
+        }
 
 
 @dataclass(frozen=True)
@@ -159,8 +174,9 @@ class KontextSceneResult:
     """Both arms of one (scene, seed), scored on one common pixel set.
 
     Args:
-        endpoint_strip: the guided walk's decoded endpoint estimates, in step
-            order — the sharpness evidence.
+        endpoint_strips: each arm's decoded endpoint estimates in step order —
+            the sharpness evidence, and through each snapshot's depth error the
+            convergence curve.
         fmrg_comparison: the quoted FMRG text-only pair with recomputed depth
             errors, or `None` when no finished run was named or found.
     """
@@ -180,7 +196,7 @@ class KontextSceneResult:
     photo_depth_map_masked: str
     shell_mask: str
     eval_mask_common: str
-    endpoint_strip: tuple[EndpointSnapshot, ...]
+    endpoint_strips: dict[str, tuple[EndpointSnapshot, ...]]
     fmrg_comparison: dict[str, object] | None
 
     def arm(self, arm_id: str) -> KontextArmResult:
@@ -218,7 +234,10 @@ class KontextSceneResult:
             "photo_depth_map_masked": self.photo_depth_map_masked,
             "shell_mask": self.shell_mask,
             "eval_mask_common": self.eval_mask_common,
-            "endpoint_strip": [snapshot.as_row() for snapshot in self.endpoint_strip],
+            "endpoint_strips": {
+                arm: [snapshot.as_row() for snapshot in strip]
+                for arm, strip in self.endpoint_strips.items()
+            },
             "fmrg_comparison": self.fmrg_comparison,
             "arms": [
                 {
@@ -442,6 +461,33 @@ class _SigmaWindowedTilt:
         return self.inner(energy_gradient, state=state, step=step)
 
 
+@dataclass(frozen=True)
+class _ObservationTilt:
+    """The unguided arm's camera: evaluates the reward on recorded steps, steers nothing.
+
+    `AnnealedSignTilt` at strength 0 never calls the reward, so the recorder
+    wrapped around it would see nothing; this policy evaluates the reward on
+    every Nth step purely so the recorder keeps the decoded endpoint, discards
+    the gradient, and always leaves the step alone — the walk is the prior's
+    own, at the cost of one backward per recorded step.
+    """
+
+    cell: _StepCell
+    every: int
+
+    def __call__(
+        self,
+        energy_gradient: EnergyGradient,
+        *,
+        state: Float[Tensor, batch * state],
+        step: StepContext,
+    ) -> Float[Tensor, batch * state] | None:
+        self.cell.index = step.index
+        if step.index % self.every == 0:
+            energy_gradient(state)
+        return None
+
+
 @dataclass
 class _EndpointRecorder:
     """The reward with a camera on it: every Nth guided step's endpoint, kept.
@@ -513,17 +559,22 @@ def _sample_walk(
         generator=generator,
     )
     cell = _StepCell()
-    tilt = _SigmaWindowedTilt(
-        inner=AnnealedSignTilt(
-            strength=eta,
-            guided_steps=config.guidance.guided_steps,
-            anneal_steps=process.steps,
-            iterations=config.guidance.iterations,
-        ),
-        sigmas=_walk_sigmas(photo, backend, steps=walked, device=stacks.device),
-        max_sigma=config.guidance.max_sigma,
-        cell=cell,
-    )
+    sigmas = _walk_sigmas(photo, backend, steps=walked, device=stacks.device)
+    tilt: TiltPolicy
+    if eta == 0.0 and recorder_every is not None:
+        tilt = _ObservationTilt(cell=cell, every=recorder_every)
+    else:
+        tilt = _SigmaWindowedTilt(
+            inner=AnnealedSignTilt(
+                strength=eta,
+                guided_steps=config.guidance.guided_steps,
+                anneal_steps=process.steps,
+                iterations=config.guidance.iterations,
+            ),
+            sigmas=sigmas,
+            max_sigma=config.guidance.max_sigma,
+            cell=cell,
+        )
     reward: Guidance = GeometricGuidance(
         depth_estimator=stacks.depth_estimator,
         reference=reference,
@@ -547,7 +598,6 @@ def _sample_walk(
     seconds = time.perf_counter() - started
     peak = torch.cuda.max_memory_allocated(stacks.device) if on_cuda else None
     frames = [] if recorder is None else recorder.frames
-    sigmas = tilt.sigmas
     return (
         image.to(torch.float32),
         seconds,
@@ -654,7 +704,7 @@ def _run_scene(
         renders: dict[str, Float[Tensor, "1 3 height width"]] = {}
         seconds: dict[str, float] = {}
         peaks: dict[str, int | None] = {}
-        strip: list[EndpointFrame] = []
+        strips: dict[str, tuple[EndpointSnapshot, ...]] = {}
         for spec in specs:
             image, elapsed, peak, frames = _sample_walk(
                 photo,
@@ -664,23 +714,26 @@ def _run_scene(
                 reference=reference,
                 eta=config.guidance.eta if spec.guided else 0.0,
                 seed=seed,
-                recorder_every=(config.endpoint_strip_every if spec.guided else None),
+                recorder_every=config.endpoint_strip_every,
             )
             renders[spec.arm] = image
             seconds[spec.arm] = elapsed
             peaks[spec.arm] = peak
-            if spec.guided:
-                strip = frames
+            strips[spec.arm] = _write_endpoint_strip(
+                frames,
+                image_dir=image_dir,
+                scene=scene.photo,
+                seed=seed,
+                arm=spec.arm,
+                stacks=stacks,
+                reference=reference,
+            )
             _write_image(image, image_dir / f"{scene.photo}_seed{seed}_{spec.arm}.png")
             # Sweep the allocator between arms: the guided backward's transient
             # should never be the reason the next arm fragments.
             gc.collect()
             if stacks.device.type == "cuda":
                 torch.cuda.empty_cache()
-
-        snapshots = _write_endpoint_strip(
-            strip, image_dir=image_dir, scene=scene.photo, seed=seed
-        )
 
         # One pixel set for both arms: the reference shell narrowed by each
         # arm's own segmentation, intersected, so the depth errors are
@@ -775,7 +828,7 @@ def _run_scene(
             photo_depth_map_masked=photo_depth_map_masked,
             shell_mask=shell_mask,
             eval_mask_common=eval_mask_common,
-            endpoint_strip=snapshots,
+            endpoint_strips=strips,
             fmrg_comparison=fmrg_comparison,
         )
         print(f"  [sampled] {result.scene} seed {result.seed}, judges pending")
@@ -815,17 +868,26 @@ def _write_endpoint_strip(
     image_dir: Path,
     scene: str,
     seed: int,
+    arm: str,
+    stacks: KontextStacks,
+    reference: GeometricReference,
 ) -> tuple[EndpointSnapshot, ...]:
+    """Each frame written small, and read for depth against the full reference shell."""
     snapshots = []
     for frame in frames:
-        name = f"{scene}_seed{seed}_endpoint_step{frame.step:02d}.png"
+        name = f"{scene}_seed{seed}_{arm}_endpoint_step{frame.step:02d}.png"
+        error = depth_error(
+            frame.image.to(stacks.device),
+            reference=reference,
+            depth_estimator=stacks.depth_estimator,
+        )
         small = torch.nn.functional.interpolate(
             frame.image,
             size=(_STRIP_HEIGHT, _STRIP_HEIGHT),
             mode="area",
         )
         _write_image(small, image_dir / name)
-        snapshots.append(EndpointSnapshot(frame.step, frame.sigma, name))
+        snapshots.append(EndpointSnapshot(frame.step, frame.sigma, name, error))
     return tuple(snapshots)
 
 
@@ -1079,6 +1141,10 @@ def _write_results(summary: KontextSummary, settings: RoomgenSettings) -> None:
                 # What steered the guided arm and what every depth number is
                 # read against: the furnished photo's own shell depth.
                 "guidance_reference": "photo",
+                # The strip's depth errors are read on the full reference shell
+                # (one mask across all steps and both arms), never a
+                # resegmentation of a half-formed estimate.
+                "endpoint_strip_mask": "reference_shell",
                 "eta": summary.config.guidance.eta,
                 "torch_version": torch.__version__,
                 "device_name": summary.device_name,

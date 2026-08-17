@@ -811,10 +811,12 @@ class KontextConfig(ExperimentConfig):
     instruction prompt with the photo as reference tokens, no reward — and
     `kontext_depth`, the same walk steered by the geometric reward against the
     furnished photo's shell depth. The unguided arm is the powerful-prior
-    baseline every delta divides by. The guided arm additionally leaves an
+    baseline every delta divides by. Both arms additionally leave an
     endpoint-sharpness strip: the decoded one-step endpoint estimate every
-    `endpoint_strip_every` steps, the direct evidence on whether the estimate
-    is a usable steering signal at each noise level.
+    `endpoint_strip_every` steps with its depth error against the reference
+    shell — the direct evidence on whether the estimate is a usable steering
+    signal at each noise level, and the curve of the geometry converging
+    under the reward beside the prior's own.
 
     Args:
         scenes: each photo with its style text; adherence and preference are
@@ -826,8 +828,8 @@ class KontextConfig(ExperimentConfig):
         image_similarity_checkpoint: the eval judge of render-to-photo cosine
             (`None` skips it) — read beside adherence, since a photo copy
             scores near 1 on it.
-        endpoint_strip_every: save the guided walk's decoded endpoint estimate
-            every this many steps.
+        endpoint_strip_every: save each arm's decoded endpoint estimate every
+            this many steps.
         fmrg_comparison_run: name of a finished `fmrg_redux` run under the
             working directory whose text-only (`s0u`/`s0g`) arms are quoted
             beside this study's, with their depth errors recomputed against

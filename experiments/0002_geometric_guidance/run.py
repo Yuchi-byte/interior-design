@@ -541,12 +541,13 @@ def _report_kontext(summary: KontextSummary) -> None:
                     f"{float(row['depth_error_vs_photo_shell']):>10.5f}"
                     f"  (recomputed vs photo shell; source run steered vs empty room)"
                 )
-        if result.endpoint_strip:
-            steps = ", ".join(
-                f"{snapshot.step}@sigma{snapshot.sigma:.2f}"
-                for snapshot in result.endpoint_strip
-            )
-            print(f"{'endpoint strip':<15}{steps}")
+        for arm_id, strip in result.endpoint_strips.items():
+            if strip:
+                steps = ", ".join(
+                    f"{snapshot.step}@{snapshot.sigma:.2f}:E{snapshot.depth_error:.4f}"
+                    for snapshot in strip
+                )
+                print(f"{'strip ' + arm_id:<15}{steps}")
     means = kontext_arm_means(summary.results, specs)
     print("\n[means]   per arm, over every (scene, seed)")
     for spec in specs:
