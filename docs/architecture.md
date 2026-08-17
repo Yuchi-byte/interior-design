@@ -128,7 +128,11 @@ The guided sampler and the experiment harness shared with `experiments/`.
   (`additional_prompts` / `select_cached_prompt`), frees the text encoders, and
   can append a reference photo to any cached prompt as FLUX.1-Redux image
   tokens (`encode_redux_image_tokens` / `register_image_context_prompt`, the
-  scale multiplying the image tokens alone). `mfm_composite.py`'s `MfmWeightedReward` sums
+  scale multiplying the image tokens alone); `kontext_flux.py` is the same
+  `FlowMapBackend` for FLUX.1-Kontext-dev — a plain rectified-flow velocity
+  field whose reference photo rides as sequence-concatenated latent tokens
+  under a RoPE layer offset, walked from pure noise at `start_sigma` 1 with a
+  staged loader of its own. `mfm_composite.py`'s `MfmWeightedReward` sums
   several of those `score(images, prompts)` rewards per image, so the depth
   energy rides beside one of MFM's own preference models (HPSv2) as a single
   reward, with `gradient_scale` for sizing the weight between two terms whose

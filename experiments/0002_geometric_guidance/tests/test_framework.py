@@ -24,6 +24,7 @@ from framework.config import (
     FmrgImageConfig,
     FmrgReduxConfig,
     FramingConfig,
+    KontextConfig,
     load_study_config,
 )
 from framework.context_study import BASELINE_ARM, context_arms
@@ -60,6 +61,7 @@ def test_every_shipped_variant_validates(variant: str) -> None:
         | FmrgEtaConfig
         | FmrgAlignmentConfig
         | FmrgImageConfig
+        | KontextConfig
         | FramingConfig
         | AlignmentStudyConfig,
     )
@@ -284,6 +286,47 @@ def test_the_instruction_prompt_wraps_the_style_descriptors_verbatim() -> None:
         assert prompt.endswith(f"remove the {scene.removal_object} in the room")
         # The judge's text never changes with the steering prompt.
         assert scene.eval_prompt == scene.style_prompt
+
+
+def test_kontext_arms_lead_with_the_prior_alone_and_frame_the_style_as_an_instruction() -> (
+    None
+):
+    """The unguided prior is the baseline; the steering prompt wraps the style verbatim."""
+    from framework.kontext_study import (  # noqa: PLC0415
+        BASELINE_ARM as KONTEXT_BASELINE_ARM,
+    )
+    from framework.kontext_study import GUIDED_ARM, kontext_arms  # noqa: PLC0415
+
+    config = load_study_config(CONF_DIR / "kontext.yaml")
+
+    assert isinstance(config, KontextConfig)
+    specs = kontext_arms(config)
+    assert [spec.arm for spec in specs] == [KONTEXT_BASELINE_ARM, GUIDED_ARM]
+    assert [spec.guided for spec in specs] == [False, True]
+    for scene in config.scenes:
+        prompt = scene.instruction_prompt
+        assert prompt.startswith(f"renovate this room into {scene.style_prompt}, ")
+        assert prompt.endswith("keep the windows, walls, floor and ceiling the same")
+        # The judge's text never changes with the steering prompt.
+        assert scene.eval_prompt == scene.style_prompt
+    # Kontext-dev's own operating point, not FLUX.1-dev's.
+    assert config.sampler.text_guidance_scale == pytest.approx(2.5)
+    # The sharpness strip is the pilot's reason to exist.
+    assert config.endpoint_strip_every >= 1
+
+
+def test_no_kontext_judge_may_be_the_guidance_clip() -> None:
+    """The self-grading rule holds for the pilot's two CLIP judges."""
+    with pytest.raises(ValueError, match="guidance CLIP"):
+        load_study_config(
+            CONF_DIR / "kontext.yaml",
+            ["adherence.checkpoint=openai/clip-vit-base-patch32"],
+        )
+    with pytest.raises(ValueError, match="guidance CLIP"):
+        load_study_config(
+            CONF_DIR / "kontext.yaml",
+            ["image_similarity_checkpoint=openai/clip-vit-base-patch32"],
+        )
 
 
 def test_a_shell_class_as_a_removal_target_is_a_config_error() -> None:

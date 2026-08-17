@@ -1,0 +1,80 @@
+# The Kontext pilot: FLUX.1-Kontext-dev — a strong instruction-editing prior
+# that holds the reference photo as attention context — with and without the
+# depth reward, at one seed on two scenes. The unguided arm answers "does the
+# strong prior alone already hold the geometry?"; the guided arm answers "what
+# does depth steering add on top?"; the guided walk's endpoint strip answers
+# "is the one-step endpoint estimate a usable steering signal here at all"
+# (its Tweedie analogue on SD1.5 was not — Kontext's reference anchoring is
+# the reason to re-ask).
+#
+# The depth reference is the FURNISHED PHOTO's shell (GeometricReference
+# .from_photo), the 0002 studies' original setting; the walk starts from pure
+# noise at Kontext's own 28-step grid and native guidance 2.5, 512² first
+# (Kontext trained around 1024 — the report says whether 512 survived).
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config kontext
+study: kontext
+name: 0002_kontext
+
+# One seed: the owner's fast-iteration setting.
+seeds: [0]
+
+resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  # Kontext-dev's native operating point: the pipeline's own 28 steps and
+  # BFL's editing guidance 2.5 (diffusers' 3.5 signature default is inherited
+  # from FLUX.1-dev, not Kontext's).
+  steps: 28
+  text_guidance_scale: 2.5
+
+guidance:
+  # FMRG's headline strength, the repo default; every step guided until the
+  # endpoint strip says otherwise (max_sigma is the fallback dial).
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+  guided_steps: null
+  max_sigma: null
+
+adherence:
+  # The eval judge, deliberately bigger than — and independent of — the
+  # ViT-B/32 any CLIP guidance in this repo descends. It reads the eval text
+  # against the render alone, so an arm that merely copies the photo scores
+  # low on it — the confound check an image-conditioned prior needs most.
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+# Render-to-photo cosine under the same independent ViT-L/14: near 1 with low
+# adherence is the copying failure named, not a win.
+image_similarity_checkpoint: openai/clip-vit-large-patch14
+
+preference:
+  # PickScore v1, eval only: CLIP-H fine-tuned on human choices.
+  kind: pickscore
+
+# Decoded endpoint estimate every 4th guided step, the sharpness strip.
+endpoint_strip_every: 4
+
+# The finished Redux run whose text-only s0u/s0g arms are quoted beside these,
+# depth recomputed against the furnished photo's shell so the column compares.
+fmrg_comparison_run: 0002_fmrg_redux
+
+# The two fast-iteration scenes, style and eval texts verbatim from the Redux
+# sweep; the steering prompt is the instruction template around the style.
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: blue_white_kitchen
+    style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops

@@ -33,6 +33,10 @@ from roomgen_geometry.segmentation.eomt import (
 from roomgen_guide.adapters.fmrg_flux import (
     DEFAULT_REDUX_CHECKPOINT as REDUX_CHECKPOINT,
 )
+from roomgen_guide.adapters.kontext_flux import (
+    DEFAULT_KONTEXT_CHECKPOINT,
+    DEFAULT_KONTEXT_GUIDANCE_SCALE,
+)
 from roomgen_guide.config import Config
 from roomgen_guide.eval import DEFAULT_CHECKPOINT as ADHERENCE_CHECKPOINT
 from roomgen_guide.eval import (
@@ -711,6 +715,173 @@ class FmrgEtaConfig(ExperimentConfig):
         return self
 
 
+class KontextSceneConfig(EtaSceneConfig):
+    """An eta-study scene, edited under Kontext's instruction framing.
+
+    The steering prompt is the owner's instruction template around the scene's
+    style descriptors — renovate into the style, keep the shell — while the
+    judges read the neutral `eval_prompt` as every study's do.
+    """
+
+    @property
+    def instruction_prompt(self) -> str:
+        """The owner's instruction template around the scene's style descriptors."""
+        return (
+            f"renovate this room into {self.style_prompt}, keep the windows, "
+            f"walls, floor and ceiling the same"
+        )
+
+
+class KontextBackendConfig(Config):
+    """The FLUX.1-Kontext-dev stack a `kontext` study drives.
+
+    Args:
+        kind: `real` loads Kontext-dev through the staged
+            `roomgen_guide.adapters.kontext_flux` loader; `fake` swaps in the
+            weightless `ToyFlowMapBackend` the flow-map tests walk, which is
+            what `conf/kontext_smoke.yaml` selects — the toy has no reference
+            conditioning, so the smoke exercises the harness, not the editing.
+        dtype: the transformer's and VAE's parameter dtype. The walk's state is
+            float32 regardless (`FlowMapProcess`), and the depth reward is
+            evaluated in the depth backend's own dtype.
+        kontext_checkpoint: Hub id (or local path) of the Kontext-dev weights,
+            resolved against the `ROOMGEN_HF_HOME` cache offline — the run
+            never re-downloads a 24GB checkpoint mid-study.
+    """
+
+    kind: Literal["real", "fake"]
+    device: Annotated[str, Field(min_length=1)] = "cpu"
+    deterministic: bool = False
+    dtype: DTypeName = "bfloat16"
+    depth_dtype: DTypeName = "float32"
+    segmentation_dtype: DTypeName = "float32"
+    kontext_checkpoint: Annotated[str, Field(min_length=1)] = DEFAULT_KONTEXT_CHECKPOINT
+    depth_checkpoint: Annotated[str, Field(min_length=1)] = DEPTH_CHECKPOINT
+    segmentation_checkpoint: Annotated[str, Field(min_length=1)] = (
+        SEGMENTATION_CHECKPOINT
+    )
+
+
+class KontextSamplerConfig(Config):
+    """Kontext-dev's native sampling budget, identical for both arms.
+
+    Args:
+        steps: rectified-flow Euler steps from pure noise; 28 is the pipeline's
+            own default and the walk truncates nothing — Kontext's trajectory
+            is anchored by the reference tokens, not by an SDEdit init.
+        text_guidance_scale: Kontext's embedded guidance — conditioning, not
+            reward steering. 2.5 is Black Forest Labs' editing operating point
+            (diffusers' signature default of 3.5 is inherited from FLUX.1-dev).
+    """
+
+    steps: Annotated[int, Field(ge=1)] = 28
+    text_guidance_scale: Annotated[float, Field(ge=0.0)] = (
+        DEFAULT_KONTEXT_GUIDANCE_SCALE
+    )
+
+
+class KontextGuidanceConfig(Config):
+    """The geometric guidance term on Kontext, in FMRG's annealed step rule.
+
+    Args:
+        eta: `AnnealedSignTilt`'s strength; 0 is the unguided arm.
+        iterations: FMRG's `n_opt` inner loop, model calls per guided step.
+        erosion_radius: pixels trimmed either side of a segment edge before a
+            shell mask is trusted.
+        resegment: score depth only on reference-shell AND prediction-shell.
+        guided_steps: steer only the first this many steps; `None` steers all.
+        max_sigma: steer only the steps whose sigma is at or below this — the
+            fallback the endpoint-sharpness strip is there to calibrate: if the
+            early one-step endpoints turn out to be garbage, the reward starts
+            where they sharpen. `None` applies no sigma window.
+    """
+
+    eta: Annotated[float, Field(ge=0.0)] = 5.0
+    iterations: Annotated[int, Field(ge=1)] = 1
+    erosion_radius: Annotated[int, Field(ge=0)] = 2
+    resegment: bool = True
+    guided_steps: Annotated[int, Field(ge=0)] | None = None
+    max_sigma: Annotated[float, Field(gt=0.0, le=1.0)] | None = None
+
+
+class KontextConfig(ExperimentConfig):
+    """The Kontext pilot: a strong instruction-editing prior, with and without depth.
+
+    Per scene at each seed off one transformer load: `kontext` — the
+    instruction prompt with the photo as reference tokens, no reward — and
+    `kontext_depth`, the same walk steered by the geometric reward against the
+    furnished photo's shell depth. The unguided arm is the powerful-prior
+    baseline every delta divides by. The guided arm additionally leaves an
+    endpoint-sharpness strip: the decoded one-step endpoint estimate every
+    `endpoint_strip_every` steps, the direct evidence on whether the estimate
+    is a usable steering signal at each noise level.
+
+    Args:
+        scenes: each photo with its style text; adherence and preference are
+            scored against the scene's neutral `eval_prompt` for every arm.
+        resolution: side of the square the photos are centre-cropped and
+            resized to, a multiple of 16 (FLUX's VAE downsamples by 8 and
+            packs 2x2). Kontext trained around 1024; 512 is the pilot setting
+            and the report says which survived.
+        image_similarity_checkpoint: the eval judge of render-to-photo cosine
+            (`None` skips it) — read beside adherence, since a photo copy
+            scores near 1 on it.
+        endpoint_strip_every: save the guided walk's decoded endpoint estimate
+            every this many steps.
+        fmrg_comparison_run: name of a finished `fmrg_redux` run under the
+            working directory whose text-only (`s0u`/`s0g`) arms are quoted
+            beside this study's, with their depth errors recomputed against
+            the furnished photo's shell so the column compares; `None` skips
+            the comparison (the smoke setting).
+    """
+
+    study: Literal["kontext"]
+    scenes: Annotated[tuple[KontextSceneConfig, ...], Field(min_length=1)]
+    resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    backends: KontextBackendConfig
+    sampler: KontextSamplerConfig = KontextSamplerConfig()
+    guidance: KontextGuidanceConfig = KontextGuidanceConfig()
+    adherence: AdherenceConfig
+    image_similarity_checkpoint: Annotated[str, Field(min_length=1)] | None = (
+        IMAGE_SIMILARITY_CHECKPOINT
+    )
+    preference: PreferenceConfig
+    endpoint_strip_every: Annotated[int, Field(ge=1)] = 4
+    fmrg_comparison_run: Annotated[str, Field(min_length=1)] | None = "0002_fmrg_redux"
+
+    @field_validator("resolution")
+    @classmethod
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
+        if resolution % FLUX_LATENT_ALIGNMENT:
+            raise ValueError(
+                f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
+                f"FLUX's packed latent grid, got {resolution}"
+            )
+        return resolution
+
+    @model_validator(mode="after")
+    def _no_judge_is_the_guidance_clip(self) -> KontextConfig:
+        # The eval CLIPs must stay independent of the CLIP any guidance energy in
+        # this repo descends, or a guided arm is graded on the model it optimised.
+        if (
+            self.adherence.kind == "clip"
+            and self.adherence.checkpoint == GUIDANCE_CLIP_CHECKPOINT
+        ):
+            raise ValueError(
+                f"adherence.checkpoint is {self.adherence.checkpoint!r}, the "
+                f"guidance CLIP: score adherence with an independent checkpoint "
+                f"(e.g. openai/clip-vit-large-patch14)."
+            )
+        if self.image_similarity_checkpoint == GUIDANCE_CLIP_CHECKPOINT:
+            raise ValueError(
+                f"image_similarity_checkpoint is "
+                f"{self.image_similarity_checkpoint!r}, the guidance CLIP: "
+                f"judge image similarity with an independent checkpoint "
+                f"(e.g. openai/clip-vit-large-patch14)."
+            )
+        return self
+
+
 class FmrgAlignmentBackendConfig(FmrgBackendConfig):
     """The FMRG stack plus the metric depth backend the alignment arms steer by.
 
@@ -1096,6 +1267,7 @@ def load_study_config(
     | FmrgEtaConfig
     | FmrgAlignmentConfig
     | FmrgImageConfig
+    | KontextConfig
     | FramingConfig
     | AlignmentStudyConfig
 ):
@@ -1124,6 +1296,8 @@ def load_study_config(
             return FmrgAlignmentConfig.from_file(path, overrides)
         case "fmrg_image":
             return FmrgImageConfig.from_file(path, overrides)
+        case "kontext":
+            return KontextConfig.from_file(path, overrides)
         case "framing":
             return FramingConfig.from_file(path, overrides)
         case "da3_alignment":
@@ -1132,6 +1306,6 @@ def load_study_config(
             raise ValueError(
                 f"{path} declares unknown study {study!r}; "
                 "known studies: benchmark, fmrg, fmrg_context, fmrg_redux, "
-                "fmrg_eta, fmrg_da3_alignment, fmrg_image, framing, "
+                "fmrg_eta, fmrg_da3_alignment, fmrg_image, kontext, framing, "
                 "da3_alignment"
             )

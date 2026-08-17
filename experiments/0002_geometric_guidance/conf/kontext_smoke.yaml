@@ -1,0 +1,56 @@
+# Plumbing, not a claim: the whole Kontext pilot flow on the weightless
+# `ToyFlowMapBackend` and the geometry doubles, CPU-only, offline, in seconds.
+# The toy backend has no reference conditioning — the Kontext backend itself
+# is pinned by `test_kontext_flux.py` — so what this exercises is the arm
+# structure, the pure-noise walk, the endpoint-strip recording, the
+# common-mask scoring, the deferred judges, and the artifact writing.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config kontext_smoke
+study: kontext
+name: 0002_kontext_smoke
+
+seeds: [0]
+
+resolution: 128
+
+backends:
+  kind: fake
+  device: cpu
+  # bfloat16 on purpose: the toy backend speaks it at its boundary, which is
+  # exactly the trap the adapter's float32 state rule exists for.
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  steps: 6
+  text_guidance_scale: 2.5
+
+guidance:
+  eta: 5.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+  guided_steps: null
+  max_sigma: null
+
+adherence:
+  # Checkpoint-free, so the smoke run never touches the network.
+  kind: contents_change
+
+# No checkpoint offline; the per-arm reading is recorded as null.
+image_similarity_checkpoint: null
+
+preference:
+  # Checkpoint-free stand-in; it reads spread, not beauty.
+  kind: contrast
+
+endpoint_strip_every: 2
+
+# The comparison quotes a finished real run; a fake-backend smoke skips it.
+fmrg_comparison_run: null
+
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight

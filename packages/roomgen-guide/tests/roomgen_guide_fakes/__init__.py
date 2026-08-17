@@ -25,6 +25,13 @@ from roomgen_guide_fakes.image_reference import (
     fake_masked_patch_energies,
 )
 from roomgen_guide_fakes.inpaint import FakeInpaintPipeline
+from roomgen_guide_fakes.kontext import (
+    FAKE_KONTEXT_PROMPT,
+    KONTEXT_LATENT_CHANNELS,
+    FakeKontextTransformer,
+    FakeKontextVae,
+    fake_kontext_stack,
+)
 from roomgen_guide_fakes.pipeline import (
     LATENT_CHANNELS,
     FakePipeline,
@@ -34,12 +41,16 @@ from roomgen_guide_fakes.pipeline import (
 
 __all__ = [
     "EMBEDDING_WIDTH",
+    "FAKE_KONTEXT_PROMPT",
     "INPUT_SIZE",
+    "KONTEXT_LATENT_CHANNELS",
     "LATENT_CHANNELS",
     "PATCH_GRID_SIDE",
     "START_TIME",
     "FakeClipImageEncoder",
     "FakeInpaintPipeline",
+    "FakeKontextTransformer",
+    "FakeKontextVae",
     "FakePipeline",
     "FakeScheduler",
     "FakeSpatialPatchEncoder",
@@ -48,5 +59,6 @@ __all__ = [
     "ToyFlowMapProcess",
     "fake_clip_text_guidance",
     "fake_image_reference_energies",
+    "fake_kontext_stack",
     "fake_masked_patch_energies",
 ]
