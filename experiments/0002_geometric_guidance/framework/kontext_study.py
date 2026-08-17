@@ -715,7 +715,10 @@ def _run_scene(
         measurements: list[KontextArmResult] = []
         for spec in specs:
             render = renders[spec.arm]
-            depth_map = f"{scene.photo}_seed{seed}_{spec.arm}_depth.png"
+            # `_depthmap`, not `_depth`: the guided arm is named `kontext_depth`,
+            # so the unguided arm's `..._kontext_depth.png` map would overwrite
+            # the guided arm's render of exactly that name.
+            depth_map = f"{scene.photo}_seed{seed}_{spec.arm}_depthmap.png"
             residual_map = f"{scene.photo}_seed{seed}_{spec.arm}_residual.png"
             with torch.no_grad():
                 write_masked_disparity_map(
