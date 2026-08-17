@@ -480,7 +480,7 @@ class ReduxSceneConfig(FramingSceneConfig):
 
 
 class ReduxStripConfig(Config):
-    """Stage zero of the Redux sweep: strip each photo bare before anything samples.
+    """Stage zero of the Redux and Kontext studies: strip each photo bare first.
 
     The fields mirror 0003's `StripConfig` plus the SD stack dtype the strip
     runs in; the machinery itself is imported from
@@ -789,7 +789,11 @@ class KontextGuidanceConfig(Config):
         erosion_radius: pixels trimmed either side of a segment edge before a
             shell mask is trusted.
         resegment: score depth only on reference-shell AND prediction-shell.
-        guided_steps: steer only the first this many steps; `None` steers all.
+        first_guided_step: leave the first this many steps unsteered — the
+            walk's head is where the one-step endpoint is at its blurriest, so
+            steering there spends the budget on the worst signal.
+        guided_steps: steer only steps below this index; `None` steers to the
+            end of the walk.
         max_sigma: steer only the steps whose sigma is at or below this — the
             fallback the endpoint-sharpness strip is there to calibrate: if the
             early one-step endpoints turn out to be garbage, the reward starts
@@ -800,23 +804,47 @@ class KontextGuidanceConfig(Config):
     iterations: Annotated[int, Field(ge=1)] = 1
     erosion_radius: Annotated[int, Field(ge=0)] = 2
     resegment: bool = True
+    first_guided_step: Annotated[int, Field(ge=0)] = 0
     guided_steps: Annotated[int, Field(ge=0)] | None = None
     max_sigma: Annotated[float, Field(gt=0.0, le=1.0)] | None = None
+
+
+class KontextGridPointConfig(Config):
+    """One extra guided operating point run beside the primary `kontext_depth` arm.
+
+    Args:
+        eta: `AnnealedSignTilt`'s strength for this arm, necessarily positive —
+            the unguided baseline already runs beside every grid.
+        first_guided_step: steps left unsteered at the head of the walk.
+        guided_steps: steer only steps below this index; `None` steers to the
+            end of the walk.
+    """
+
+    eta: Annotated[float, Field(gt=0.0)]
+    first_guided_step: Annotated[int, Field(ge=0)] = 0
+    guided_steps: Annotated[int, Field(ge=1)] | None = None
 
 
 class KontextConfig(ExperimentConfig):
     """The Kontext pilot: a strong instruction-editing prior, with and without depth.
 
     Per scene at each seed off one transformer load: `kontext` — the
-    instruction prompt with the photo as reference tokens, no reward — and
-    `kontext_depth`, the same walk steered by the geometric reward against the
-    furnished photo's shell depth. The unguided arm is the powerful-prior
-    baseline every delta divides by. Both arms additionally leave an
-    endpoint-sharpness strip: the decoded one-step endpoint estimate every
-    `endpoint_strip_every` steps with its depth error against the reference
-    shell — the direct evidence on whether the estimate is a usable steering
-    signal at each noise level, and the curve of the geometry converging
-    under the reward beside the prior's own.
+    instruction prompt with the photo as reference tokens, no reward —
+    `kontext_depth`, the same walk steered by the geometric reward, and one
+    extra guided arm per `grid` entry. Stage zero strips every photo bare
+    (0003's strip machinery, released before the transformer loads) and the
+    depth reference is the *stripped empty room's* shell depth, by owner
+    decision — the empty shell is nearly the whole frame, a far larger valid
+    comparison area than the furnished shell. The furnished photo's shell is
+    kept as a secondary depth column so the reference switch itself is
+    quantified. The unguided arm is the powerful-prior baseline every delta
+    divides by. The baseline and `kontext_depth` additionally leave an
+    endpoint strip: the decoded one-step endpoint estimate every
+    `endpoint_strip_every` steps with its depth error against the empty
+    reference shell, its segmentation map and its masked depth map — the
+    direct evidence on whether the estimate is a usable steering signal at
+    each noise level, and the curve of the geometry converging under the
+    reward beside the prior's own.
 
     Args:
         scenes: each photo with its style text; adherence and preference are
@@ -825,24 +853,30 @@ class KontextConfig(ExperimentConfig):
             resized to, a multiple of 16 (FLUX's VAE downsamples by 8 and
             packs 2x2). Kontext trained around 1024; 512 is the pilot setting
             and the report says which survived.
+        strip: stage zero's knobs, 0003's owner-validated values by default.
+        grid: extra guided operating points beside `guidance`'s, each an arm
+            of its own at every (scene, seed) — the small targeted grid a
+            diagnosis sweeps.
         image_similarity_checkpoint: the eval judge of render-to-photo cosine
             (`None` skips it) — read beside adherence, since a photo copy
             scores near 1 on it.
-        endpoint_strip_every: save each arm's decoded endpoint estimate every
-            this many steps.
+        endpoint_strip_every: save each recorded arm's decoded endpoint
+            estimate every this many steps.
         fmrg_comparison_run: name of a finished `fmrg_redux` run under the
             working directory whose text-only (`s0u`/`s0g`) arms are quoted
             beside this study's, with their depth errors recomputed against
-            the furnished photo's shell so the column compares; `None` skips
-            the comparison (the smoke setting).
+            both of this study's references so the column compares; `None`
+            skips the comparison (the smoke setting).
     """
 
     study: Literal["kontext"]
     scenes: Annotated[tuple[KontextSceneConfig, ...], Field(min_length=1)]
     resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
     backends: KontextBackendConfig
+    strip: ReduxStripConfig = ReduxStripConfig()
     sampler: KontextSamplerConfig = KontextSamplerConfig()
     guidance: KontextGuidanceConfig = KontextGuidanceConfig()
+    grid: tuple[KontextGridPointConfig, ...] = ()
     adherence: AdherenceConfig
     image_similarity_checkpoint: Annotated[str, Field(min_length=1)] | None = (
         IMAGE_SIMILARITY_CHECKPOINT

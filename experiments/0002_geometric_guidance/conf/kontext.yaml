@@ -1,17 +1,22 @@
 # The Kontext study: FLUX.1-Kontext-dev — a strong instruction-editing prior
 # that holds the reference photo as attention context — with and without the
 # depth reward, at one seed on five scenes. The unguided arm answers "does the
-# strong prior alone already hold the geometry?"; the guided arm answers "what
-# does depth steering add on top?"; both arms' endpoint strips answer "is the
-# one-step endpoint estimate a usable steering signal here at all" (its
-# Tweedie analogue on SD1.5 was not — Kontext's reference anchoring is the
-# reason to re-ask), each frame carrying its own depth error so the strips
-# read as convergence curves too.
+# strong prior alone already hold the geometry?"; the guided arms answer "what
+# does depth steering add on top, and at which operating point?"; the filmed
+# arms' endpoint strips answer "is the one-step endpoint estimate a usable
+# steering signal here at all", each frame carrying its RGB decode, its EoMT
+# segmentation, its masked depth map and its own depth error, so the strips
+# read as convergence curves too. Every guided walk also records a per-step
+# trace (energy, gradient RMS, applied displacement RMS) — the diagnosis data.
 #
-# The depth reference is the FURNISHED PHOTO's shell (GeometricReference
-# .from_photo), the 0002 studies' original setting; the walk starts from pure
-# noise at Kontext's own 28-step grid and native guidance 2.5, at 512²
-# (Kontext trained around 1024 — the report says whether 512 survived).
+# The depth reference is the STRIPPED EMPTY ROOM's shell (stage zero runs
+# 0003's strip on every photo first, the strip stack released before Kontext
+# loads), by owner decision: the empty shell is nearly the whole frame, a far
+# larger valid comparison area than the furnished shell. The furnished photo's
+# shell rides along as the secondary depth column (`depth_error_photo`) so the
+# reference switch itself is quantified. The walk starts from pure noise at
+# Kontext's own 28-step grid and native guidance 2.5, at 512² (Kontext trained
+# around 1024 — the report says whether 512 survived).
 #
 #   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config kontext
 study: kontext
@@ -49,8 +54,24 @@ guidance:
   iterations: 1
   erosion_radius: 2
   resegment: true
+  first_guided_step: 0
   guided_steps: 20
   max_sigma: null
+
+# The diagnosis grid beside the primary arm: does skipping the blurry head
+# (steps 0-1, where the endpoint estimate is still noise-blob on the darkest
+# scene) free budget, and does a higher eta spend it — watched for the eta-2.5
+# ceiling-mottling artifact class the earlier sweep found.
+grid:
+  - eta: 1.0
+    first_guided_step: 2
+    guided_steps: 20
+  - eta: 2.0
+    first_guided_step: 2
+    guided_steps: 20
+  - eta: 2.5
+    first_guided_step: 4
+    guided_steps: 24
 
 adherence:
   # The eval judge, deliberately bigger than — and independent of — the
@@ -68,12 +89,14 @@ preference:
   # PickScore v1, eval only: CLIP-H fine-tuned on human choices.
   kind: pickscore
 
-# Decoded endpoint estimate every 2nd step of BOTH arms — dense enough that
-# the strips are the study's centerpiece evidence, judged by eye.
+# Decoded endpoint estimate every 2nd step of the baseline and the primary
+# guided arm — dense enough that the strips are centerpiece evidence, judged
+# by eye; grid arms carry the numeric trace instead of frames.
 endpoint_strip_every: 2
 
 # The finished Redux run whose text-only s0u/s0g arms are quoted beside these,
-# depth recomputed against the furnished photo's shell so the column compares.
+# depth recomputed on its saved renders against both of this study's
+# references so the column compares.
 fmrg_comparison_run: 0002_fmrg_redux
 
 # The Redux sweep's five scenes, style and eval texts verbatim; the steering

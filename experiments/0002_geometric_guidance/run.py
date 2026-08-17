@@ -501,7 +501,7 @@ def _report_image(summary: ImageSummary) -> None:
 
 
 _KONTEXT_COLUMNS = (
-    f"{'arm':<15}{'depth':>10}{'vs prior':>10}{'adher':>9}{'ratio':>8}"
+    f"{'arm':<20}{'depth':>10}{'vs prior':>10}{'d.photo':>10}{'adher':>9}{'ratio':>8}"
     f"{'imgsim':>9}{'pref':>8}{'shell':>7}{'sec':>7}{'GiB':>7}"
 )
 
@@ -523,23 +523,26 @@ def _report_kontext(summary: KontextSummary) -> None:
             )
             peak = cell.peak_vram_bytes
             print(
-                f"{cell.arm:<15}{cell.depth_error:>10.5f}"
+                f"{cell.arm:<20}{cell.depth_error:>10.5f}"
                 f"{_signed(result.depth_delta_vs_baseline(cell.arm)):>10}"
+                f"{cell.depth_error_photo:>10.5f}"
                 f"{cell.adherence:>9.4f}"
                 f"{_share(result.adherence_ratio_vs_baseline(cell.arm)):>8}"
                 f"{similarity:>9}{cell.preference:>8.3f}"
                 f"{cell.shell_coverage:>6.0%} {cell.seconds:>6.1f}"
                 f"{'' if peak is None else f'{peak / 1024**3:>7.2f}'}"
             )
-        print(f"{'common mask':<25}{'':>36}{result.common_coverage:>6.0%}")
+        print(f"{'common mask':<30}{'':>41}{result.common_coverage:>6.0%}")
         if result.fmrg_comparison is not None:
             rows = result.fmrg_comparison.get("rows")
             for row in rows if isinstance(rows, list) else []:
                 assert isinstance(row, dict)
                 print(
-                    f"{'fmrg ' + str(row['arm']):<15}"
+                    f"{'fmrg ' + str(row['arm']):<20}"
+                    f"{float(row['depth_error_vs_empty_shell']):>10.5f}"
+                    f"{'':>10}"
                     f"{float(row['depth_error_vs_photo_shell']):>10.5f}"
-                    f"  (recomputed vs photo shell; source run steered vs empty room)"
+                    f"  (recomputed vs this study's references, own mask)"
                 )
         for arm_id, strip in result.endpoint_strips.items():
             if strip:
@@ -558,7 +561,8 @@ def _report_kontext(summary: KontextSummary) -> None:
             else f"{row['image_similarity']:.4f}"
         )
         print(
-            f"{spec.arm:<15}{row['depth_error']:>10.5f}{row['adherence']:>9.4f}"
+            f"{spec.arm:<20}{row['depth_error']:>10.5f}"
+            f"{row['depth_error_photo']:>10.5f}{row['adherence']:>9.4f}"
             f"{similarity:>9}{row['preference']:>8.3f}"
             f"{row['shell_coverage']:>7.0%}{row['seconds']:>7.1f}"
         )

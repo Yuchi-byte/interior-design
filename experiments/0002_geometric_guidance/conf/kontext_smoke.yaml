@@ -1,9 +1,12 @@
 # Plumbing, not a claim: the whole Kontext pilot flow on the weightless
 # `ToyFlowMapBackend` and the geometry doubles, CPU-only, offline, in seconds.
 # The toy backend has no reference conditioning — the Kontext backend itself
-# is pinned by `test_kontext_flux.py` — so what this exercises is the arm
-# structure, the pure-noise walk, the endpoint-strip recording, the
-# common-mask scoring, the deferred judges, and the artifact writing.
+# is pinned by `test_kontext_flux.py` — so what this exercises is the fake
+# strip stage and its empty-room reference, the arm structure (baseline,
+# primary guided, one grid arm), the pure-noise walk, the endpoint-strip
+# recording with its per-frame segmentation and depth maps, the per-step
+# trace, the two-reference common-mask scoring, the deferred judges, and the
+# artifact writing.
 #
 #   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config kontext_smoke
 study: kontext
@@ -31,8 +34,15 @@ guidance:
   iterations: 1
   erosion_radius: 2
   resegment: true
+  first_guided_step: 0
   guided_steps: null
   max_sigma: null
+
+# One grid arm, purely to exercise the extra-arm plumbing offline.
+grid:
+  - eta: 2.0
+    first_guided_step: 1
+    guided_steps: 4
 
 adherence:
   # Checkpoint-free, so the smoke run never touches the network.

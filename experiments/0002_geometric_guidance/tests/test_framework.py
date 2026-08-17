@@ -301,8 +301,14 @@ def test_kontext_arms_lead_with_the_prior_alone_and_frame_the_style_as_an_instru
 
     assert isinstance(config, KontextConfig)
     specs = kontext_arms(config)
-    assert [spec.arm for spec in specs] == [KONTEXT_BASELINE_ARM, GUIDED_ARM]
-    assert [spec.guided for spec in specs] == [False, True]
+    assert [spec.arm for spec in specs[:2]] == [KONTEXT_BASELINE_ARM, GUIDED_ARM]
+    assert [spec.guided for spec in specs] == [False] + [True] * (len(specs) - 1)
+    # One arm per grid point rides beside the primary pair, under a distinct id.
+    assert len(specs) == 2 + len(config.grid)
+    assert len({spec.arm for spec in specs}) == len(specs)
+    # Only the filmed pair records endpoint frames; grid arms carry the trace.
+    assert [spec.records_strip for spec in specs[:2]] == [True, True]
+    assert all(not spec.records_strip for spec in specs[2:])
     for scene in config.scenes:
         prompt = scene.instruction_prompt
         assert prompt.startswith(f"renovate this room into {scene.style_prompt}, ")
