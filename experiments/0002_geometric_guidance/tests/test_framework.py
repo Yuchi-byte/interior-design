@@ -321,6 +321,29 @@ def test_kontext_arms_lead_with_the_prior_alone_and_frame_the_style_as_an_instru
     assert config.endpoint_strip_every >= 1
 
 
+def test_the_native_resolution_kontext_variant_judges_on_the_512_grid() -> None:
+    """1024 sampling scored at 512: the deltas against the finished 512 run compare."""
+    config = load_study_config(CONF_DIR / "kontext_1024.yaml")
+
+    assert isinstance(config, KontextConfig)
+    assert config.resolution == 1024
+    assert config.eval_resolution == 512
+    assert config.scored_resolution == 512
+    # Two arms only: the prior and the 512 sweep's recommended operating point.
+    assert not config.grid
+    assert config.guidance.eta == pytest.approx(1.0)
+    assert config.guidance.first_guided_step == 2
+    assert config.guidance.guided_steps == 20
+
+
+def test_judging_finer_than_the_walk_samples_is_a_config_error() -> None:
+    """The eval side is reached by a downsample; an upsample would judge invented pixels."""
+    with pytest.raises(ValueError, match="eval_resolution"):
+        load_study_config(CONF_DIR / "kontext.yaml", ["eval_resolution=1024"])
+    with pytest.raises(ValueError, match="multiple of 16"):
+        load_study_config(CONF_DIR / "kontext_1024.yaml", ["eval_resolution=200"])
+
+
 def test_no_kontext_judge_may_be_the_guidance_clip() -> None:
     """The self-grading rule holds for the pilot's two CLIP judges."""
     with pytest.raises(ValueError, match="guidance CLIP"):

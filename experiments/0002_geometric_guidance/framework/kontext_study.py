@@ -41,6 +41,7 @@ import json
 import math
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,9 +80,12 @@ from roomgen_geometry.segmentation.base import Segmenter
 from roomgen_geometry.segmentation.eomt import EoMT
 from roomgen_guide.adapters.flow_map import FlowMapBackend, FlowMapProcess
 from roomgen_guide.adapters.kontext_flux import (
+    KontextFluxBackend,
     KontextStack,
     build_kontext_backend,
     load_kontext_stack,
+    pack_latent,
+    unpack_latent,
 )
 from roomgen_guide.determinism import enable_determinism
 from roomgen_guide.eval import (
@@ -214,6 +218,10 @@ class KontextArmResult:
             switch.
         trace: the walk's per-step instrumentation, empty for a walk that
             evaluated the reward on no step.
+        render: the walk's own product, at the sampling resolution.
+        render_eval: the downsampled twin every number was read off, when the
+            eval resolution is not the sampling one; `None` when `render`
+            itself is what the judges saw.
     """
 
     arm: str
@@ -229,6 +237,7 @@ class KontextArmResult:
     image_similarity: float | None
     preference: float
     render: str
+    render_eval: str | None
     depth_map: str
     residual_map: str
     seconds: float
@@ -250,6 +259,7 @@ class KontextArmResult:
             "image_similarity": self.image_similarity,
             "preference": self.preference,
             "render": self.render,
+            "render_eval": self.render_eval,
             "depth_map": self.depth_map,
             "residual_map": self.residual_map,
             "seconds": self.seconds,
@@ -525,9 +535,12 @@ def _strip_scenes(
     print(f"\n[strip] {len(config.scenes)} scenes bare before anything samples")
     stripped: dict[str, _StrippedScene] = {}
     for scene in config.scenes:
+        # Stage zero lives entirely on the eval side: the empty room and the
+        # reference read off it must be the ones a finished eval-resolution run
+        # steered by and was judged against.
         photo = load_photo(
             photo_paths[scene.photo],
-            resolution=config.resolution,
+            resolution=config.scored_resolution,
             device=device,
             dtype=backends.dtype,
         )
@@ -725,6 +738,104 @@ def _kontext_path(checkpoint: str, settings: RoomgenSettings) -> str:
         ) from error
 
 
+def _downscaled(
+    image: Float[Tensor, "batch 3 height width"], *, resolution: int
+) -> Float[Tensor, "batch 3 height width"]:
+    """The image on the eval grid: an area downsample (antialiased for the whole-
+    number factors a resolution pair here always is), differentiable, and the
+    identity when the image is already there."""
+    if image.shape[-2:] == (resolution, resolution):
+        return image
+    return torch.nn.functional.interpolate(
+        image, size=(resolution, resolution), mode="area"
+    )
+
+
+@dataclass(frozen=True)
+class _EvalResolutionGuidance:
+    """The reward read at the eval resolution, whatever side the walk decodes at.
+
+    The decoded endpoint is area-downsampled *on the graph* before the inner
+    reward, so a native-resolution walk descends exactly the judge the eval
+    resolution's finished runs were scored under — same reference, same depth
+    reading — and the gradient still reaches the full-resolution decode.
+    """
+
+    inner: Guidance
+    resolution: int
+
+    def __call__(
+        self, predicted_image: Float[Tensor, "batch 3 height width"]
+    ) -> Float[Tensor, batch]:
+        return self.inner(_downscaled(predicted_image, resolution=self.resolution))
+
+
+@dataclass(frozen=True)
+class _EvalGridDecodeBackend:
+    """The walk's backend with its *gradient-path* decodes moved to the eval grid.
+
+    A 1024 VAE decode carrying an autograd graph does not fit beside the 12B
+    transformer on a 32GiB card — probed directly: the forward alone passed
+    29.5GiB allocated and died, against 27.8GiB for the whole 512 study. So on
+    the gradient path the latent is area-downsampled *differentiably* on its
+    unpacked grid and decoded at the eval resolution instead (peak 27.1GiB,
+    finite non-zero gradient). The approximation is stated plainly: the reward
+    reads ``decode_512(downsample(latent))``, not ``downsample(decode_1024(
+    latent))``. Every no-grad decode — the finished render, the roundtrip
+    floor — still runs at the walk's own resolution, so the *numbers* are read
+    off true native decodes; only the steering signal is the coarsened one.
+    """
+
+    inner: KontextFluxBackend
+    eval_latent_height: int
+    eval_latent_width: int
+
+    def schedule(
+        self,
+        *,
+        steps: int,
+        start_sigma: float,
+        latent: Float[Tensor, "batch tokens channels"],
+    ) -> Sequence[float]:
+        return self.inner.schedule(steps=steps, start_sigma=start_sigma, latent=latent)
+
+    def encode(
+        self,
+        image: Float[Tensor, "batch 3 height width"],
+        *,
+        generator: torch.Generator,
+    ) -> Float[Tensor, "batch tokens channels"]:
+        return self.inner.encode(image, generator=generator)
+
+    def velocity(
+        self,
+        latent: Float[Tensor, "batch tokens channels"],
+        *,
+        sigma: float,
+        target_sigma: float,
+    ) -> Float[Tensor, "batch tokens channels"]:
+        return self.inner.velocity(latent, sigma=sigma, target_sigma=target_sigma)
+
+    def decode(
+        self, latent: Float[Tensor, "batch tokens channels"]
+    ) -> Float[Tensor, "batch 3 height width"]:
+        if not torch.is_grad_enabled():
+            return self.inner.decode(latent)
+        unpacked = unpack_latent(
+            latent, self.inner.latent_height, self.inner.latent_width
+        )
+        shrunk = torch.nn.functional.interpolate(
+            unpacked,
+            size=(self.eval_latent_height, self.eval_latent_width),
+            mode="area",
+        )
+        return replace(
+            self.inner,
+            latent_height=self.eval_latent_height,
+            latent_width=self.eval_latent_width,
+        ).decode(pack_latent(shrunk))
+
+
 @dataclass
 class _StepCell:
     """The guided step the walk is currently inside, shared tilt-to-reward."""
@@ -871,11 +982,19 @@ def _scene_backend(
     if stacks.stack is None:
         assert stacks.fake_backend is not None
         return stacks.fake_backend
-    return build_kontext_backend(
+    backend = build_kontext_backend(
         stacks.stack,
         prompt=scene.instruction_prompt,
         reference_image=photo,
         text_guidance_scale=config.sampler.text_guidance_scale,
+    )
+    if config.scored_resolution == config.resolution:
+        return backend
+    # FLUX's VAE downsamples by 8: the eval grid's latent side.
+    return _EvalGridDecodeBackend(
+        inner=backend,
+        eval_latent_height=config.scored_resolution // 8,
+        eval_latent_width=config.scored_resolution // 8,
     )
 
 
@@ -945,6 +1064,13 @@ def _sample_walk(
     if recorder_every is not None:
         recorder = _EndpointRecorder(inner=reward, cell=cell, every=recorder_every)
         reward = recorder
+    if config.scored_resolution != config.resolution:
+        # Outermost, so the recorder's frames, the tap's energies and the
+        # geometric energy itself are all read on the eval grid — the walk is
+        # steered by, and filmed under, exactly the eval resolution's judge.
+        reward = _EvalResolutionGuidance(
+            inner=reward, resolution=config.scored_resolution
+        )
     on_cuda = stacks.device.type == "cuda"
     if on_cuda:
         torch.cuda.synchronize(stacks.device)
@@ -972,6 +1098,33 @@ def _sample_walk(
         peak,
         [EndpointFrame(index, sigmas[index], frame) for index, frame in frames],
         trace,
+    )
+
+
+def _roundtrip_floor(
+    backend: FlowMapBackend,
+    image: Float[Tensor, "1 3 height width"],
+    *,
+    config: KontextConfig,
+    device: torch.device,
+) -> Float[Tensor, "1 3 height width"]:
+    """The image after the walk's VAE round trip, read on the eval grid.
+
+    An image already at the sampling side round-trips as a render decodes; one
+    on the eval grid alone (the stripped empty room) is lifted bilinearly
+    first. Either way the result comes back through the same area downsample
+    every render is judged after.
+    """
+    if image.shape[-2:] != (config.resolution, config.resolution):
+        image = torch.nn.functional.interpolate(
+            image,
+            size=(config.resolution, config.resolution),
+            mode="bilinear",
+            align_corners=False,
+        )
+    return _downscaled(
+        _vae_roundtrip(backend, image, device=device),
+        resolution=config.scored_resolution,
     )
 
 
@@ -1009,21 +1162,33 @@ def _run_scene(
     image_dir: Path,
     warm_up: bool,
 ) -> list[_PendingScene]:
+    # The walk's photo is at the sampling resolution — it becomes the VAE
+    # reference tokens — while everything judged lives on the eval grid.
     photo = load_photo(
         photo_path,
         resolution=config.resolution,
         device=stacks.device,
         dtype=torch.float32,
     )
+    eval_photo = (
+        photo
+        if config.scored_resolution == config.resolution
+        else load_photo(
+            photo_path,
+            resolution=config.scored_resolution,
+            device=stacks.device,
+            dtype=torch.float32,
+        )
+    )
     # The stripped empty room's shell: the reference the reward defends and the
     # primary depth reading — the owner's setting, as the Redux sweep took it.
     reference = stripped.reference
     empty_room = stripped.empty_room.to(stacks.device)
     # The furnished photo's shell stays as the secondary depth column, rebuilt
-    # here from the float32 photo so the numbers stay comparable to the
-    # photo-reference run this study replaces (results_photoref.json).
+    # here from the float32 eval-resolution photo so the numbers stay comparable
+    # to the photo-reference run this study replaces (results_photoref.json).
     photo_reference = GeometricReference.from_photo(
-        photo,
+        eval_photo,
         depth_estimator=stacks.depth_estimator,
         segmenter=stacks.segmenter,
         erosion_radius=config.guidance.erosion_radius,
@@ -1048,15 +1213,18 @@ def _run_scene(
     backend = _scene_backend(scene, config=config, stacks=stacks, photo=photo)
     # The floor the primary depth column is read against: what a perfect
     # geometry-preserving renovation still pays for FLUX's VAE round trip of
-    # the reference geometry alone. The photo reference's floor rides beside it
-    # for the secondary column.
+    # the reference geometry alone, decoded at the walk's own side and read on
+    # the eval grid exactly as a render is. The photo reference's floor rides
+    # beside it for the secondary column. The empty room exists only on the
+    # eval grid, so at a finer sampling side it is lifted (bilinear) before the
+    # round trip — a smoothing no render pays, stated where the floor is read.
     reconstruction = depth_error(
-        _vae_roundtrip(backend, empty_room, device=stacks.device),
+        _roundtrip_floor(backend, empty_room, config=config, device=stacks.device),
         reference=reference,
         depth_estimator=stacks.depth_estimator,
     )
     reconstruction_photo = depth_error(
-        _vae_roundtrip(backend, photo, device=stacks.device),
+        _roundtrip_floor(backend, photo, config=config, device=stacks.device),
         reference=photo_reference,
         depth_estimator=stacks.depth_estimator,
     )
@@ -1097,6 +1265,7 @@ def _run_scene(
     results: list[_PendingScene] = []
     for seed in config.seeds:
         renders: dict[str, Float[Tensor, "1 3 height width"]] = {}
+        eval_renders: dict[str, str | None] = {}
         seconds: dict[str, float] = {}
         peaks: dict[str, int | None] = {}
         traces: dict[str, tuple[StepTraceRow, ...]] = {}
@@ -1116,7 +1285,11 @@ def _run_scene(
                     config.endpoint_strip_every if spec.records_strip else None
                 ),
             )
-            renders[spec.arm] = image
+            # Every number below is read off the eval grid; the walk's own
+            # render is written beside it untouched (`image` left the driver
+            # detached, so the downsample builds no graph).
+            scored = _downscaled(image, resolution=config.scored_resolution)
+            renders[spec.arm] = scored
             seconds[spec.arm] = elapsed
             peaks[spec.arm] = peak
             traces[spec.arm] = trace
@@ -1131,6 +1304,15 @@ def _run_scene(
                     reference=reference,
                 )
             _write_image(image, image_dir / f"{scene.photo}_seed{seed}_{spec.arm}.png")
+            if scored is image:
+                eval_renders[spec.arm] = None
+            else:
+                name = (
+                    f"{scene.photo}_seed{seed}_{spec.arm}"
+                    f"_eval{config.scored_resolution}.png"
+                )
+                _write_image(scored, image_dir / name)
+                eval_renders[spec.arm] = name
             # Sweep the allocator between arms: the guided backward's transient
             # should never be the reason the next arm fragments.
             gc.collect()
@@ -1226,6 +1408,7 @@ def _run_scene(
                     image_similarity=None,
                     preference=math.nan,
                     render=f"{scene.photo}_seed{seed}_{spec.arm}.png",
+                    render_eval=eval_renders[spec.arm],
                     depth_map=depth_map,
                     residual_map=residual_map,
                     seconds=seconds[spec.arm],
@@ -1278,7 +1461,7 @@ def _run_scene(
                     arm: image.detach().to(device="cpu", dtype=torch.float32)
                     for arm, image in renders.items()
                 },
-                photo=photo,
+                photo=eval_photo,
                 reference=reference,
             )
         )
@@ -1641,6 +1824,19 @@ def _write_results(summary: KontextSummary, settings: RoomgenSettings) -> None:
                 # depth. The furnished photo's shell rides along as the
                 # secondary `depth_error_photo` column.
                 "guidance_reference": "empty_room",
+                # Where every number was read: the eval grid, whatever side the
+                # walk sampled at. On the real backend at a finer sampling side
+                # the *gradient-path* decode is the eval-grid one
+                # (`_EvalGridDecodeBackend`); every no-grad decode is native.
+                "eval_resolution": summary.config.scored_resolution,
+                "gradient_path_decode": (
+                    "native"
+                    if summary.config.scored_resolution == summary.config.resolution
+                    or summary.config.backends.kind != "real"
+                    else "eval-grid decode of the area-downsampled latent (the "
+                    "native decode's autograd graph does not fit beside the "
+                    "transformer on a 32GiB card)"
+                ),
                 # The strip's depth errors are read on the full empty
                 # reference shell (one mask across all steps and both filmed
                 # arms), never a resegmentation of a half-formed estimate.

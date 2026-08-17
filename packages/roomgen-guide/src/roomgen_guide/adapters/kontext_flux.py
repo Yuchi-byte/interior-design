@@ -183,12 +183,12 @@ class KontextFluxBackend:
         # `start_sigma` 1 discards this latent anyway — only its shape and the
         # schedule read it. The generator is the protocol's, unused here.
         del generator
-        return _pack(self._scaled_latent(image))
+        return pack_latent(self._scaled_latent(image))
 
     def decode(
         self, latent: Float[Tensor, "batch tokens channels"]
     ) -> Float[Tensor, "batch 3 height width"]:
-        unpacked = _unpack(latent, self.latent_height, self.latent_width)
+        unpacked = unpack_latent(latent, self.latent_height, self.latent_width)
         z = unpacked / self.vae.config.scaling_factor + self.vae.config.shift_factor
         image = self.vae.decode(z, return_dict=False)[0]
         return ((image.float() + 1.0) / 2.0).clamp(0.0, 1.0)
@@ -287,7 +287,7 @@ def build_kontext_backend(
         prompt_embeds=embeds,
         pooled_prompt_embeds=pooled,
         txt_ids=torch.zeros(embeds.shape[1], 3, device=stack.device, dtype=stack.dtype),
-        reference_tokens=_pack(reference_latent),
+        reference_tokens=pack_latent(reference_latent),
         image_ids=ids,
         latent_height=latent_height,
         latent_width=latent_width,
@@ -374,7 +374,7 @@ def load_kontext_stack(
     )
 
 
-def _pack(
+def pack_latent(
     latent: Float[Tensor, "batch channels height width"],
 ) -> Float[Tensor, "batch tokens packed"]:
     """FLUX's 2x2 token packing, differentiably (a view/permute/reshape chain)."""
@@ -384,7 +384,7 @@ def _pack(
     return packed.reshape(batch, (height // 2) * (width // 2), channels * 4)
 
 
-def _unpack(
+def unpack_latent(
     latent: Float[Tensor, "batch tokens packed"],
     height: int,
     width: int,

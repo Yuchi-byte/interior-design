@@ -853,6 +853,13 @@ class KontextConfig(ExperimentConfig):
             resized to, a multiple of 16 (FLUX's VAE downsamples by 8 and
             packs 2x2). Kontext trained around 1024; 512 is the pilot setting
             and the report says which survived.
+        eval_resolution: the side everything is *judged* at when it is not the
+            sampling side: stage zero's strip, both references, the reward
+            (the decoded endpoint is antialias-downsampled to it,
+            differentiably, before the depth network) and every judge. `None`
+            scores at `resolution`. Set to a finished run's resolution so a
+            native-resolution walk is read by exactly the references and
+            common-mask machinery that run was — the deltas compare.
         strip: stage zero's knobs, 0003's owner-validated values by default.
         grid: extra guided operating points beside `guidance`'s, each an arm
             of its own at every (scene, seed) — the small targeted grid a
@@ -872,6 +879,7 @@ class KontextConfig(ExperimentConfig):
     study: Literal["kontext"]
     scenes: Annotated[tuple[KontextSceneConfig, ...], Field(min_length=1)]
     resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] = 512
+    eval_resolution: Annotated[int, Field(ge=FLUX_LATENT_ALIGNMENT)] | None = None
     backends: KontextBackendConfig
     strip: ReduxStripConfig = ReduxStripConfig()
     sampler: KontextSamplerConfig = KontextSamplerConfig()
@@ -885,15 +893,32 @@ class KontextConfig(ExperimentConfig):
     endpoint_strip_every: Annotated[int, Field(ge=1)] = 4
     fmrg_comparison_run: Annotated[str, Field(min_length=1)] | None = "0002_fmrg_redux"
 
-    @field_validator("resolution")
+    @field_validator("resolution", "eval_resolution")
     @classmethod
-    def _aligned_to_the_packed_latent_grid(cls, resolution: int) -> int:
-        if resolution % FLUX_LATENT_ALIGNMENT:
+    def _aligned_to_the_packed_latent_grid(cls, resolution: int | None) -> int | None:
+        if resolution is not None and resolution % FLUX_LATENT_ALIGNMENT:
             raise ValueError(
                 f"resolution must be a multiple of {FLUX_LATENT_ALIGNMENT} for "
                 f"FLUX's packed latent grid, got {resolution}"
             )
         return resolution
+
+    @property
+    def scored_resolution(self) -> int:
+        """The side references, reward and judges live at: `eval_resolution` or the walk's."""
+        return self.eval_resolution or self.resolution
+
+    @model_validator(mode="after")
+    def _judged_no_finer_than_it_samples(self) -> KontextConfig:
+        # The eval side is reached from the sampled side by a downsample; an
+        # upsample would judge invented pixels no walk ever produced.
+        if self.eval_resolution is not None and self.eval_resolution > self.resolution:
+            raise ValueError(
+                f"eval_resolution {self.eval_resolution} exceeds resolution "
+                f"{self.resolution}: renders are downsampled to the eval side, "
+                f"never upsampled to it"
+            )
+        return self
 
     @model_validator(mode="after")
     def _no_judge_is_the_guidance_clip(self) -> KontextConfig:

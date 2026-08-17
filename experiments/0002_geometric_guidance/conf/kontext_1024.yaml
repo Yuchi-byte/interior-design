@@ -1,0 +1,88 @@
+# The Kontext study at Kontext's native training side: the same five scenes,
+# seed and machinery as `kontext.yaml`, sampled at 1024² instead of 512² — the
+# question is how much of the perceived gap to the hosted Kontext editors was
+# resolution rather than model tier, and whether depth guidance still composes
+# on the 4x token grid. Two arms only: the unguided prior and the 512 run's
+# recommended operating point (eta 1.0, steps [2, 20)), promoted here to the
+# primary guided arm; both are filmed.
+#
+# Everything *judged* stays on the 512 grid (`eval_resolution`): stage zero's
+# strip, both references, the reward (the decoded 1024 endpoint is area-
+# downsampled on the graph before the depth network) and every judge — so the
+# depth/adherence deltas against the finished 512 run compare, and the native
+# 1024 renders are saved untouched beside their scored 512 twins.
+#
+#   uv run --no-sync python experiments/0002_geometric_guidance/run.py --config kontext_1024
+study: kontext
+name: 0002_kontext_1024
+
+# One seed: the owner's fast-iteration setting, and the 512 run's.
+seeds: [0]
+
+resolution: 1024
+eval_resolution: 512
+
+backends:
+  kind: real
+  device: cuda
+  deterministic: true
+  dtype: bfloat16
+  depth_dtype: float32
+  segmentation_dtype: float32
+
+sampler:
+  # Kontext-dev's native operating point, unchanged from the 512 run.
+  steps: 28
+  text_guidance_scale: 2.5
+
+guidance:
+  # The 512 sweep's recommended point (its `kontext_e1_w2_20` grid arm):
+  # eta 1.0 over steps [2, 20) took mean depth error down ~14% at no
+  # adherence, image-similarity or preference cost. It is the primary guided
+  # arm here so 1024-vs-512 is read at one operating point.
+  eta: 1.0
+  iterations: 1
+  erosion_radius: 2
+  resegment: true
+  first_guided_step: 2
+  guided_steps: 20
+  max_sigma: null
+
+# No grid: this run asks one question — what does the native side change — and
+# 1024 walks are ~4x the attention cost of 512 ones.
+grid: []
+
+adherence:
+  kind: clip
+  checkpoint: openai/clip-vit-large-patch14
+
+image_similarity_checkpoint: openai/clip-vit-large-patch14
+
+preference:
+  kind: pickscore
+
+# Both arms are filmed at the 512 run's density; the frames the recorder keeps
+# are the eval-grid (512) reads of the 1024 decodes.
+endpoint_strip_every: 2
+
+# The FMRG column already sits in the finished 512 run's results.json; quoting
+# it again here would restate that run, not this one.
+fmrg_comparison_run: null
+
+# The 512 run's five scenes, style and eval texts verbatim.
+scenes:
+  - photo: scandi_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: blue_white_kitchen
+    style_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+    eval_prompt: a modern industrial kitchen, matte black cabinetry, steel shelving, concrete worktops
+  - photo: ny_loft_bedroom
+    style_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+    eval_prompt: a minimalist japanese bedroom, low wooden platform bed, paper lantern, tatami
+  - photo: hotel_suite_living_room
+    style_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+    eval_prompt: a scandinavian style living room, pale oak furniture, linen upholstery, soft daylight
+  - photo: lakehouse_living_room
+    style_prompt: a mid-century modern living room, walnut furniture, mustard velvet sofa, brass floor lamp, warm evening light
+    eval_prompt: a mid-century modern living room, walnut furniture, mustard velvet sofa, brass floor lamp, warm evening light
