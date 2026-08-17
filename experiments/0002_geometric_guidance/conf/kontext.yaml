@@ -37,8 +37,14 @@ sampler:
   text_guidance_scale: 2.5
 
 guidance:
-  # FMRG's headline strength, the repo default; every step guided until the
-  # endpoint strip says otherwise (max_sigma is the fallback dial).
+  # FMRG's headline strength, the repo default — the pilot's primary arm, kept
+  # so the shipped config reproduces it. What the pilot then measured: on the
+  # native 28-step grid this overdrives the sign rule (the per-step
+  # displacement scales with the step's sigma span, ~15x FMRG's 208-step
+  # grid) and carves adversarial ceiling texture; the clean operating point
+  # found was `--set guidance.eta=1.0 --set guidance.guided_steps=20`
+  # (depth -15%/-20% at no adherence cost), with eta 2.5 the artifact-visible
+  # middle (runs 0002_kontext_g20*, 0002_kontext_g12 under the working dir).
   eta: 5.0
   iterations: 1
   erosion_radius: 2
